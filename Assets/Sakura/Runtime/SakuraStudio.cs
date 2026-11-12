@@ -27,6 +27,7 @@ namespace Sakura.Unity
         private void OnEnable()
         {
             Application.targetFrameRate = 60;
+            Application.runInBackground = true;
             QualitySettings.vSyncCount = 0;
             var document = GetComponent<UIDocument>();
             if (document == null) document = gameObject.AddComponent<UIDocument>();
@@ -46,6 +47,7 @@ namespace Sakura.Unity
             backend.CatalogReceived += ReceiveCatalog;
             backend.StatusChanged += SetStatus;
             backend.ReplyReceived += ReceiveReply;
+            backend.ModelImported += ReceiveImportedModel;
             Build();
             backend.RefreshCatalog();
         }
@@ -101,7 +103,7 @@ namespace Sakura.Unity
             };
             stageMessage = Label("Your character’s new stage", "stage-heading", stage);
             Label("Native Unity renderer migration", "stage-caption", stage);
-            Label("Choose a character to inspect its source. Runtime avatar loading is the next step.", "stage-note", stage);
+            Label("Choose a PMX, VRM or Live2D character from your library.", "stage-note", stage);
 
             var chat = Element("chat", workspace);
             chatPanel = chat; chat.name = "chat-panel";
@@ -153,6 +155,7 @@ namespace Sakura.Unity
         {
             if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Unknown mode");
             CurrentMode = mode;
+            if (viewport != null && viewport.Idle != null) viewport.Idle.Companion = mode == "Companion";
             ControlsHidden = false;
             root.RemoveFromClassList("controls-hidden");
             badge.text = mode.ToUpperInvariant();
@@ -210,7 +213,24 @@ namespace Sakura.Unity
                 Button("+", () => viewport.Zoom(1.1f), controls);
                 Button("Turn left", () => viewport.Rotate(-15), panelBody);
                 Button("Turn right", () => viewport.Rotate(15), panelBody);
-                Label("These controls currently drive loaded VRM avatars. Material, expression and bone tools are pending migration.", "description", panelBody);
+                if (viewport.Idle != null)
+                {
+                    var motion = viewport.Idle;
+                    foreach (string option in new[] { "Auto breathing", "Auto blinking", "Idle motions" })
+                    {
+                        string key = option;
+                        var toggle = new Toggle(key) { value = key == "Auto breathing" ? motion.Breathing : key == "Auto blinking" ? motion.Blinking : motion.IdleMotions };
+                        toggle.RegisterValueChangedCallback(evt =>
+                        {
+                            if (motion == null || viewport.Idle != motion) return;
+                            if (key == "Auto breathing") motion.Breathing = evt.newValue; else if (key == "Auto blinking") motion.Blinking = evt.newValue; else motion.IdleMotions = evt.newValue;
+                            motion.Save();
+                        });
+                        panelBody.Add(toggle);
+                    }
+                }
+                if (viewport.Pmx != null) new SakuraPmxPanel(viewport, backend, panelBody);
+                else Label("Select a PMX model for its material, bone and appearance tools. VRM editing is pending migration.", "description", panelBody);
             }
             else
             {
@@ -218,6 +238,12 @@ namespace Sakura.Unity
                 Label("This feature is available in the original Sakura app. Its native Unity implementation is pending.", "description", panelBody);
                 Label("Migration preserves the existing source and personal assets until full verification and your approval.", "description", panelBody);
             }
+        }
+
+        private void OpenPmxTool(string tool)
+        {
+            if (viewport.LoadedFormat != "PMX") { SetStatus("Select a PMX model first."); return; }
+            backend.RunPmxTool(tool, viewport.LoadedModelPath, (json, error) => SetStatus(error ?? "Selected model sent to " + (tool == "mmd" ? "MikuMikuDance." : "PMX Editor.")));
         }
 
         private void BuildSettings()
@@ -248,8 +274,7 @@ namespace Sakura.Unity
                     var row = Element("model-row", result.contentContainer);
                     Button(entry.name, () =>
                     {
-                        if (entry.format == "VRM") _ = viewport.LoadVrm(backend.SourceFolder, entry.path);
-                        else { stageMessage.text = entry.name; SetStatus(entry.format + " · " + entry.path + " · runtime loading pending"); }
+                        _ = viewport.LoadModel(backend.SourceFolder, entry.path);
                     }, row);
                     Label(entry.path, "model-path", row);
                 }
@@ -268,7 +293,7 @@ namespace Sakura.Unity
             Label("Import a character", "card-title", imports);
             var uploadButtons = Element("row", imports);
             foreach (string type in new[] { "PMX", "VRM", "Live2D" })
-            { string kind = type; Button("Upload " + type, () => SetStatus("Native " + kind + " import is pending. Your original app still provides its validated import flow."), uploadButtons); }
+            { string kind = type; Button("Upload " + type, () => backend.ImportModel(kind), uploadButtons); }
             Button("↻", backend.RefreshCatalog, imports).tooltip = "Refresh imported models";
             var cloudButtons = Element("row", imports);
             foreach (string type in new[] { "PMX", "VRM", "Live2D" })
@@ -294,6 +319,8 @@ namespace Sakura.Unity
             Button("Full model", () => viewport.ResetFraming(), actions);
             Button("Balanced", () => SetStatus("Graphics preset migration is pending."), actions);
             Button("Eyes off", () => SetStatus("Cursor and eye tracking migration is pending."), actions);
+            Button("PMX Editor", () => OpenPmxTool("editor"), actions);
+            Button("MikuMikuDance", () => OpenPmxTool("mmd"), actions);
             Button("Customize model", () => ShowPanel("Model Settings"), framing);
             Button("Expressions & hotkeys", () => ShowPanel("Expressions & hotkeys"), framing);
             populateSearch();
@@ -335,8 +362,8 @@ namespace Sakura.Unity
                     }
                     var button = Button(entry.name, () =>
                     {
-                        if (entry.format == "VRM") { _ = viewport.LoadVrm(backend.SourceFolder, entry.path); overlay.RemoveFromHierarchy(); }
-                        else SetStatus(entry.format + " runtime rendering is pending migration.");
+                        _ = viewport.LoadModel(backend.SourceFolder, entry.path);
+                        overlay.RemoveFromHierarchy();
                     }, grid); button.AddToClassList("picker-item");
                 }
                 foreach (string child in folders.Reverse())
@@ -350,6 +377,7 @@ namespace Sakura.Unity
         }
 
         private void ReceiveCatalog(CharacterEntry[] entries) { catalog = entries; if (CurrentPanel == "Character") ShowPanel("Character"); }
+        private void ReceiveImportedModel(string path) { _ = viewport.LoadModel(backend.SourceFolder, path); }
         private void SetStatus(string text) { if (status != null) status.text = text; }
         private void ReceiveReply(string text) { Label(text, "message", messages.contentContainer); messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue)); }
         private static VisualElement Element(string css, VisualElement parent) { var element = new VisualElement(); element.AddToClassList(css); parent.Add(element); return element; }
@@ -362,6 +390,7 @@ namespace Sakura.Unity
             backend.CatalogReceived -= ReceiveCatalog;
             backend.StatusChanged -= SetStatus;
             backend.ReplyReceived -= ReceiveReply;
+            backend.ModelImported -= ReceiveImportedModel;
         }
     }
 }

@@ -1,0 +1,514 @@
+#nullable enable
+
+using NUnit.Framework;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
+using Mmd.Native;
+using Mmd.Parser;
+using Mmd.Physics;
+using Mmd.Rendering;
+
+namespace Mmd.Tests
+{
+    public sealed class PackageImportSmokeTests
+    {
+        [Test]
+        public void RuntimeAssemblyExposesPackageIdentity()
+        {
+            Assert.That(MmdRuntimeInfo.PackageName, Is.EqualTo("com.yohawing.mmd-loader"));
+            Assert.That(MmdRuntimeInfo.RuntimeBaseline, Is.EqualTo("Phase1"));
+        }
+
+        [Test]
+        public void BasicPlaybackSampleAssetsParse()
+        {
+            string sampleRoot = Path.Combine(MmdTestFixtures.PackageRoot, "Samples~", "BasicPlayback", "Assets");
+            string pmxPath = Path.Combine(sampleRoot, "mmt_test_model.pmx");
+            string vmdPath = Path.Combine(sampleRoot, "mmt_test_model_test_motion.vmd");
+            string timelinePath = Path.Combine(sampleRoot, "BasicSampleTimeline.playable");
+            string scenePath = Path.Combine(sampleRoot, "BasicPlayback.unity");
+            Assert.That(pmxPath, Does.Exist, "BasicPlayback sample PMX must be bundled.");
+            Assert.That(vmdPath, Does.Exist, "BasicPlayback sample VMD must be bundled.");
+            Assert.That(timelinePath, Does.Exist, "BasicPlayback sample Timeline must be bundled.");
+            Assert.That(scenePath, Does.Exist, "ready-to-play BasicPlayback scene must be bundled.");
+            Assert.That(File.ReadAllText(timelinePath), Does.Contain("MMT Test Motion (VMD)"),
+                "BasicPlayback Timeline must contain the bundled VMD motion.");
+            Assert.That(File.ReadAllText(scenePath), Does.Contain("Basic Timeline"),
+                "BasicPlayback scene must retain the Timeline director object.");
+            Assert.That(File.ReadAllText(scenePath), Does.Contain("m_InitialState: 1"),
+                "BasicPlayback Timeline must play automatically when the scene starts.");
+
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+            MmdMotionDefinition motion = parser.LoadMotion(File.ReadAllBytes(vmdPath));
+
+            Assert.That(model.vertices.Count, Is.GreaterThan(0), "sample PMX vertices");
+            Assert.That(model.bones.Count, Is.GreaterThan(0), "sample PMX bones");
+            Assert.That(model.materials.Count, Is.GreaterThan(0), "sample PMX materials");
+            Assert.That(motion.boneKeyframes.Count, Is.GreaterThan(0), "sample VMD bone keyframes");
+        }
+
+        [Test]
+        public void HumanoidPlaybackSampleBundlesSourceAndGeneratedWorkflow()
+        {
+            string sampleRoot = Path.Combine(MmdTestFixtures.PackageRoot, "Samples~", "HumanoidPlayback");
+            string assetsRoot = Path.Combine(sampleRoot, "Assets");
+            string pmxPath = Path.Combine(assetsRoot, "HumanoidSampleModel.pmx");
+            string fbxPath = Path.Combine(assetsRoot, "TaisouMocap.fbx");
+            string fbxMetaPath = fbxPath + ".meta";
+            string pmxMetaPath = pmxPath + ".meta";
+            string timelinePath = Path.Combine(assetsRoot, "HumanoidSampleTimeline.playable");
+            string scenePath = Path.Combine(assetsRoot, "HumanoidPlayback.unity");
+            string provenancePath = Path.Combine(sampleRoot, "ASSET_PROVENANCE.md");
+
+            Assert.That(pmxPath, Does.Exist, "Humanoid sample PMX source");
+            Assert.That(fbxPath, Does.Exist, "Humanoid sample FBX motion");
+            Assert.That(timelinePath, Does.Exist, "Humanoid Timeline Asset");
+            Assert.That(scenePath, Does.Exist, "ready-to-play Humanoid scene");
+            Assert.That(provenancePath, Does.Exist, "redistribution provenance");
+            const string expectedFbxSha256 = "972E72E6AF8B0C7D32B4762EB7180395BCF6BAC03ADCF5BE27EA95AE8B655753";
+            using (SHA256 sha256 = SHA256.Create())
+            using (FileStream stream = File.OpenRead(fbxPath))
+            {
+                string actualHash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", string.Empty);
+                Assert.That(actualHash, Is.EqualTo(expectedFbxSha256), "provenance must identify the bundled FBX bytes");
+            }
+            string provenance = Regex.Replace(File.ReadAllText(provenancePath), @"\s+", " ");
+            Assert.That(provenance, Does.Contain(expectedFbxSha256));
+            Assert.That(provenance, Does.Contain("39.733-second"));
+            Assert.That(provenance, Does.Contain("only for conversion-contract checks"));
+            Assert.That(File.ReadAllText(pmxMetaPath), Does.Contain("animationType: 2"),
+                "sample PMX importer metadata must request Humanoid");
+            Assert.That(File.ReadAllText(fbxMetaPath), Does.Contain("animationType: 3"),
+                "sample FBX importer metadata must request Humanoid animation");
+            string timeline = File.ReadAllText(timelinePath);
+            Assert.That(timeline, Does.Contain("m_Duration: 39.73333740234375"),
+                "Timeline must retain the full practical motion duration");
+            Assert.That(timeline, Does.Contain("Taisou Mocap (FBX)"),
+                "Timeline must use the practical FBX motion rather than the short VMD fixture bake");
+            Assert.That(timeline, Does.Contain("guid: f63f3dd549969bd4c89c90a26054020c"),
+                "Timeline clip must reference TaisouMocap.fbx");
+            Assert.That(timeline, Does.Not.Contain("proxyAnimator:"),
+                "Humanoid Timeline clips must derive their Animator from the track-bound playback controller");
+            string scene = File.ReadAllText(scenePath);
+            Assert.That(scene, Does.Contain("Humanoid Timeline"),
+                "scene must retain the Timeline director object");
+            Assert.That(scene, Does.Contain("m_PlayableAsset: {fileID: 11400000, guid: 14448a896038bd649a6f42098dcdb42d, type: 2}"),
+                "scene director must reference the bundled Timeline");
+            Assert.That(scene, Does.Contain("m_InitialState: 1"),
+                "ready-to-play Timeline must start automatically");
+
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+            Assert.That(model.vertices.Count, Is.GreaterThan(0), "Humanoid sample PMX vertices");
+            Assert.That(model.bones.Count, Is.GreaterThan(0), "Humanoid sample PMX bones");
+        }
+
+        [Test]
+        public void UnityToonShaderAdapterSampleIsOptionalAndImportable()
+        {
+            string packageRoot = MmdTestFixtures.PackageRoot;
+            string sampleRoot = Path.Combine(packageRoot, "Samples~", "UnityToonShaderAdapter");
+            string sourcePath = Path.Combine(sampleRoot, "Assets", "UnityToonShaderAdapter.cs");
+            string profileSourcePath = Path.Combine(sampleRoot, "Assets", "UnityToonShaderMaterialProfile.cs");
+            string assemblyPath = Path.Combine(sampleRoot, "Assets", "Mmd.UnityToonShaderAdapter.asmdef");
+            string testsAssemblyPath = Path.Combine(sampleRoot, "Tests", "Mmd.UnityToonShaderAdapter.Tests.asmdef");
+            string readmePath = Path.Combine(sampleRoot, "README.md");
+            string packageJsonPath = Path.Combine(packageRoot, "package.json");
+
+            Assert.That(sourcePath, Does.Exist, "UTS adapter source must be bundled in the sample.");
+            Assert.That(profileSourcePath, Does.Exist, "UTS material profile factory must be bundled in the sample.");
+            Assert.That(assemblyPath, Does.Exist, "UTS adapter sample must define an importable assembly.");
+            Assert.That(testsAssemblyPath, Does.Exist, "UTS adapter conversion/schema tests must be bundled.");
+            Assert.That(readmePath, Does.Exist, "UTS adapter limitations must be documented.");
+
+            string source = File.ReadAllText(sourcePath);
+            string profileSource = File.ReadAllText(profileSourcePath);
+            string assembly = File.ReadAllText(assemblyPath);
+            string readme = File.ReadAllText(readmePath);
+            string packageJson = File.ReadAllText(packageJsonPath);
+            Assert.That(packageJson, Does.Contain("Samples~/UnityToonShaderAdapter"));
+            Assert.That(assembly, Does.Not.Contain("com.unity.toonshader"),
+                "the adapter assembly must not take a compile-time UTS dependency");
+            Assert.That(source, Does.Contain("Shader.Find(ExpectedShaderName)"),
+                "UTS must be resolved at runtime when no shader is injected");
+            Assert.That(source, Does.Contain("UTS_FALLBACK_MMD_TOON"),
+                "the all-slots fallback must be explicit");
+            Assert.That(profileSource, Does.Contain("MmdMaterialProfileAsset.CurrentSchemaVersion"),
+                "the UTS profile must pin the loader profile schema");
+            Assert.That(profileSource, Does.Contain("UTS_PROFILE_FALLBACK_MMD_TOON"),
+                "the profile factory must fail closed when UTS is unavailable");
+            Assert.That(readme, Does.Contain("Custom Material Profile"),
+                "the sample must document the importer profile connection");
+        }
+
+        [Test]
+        public void PhysicsDescriptorValidatorRejectsUnsupportedRigidbodyShape()
+        {
+            var model = new MmdModelDefinition();
+            model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+            {
+                index = 0,
+                name = "bad shape",
+                shapeType = "cube",
+                size = new[] { 1.0f, 1.0f, 1.0f },
+                position = new[] { 0.0f, 0.0f, 0.0f },
+                rotation = new[] { 0.0f, 0.0f, 0.0f },
+                mass = 1.0f,
+                linearDamping = 0.0f,
+                angularDamping = 0.0f,
+                friction = 0.5f,
+                restitution = 0.0f,
+                group = 0,
+                mask = 0xffff,
+                physicsKind = "dynamic"
+            });
+
+            string[] errors = MmdPhysicsDescriptorValidator.Validate(model).ToArray();
+
+            Assert.That(errors, Does.Contain("rigidbody shapeType is unsupported: 0 -> cube"));
+        }
+
+        [Test]
+        public void PhysicsDescriptorValidatorRejectsJointWithBothWorldAnchorEndpoints()
+        {
+            var model = new MmdModelDefinition();
+            model.physics.joints.Add(new MmdJointDefinition
+            {
+                index = 7,
+                name = "bad-world-anchor",
+                rigidbodyAIndex = -1,
+                rigidbodyBIndex = -1,
+                position = new[] { 0.0f, 0.0f, 0.0f },
+                rotation = new[] { 0.0f, 0.0f, 0.0f },
+                linearLowerLimit = new[] { 0.0f, 0.0f, 0.0f },
+                linearUpperLimit = new[] { 0.0f, 0.0f, 0.0f },
+                angularLowerLimit = new[] { 0.0f, 0.0f, 0.0f },
+                angularUpperLimit = new[] { 0.0f, 0.0f, 0.0f },
+                linearSpring = new[] { 0.0f, 0.0f, 0.0f },
+                angularSpring = new[] { 0.0f, 0.0f, 0.0f }
+            });
+
+            string[] errors = MmdPhysicsDescriptorValidator.Validate(model).ToArray();
+
+            Assert.That(errors, Does.Contain("joint has both rigidbody endpoints set to -1 (unsupported world-anchored joint): 7"));
+        }
+
+        [Test]
+        public void FrameEvaluatorEmitsRenderingFacingSnapshot()
+        {
+            byte[] pmxBytes = MmdTestFixtures.ReadFixtureAssetBytes("test_1bone_cube.pmx");
+            byte[] vmdBytes = MmdTestFixtures.ReadFixtureAssetBytes("test_1bone_cube_motion.vmd");
+
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(pmxBytes);
+            MmdMotionDefinition motion = parser.LoadMotion(vmdBytes);
+
+            MmdEvaluatedFrame frame = MmdRuntimeFrameEvaluator.EvaluatePhaseOneFrame(model, motion, frame: 0, time: 0.0f);
+
+            Assert.That(frame.bones, Has.Count.GreaterThanOrEqualTo(1));
+            Assert.That(frame.bones[0].worldMatrix, Has.Length.EqualTo(16));
+            Assert.That(frame.bones[0].localPosition, Has.Length.GreaterThanOrEqualTo(3));
+            Assert.That(frame.bones[0].localRotation, Has.Length.GreaterThanOrEqualTo(4));
+        }
+
+        [Test]
+        public void RenderingDescriptorAllowsDuplicateMorphNamesForLocalCompatibility()
+        {
+            var model = new MmdModelDefinition();
+            model.bones.Add(new MmdBoneDefinition
+            {
+                index = 0,
+                name = "root",
+                parentIndex = -1,
+                origin = new[] { 0.0f, 0.0f, 0.0f }
+            });
+            model.vertices.Add(new MmdVertexDefinition
+            {
+                index = 0,
+                position = new[] { 0.0f, 0.0f, 0.0f },
+                normal = new[] { 0.0f, 1.0f, 0.0f },
+                uv = new[] { 0.0f, 0.0f },
+                boneIndices = new[] { 0 },
+                boneWeights = new[] { 1.0f }
+            });
+            model.indices.AddRange(new[] { 0, 0, 0 });
+            model.materials.Add(new MmdMaterialDefinition { index = 0, name = "mat", vertexCount = 3 });
+            model.morphs.Add(new MmdMorphDefinition { index = 0, name = "duplicate", type = "vertex" });
+            model.morphs.Add(new MmdMorphDefinition { index = 1, name = "duplicate", type = "vertex" });
+
+            MmdRenderingDescriptor descriptor = MmdRenderingDescriptorBuilder.Build(model);
+
+            Assert.That(descriptor.vertexMorphs, Has.Count.EqualTo(2));
+            Assert.That(descriptor.vertexMorphs[0].morphName, Is.EqualTo("duplicate"));
+            Assert.That(descriptor.vertexMorphs[1].morphName, Is.EqualTo("duplicate"));
+        }
+
+        [Test]
+        public void PlaybackSnapshotCombinesFrameAndRenderingInputs()
+        {
+            (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+
+            MmdPlaybackSnapshot snapshot = MmdPlaybackSnapshotBuilder.BuildPhaseOneSnapshot(model, motion, frame: 0, time: 0.0f);
+
+            Assert.That(snapshot.frame.bones, Has.Count.GreaterThan(0));
+            Assert.That(snapshot.frame.bones[0].worldMatrix, Has.Length.EqualTo(16));
+            Assert.That(snapshot.rendering.vertices, Has.Count.GreaterThan(0));
+            Assert.That(snapshot.rendering.indices, Has.Count.GreaterThan(0));
+            Assert.That(snapshot.rendering.materials, Has.Count.GreaterThan(0));
+            Assert.That(snapshot.rendering.urpMaterialBindings, Has.Count.EqualTo(snapshot.rendering.materials.Count));
+        }
+
+        [Test]
+        public void RuntimeSessionBuildsSnapshotFromNativeIr()
+        {
+            (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+            var session = new MmdRuntimeSession(
+                model,
+                motion,
+                "test_1bone_cube.pmx",
+                "test_1bone_cube_motion.vmd");
+
+            MmdPlaybackSnapshot snapshot = session.BuildSnapshot(frame: 0, time: 0.0f);
+            Assert.That(snapshot.rendering.indices, Has.Count.GreaterThan(0));
+            Assert.That(snapshot.frame.bones, Has.Count.GreaterThan(0));
+            Assert.That(snapshot.frame.bones[0].worldMatrix, Has.Length.EqualTo(16));
+        }
+
+        [Test]
+        public void RuntimeSessionEvaluatesFractionalPlaybackTime()
+        {
+            const float frameRate = 30.0f;
+            const float evaluationFrame = 10.25f;
+            float time = evaluationFrame / frameRate;
+            byte[] pmxBytes = MmdTestFixtures.ReadFixtureAssetBytes("test_1bone_cube.pmx");
+            byte[] vmdBytes = MmdTestFixtures.ReadFixtureAssetBytes("test_1bone_cube_motion.vmd");
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(pmxBytes);
+            MmdMotionDefinition motion = parser.LoadMotion(vmdBytes);
+
+            using var session = new MmdRuntimeSession(
+                model,
+                motion,
+                "test_1bone_cube.pmx",
+                "test_1bone_cube_motion.vmd");
+            MmdEvaluatedFrame actual = session.EvaluateFrameAtTime(time, frameRate);
+
+            using var native = MmdRuntimeFfiPlaybackSession.Create(pmxBytes, vmdBytes);
+            var expectedWorld = new float[native.WorldMatrixFloatCount];
+            var expectedMorphs = new float[native.MorphWeightCount];
+            var expectedIk = new byte[native.IkEnabledCount];
+            native.EvaluateAndCopy(
+                evaluationFrame,
+                expectedWorld,
+                expectedMorphs,
+                expectedIk);
+
+            var integerWorld = new float[native.WorldMatrixFloatCount];
+            var integerMorphs = new float[native.MorphWeightCount];
+            var integerIk = new byte[native.IkEnabledCount];
+            native.EvaluateAndCopy(
+                actual.frame,
+                integerWorld,
+                integerMorphs,
+                integerIk);
+            CollectionAssert.AreNotEqual(expectedWorld, integerWorld);
+
+            MmdEvaluatedFrame expected = MmdRuntimeFrameEvaluator.BuildFrameFromNative(
+                model,
+                frame: 10,
+                time: time,
+                nativeWorldMatrices: expectedWorld,
+                nativeMorphWeights: expectedMorphs,
+                includeMaterials: false);
+            Assert.That(actual.frame, Is.EqualTo(10));
+            Assert.That(actual.time, Is.EqualTo(time).Within(0.00001f));
+            CollectionAssert.AreEqual(
+                expected.bones[0].worldMatrix,
+                actual.bones[0].worldMatrix);
+        }
+
+        [Test]
+        public void TransformBakeSummaryUsesNativeSourceBackedFramesWhenPhysicsIsOff()
+        {
+            (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+            using var session = new MmdRuntimeSession(
+                model,
+                motion,
+                "test_1bone_cube.pmx",
+                "test_1bone_cube_motion.vmd");
+
+            MmdAnimationBakeSummary summary = session.BuildTransformBakeSummary(
+                startFrame: 0,
+                endFrame: 2,
+                frameRate: 30.0f);
+
+            Assert.That(summary.bakedFrameCount, Is.EqualTo(3));
+            Assert.That(summary.boneCurves, Is.Not.Empty);
+            Assert.That(summary.boneCurves[0].positionKeys, Has.Count.EqualTo(3));
+            Assert.That(summary.boneCurves[0].rotationKeys, Has.Count.EqualTo(3));
+            Assert.That(summary.frames, Is.EqualTo(new[] { 0, 1, 2 }));
+        }
+
+        [Test]
+        public void TransformBakeSummaryRejectsChangedNativeSourceBytes()
+        {
+            (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+            using var session = new MmdRuntimeSession(
+                model,
+                motion,
+                "test_1bone_cube.pmx",
+                "test_1bone_cube_motion.vmd");
+
+            model.sourceBytes![0] ^= 0xff;
+
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                () => session.BuildTransformBakeSummary(0, 2, 30.0f))!;
+
+            Assert.That(exception.Message, Does.Contain("source bytes changed before session compilation"));
+        }
+
+        private static (MmdModelDefinition Model, MmdMotionDefinition Motion) LoadPlaybackFixturePair()
+        {
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(MmdTestFixtures.ReadFixtureAssetBytes("test_1bone_cube.pmx"));
+            MmdMotionDefinition motion = parser.LoadMotion(MmdTestFixtures.ReadFixtureAssetBytes("test_1bone_cube_motion.vmd"));
+            return (model, motion);
+        }
+
+        [Test]
+        public void GroupMorphOffsetsWithValidTargetsPassValidation()
+        {
+            var model = new MmdModelDefinition();
+            model.bones.Add(new MmdBoneDefinition
+            {
+                index = 0,
+                name = "root",
+                parentIndex = -1,
+                origin = new[] { 0.0f, 0.0f, 0.0f }
+            });
+            model.vertices.Add(new MmdVertexDefinition
+            {
+                index = 0,
+                position = new[] { 0.0f, 0.0f, 0.0f },
+                normal = new[] { 0.0f, 1.0f, 0.0f },
+                uv = new[] { 0.0f, 0.0f },
+                boneIndices = new[] { 0 },
+                boneWeights = new[] { 1.0f }
+            });
+            model.indices.AddRange(new[] { 0, 0, 0 });
+            model.materials.Add(new MmdMaterialDefinition { index = 0, name = "mat", vertexCount = 3 });
+
+            // Create a vertex morph target
+            model.morphs.Add(new MmdMorphDefinition
+            {
+                index = 0,
+                name = "target-morph",
+                type = "vertex",
+                vertexOffsets =
+                {
+                    new MmdVertexMorphOffsetDefinition { vertexIndex = 0, positionDelta = new[] { 0.0f, 0.1f, 0.0f } }
+                }
+            });
+
+            // Create a group morph that references target-morph
+            model.morphs.Add(new MmdMorphDefinition
+            {
+                index = 1,
+                name = "group-morph",
+                type = "group",
+                groupOffsets =
+                {
+                    new MmdGroupMorphOffsetDefinition { morphIndex = 0, weight = 0.5f }
+                }
+            });
+
+            // Should not throw
+            Assert.DoesNotThrow(() => MmdModelValidator.ThrowIfInvalid(model));
+        }
+
+        [Test]
+        public void GroupMorphOffsetsNonExistentTargetRejected()
+        {
+            var model = new MmdModelDefinition();
+            model.bones.Add(new MmdBoneDefinition
+            {
+                index = 0,
+                name = "root",
+                parentIndex = -1,
+                origin = new[] { 0.0f, 0.0f, 0.0f }
+            });
+            model.morphs.Add(new MmdMorphDefinition
+            {
+                index = 0,
+                name = "bad-group",
+                type = "group",
+                groupOffsets =
+                {
+                    new MmdGroupMorphOffsetDefinition { morphIndex = 99, weight = 0.5f }
+                }
+            });
+
+            var errors = MmdModelValidator.ValidateStructuralModel(model);
+            Assert.That(errors, Has.Some.Matches<string>(msg => msg.Contains("does not exist")));
+        }
+
+        [Test]
+        public void MorphTypeInventoryExposesGroupOffsetCount()
+        {
+            var model = new MmdModelDefinition();
+            model.bones.Add(new MmdBoneDefinition
+            {
+                index = 0,
+                name = "root",
+                parentIndex = -1,
+                origin = new[] { 0.0f, 0.0f, 0.0f }
+            });
+            model.vertices.Add(new MmdVertexDefinition
+            {
+                index = 0,
+                position = new[] { 0.0f, 0.0f, 0.0f },
+                normal = new[] { 0.0f, 1.0f, 0.0f },
+                uv = new[] { 0.0f, 0.0f },
+                boneIndices = new[] { 0 },
+                boneWeights = new[] { 1.0f }
+            });
+            model.indices.AddRange(new[] { 0, 0, 0 });
+            model.materials.Add(new MmdMaterialDefinition { index = 0, name = "mat", vertexCount = 3 });
+            model.morphs.Add(new MmdMorphDefinition
+            {
+                index = 0,
+                name = "target",
+                type = "vertex",
+                vertexOffsets =
+                {
+                    new MmdVertexMorphOffsetDefinition { vertexIndex = 0, positionDelta = new[] { 0.0f, 0.1f, 0.0f } }
+                }
+            });
+            model.morphs.Add(new MmdMorphDefinition
+            {
+                index = 1,
+                name = "group",
+                type = "group",
+                groupOffsets =
+                {
+                    new MmdGroupMorphOffsetDefinition { morphIndex = 0, weight = 0.5f },
+                    new MmdGroupMorphOffsetDefinition { morphIndex = 0, weight = 1.0f }
+                }
+            });
+
+            IReadOnlyList<MmdMorphTypeInventoryDescriptor> inventory = MmdMorphDescriptorBuilder.BuildTypeInventory(model);
+
+            MmdMorphTypeInventoryDescriptor groupRecord = inventory.Single(record => record.morphType == "group");
+            Assert.That(groupRecord.groupOffsetCount, Is.EqualTo(2));
+            Assert.That(groupRecord.vertexOffsetCount, Is.EqualTo(0));
+            Assert.That(groupRecord.normalizedFamily, Is.EqualTo("composite"));
+            Assert.That(groupRecord.supportStatus, Is.EqualTo(MmdMorphDescriptorBuilder.InventoryOnlyStatus));
+        }
+
+    }
+}

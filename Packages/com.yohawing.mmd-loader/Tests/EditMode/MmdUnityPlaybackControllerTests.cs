@@ -1,0 +1,2883 @@
+#nullable enable
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.TestTools;
+using Mmd.Editor;
+using Mmd.Native;
+using Mmd.Parser;
+using Mmd.Physics;
+using Mmd.Rendering;
+using Mmd.UnityIntegration;
+using Object = UnityEngine.Object;
+
+namespace Mmd.Tests
+{
+    public sealed class MmdUnityPlaybackControllerTests
+    {
+        [Test]
+        public void PlaybackControllerDisallowsMultipleComponentsOnOneGameObject()
+        {
+            Assert.That(
+                Attribute.IsDefined(typeof(MmdUnityPlaybackController), typeof(DisallowMultipleComponent)),
+                Is.True);
+        }
+
+        private const string SyntheticControllerModelName = "minimal-controller-triangle";
+        private const string PlaybackPmxId = "test_1bone_cube.pmx";
+        private const string PlaybackVmdId = "test_1bone_cube_motion.vmd";
+        private const int LivePhysicsPlaybackFrame = 10;
+
+        [Test]
+        public void PoseAppliedPublishesSuccessfulPoseAndIsolatesSubscriberFailure()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                binding = CreatePlaybackBinding();
+                MmdUnityPlaybackController controller =
+                    binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                int mainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+                int callbackCount = 0;
+                int callbackThreadId = -1;
+                bool snapshotWasPublished = false;
+                MmdPlaybackSnapshot? callbackSnapshot = null;
+                controller.PoseApplied += snapshot =>
+                {
+                    callbackCount++;
+                    callbackThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+                    callbackSnapshot = snapshot;
+                    snapshotWasPublished = ReferenceEquals(controller.LastSnapshot, snapshot);
+                };
+
+                MmdPlaybackSnapshot applied = controller.ApplyFrame(1);
+
+                Assert.That(callbackCount, Is.EqualTo(1));
+                Assert.That(callbackThreadId, Is.EqualTo(mainThreadId));
+                Assert.That(callbackSnapshot, Is.SameAs(applied));
+                Assert.That(snapshotWasPublished, Is.True);
+
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                int countAfterLiveSeed = callbackCount;
+                controller.ApplyFrame(0);
+                Assert.That(
+                    callbackCount,
+                    Is.EqualTo(countAfterLiveSeed),
+                    "A cached Live pose must not be published as a new application.");
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                controller.PoseApplied += _ => throw new InvalidOperationException("pose hook failure");
+                LogAssert.Expect(
+                    LogType.Exception,
+                    new System.Text.RegularExpressions.Regex("InvalidOperationException: pose hook failure"));
+                Assert.DoesNotThrow(() => controller.ApplyFrame(2));
+                Assert.That(controller.LastSnapshot!.frame.frame, Is.EqualTo(2));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void IkIterationCapDefaultsToCompatibilityAndPropagatesToPhysicsOffVmdEvaluation()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                binding = CreatePlaybackBinding();
+                MmdUnityPlaybackController controller =
+                    binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+
+                Assert.That(controller.IkMaxIterationsCap, Is.Zero);
+                Assert.That(binding.IkMaxIterationsCap, Is.Zero);
+                Assert.That(() => controller.IkMaxIterationsCap = -1,
+                    Throws.TypeOf<ArgumentOutOfRangeException>());
+
+                controller.IkMaxIterationsCap = 4;
+                controller.Configure(binding, 30.0f);
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                Assert.That(binding.IkMaxIterationsCap, Is.EqualTo(4));
+                Assert.DoesNotThrow(() => controller.ApplyFrame(1),
+                    "A positive cap must use the VMD with-options entrypoint even when physics is Off.");
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void PositiveIkIterationCapRejectsUnsupportedHumanoidPhysicsOffCombination()
+        {
+            var root = new GameObject("humanoid-ik-cap-off");
+            try
+            {
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                controller.IkMaxIterationsCap = 4;
+                var binding = new MmdHumanoidRetargetBinding(
+                    HumanBodyBones.Hips,
+                    0,
+                    root.transform,
+                    root.transform);
+
+                Assert.That(
+                    () => controller.ConfigureHumanoidRetarget(
+                        root.transform,
+                        new[] { binding },
+                        Array.Empty<MmdHumanoidAppendTransformBinding>()),
+                    Throws.TypeOf<NotSupportedException>()
+                        .With.Message.Contains("Physics Mode is Off"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void SerializedNegativeIkIterationCapClampsToCompatibilityDefault()
+        {
+            var root = new GameObject("serialized-ik-cap");
+            try
+            {
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+                var serializedController = new SerializedObject(controller);
+                serializedController.FindProperty("ikMaxIterationsCap").intValue = -3;
+                serializedController.ApplyModifiedPropertiesWithoutUndo();
+
+                typeof(MmdUnityPlaybackController)
+                    .GetMethod("OnValidate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(controller, null);
+
+                Assert.That(controller.IkMaxIterationsCap, Is.Zero);
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void ConfigureWithPlaybackConfigAppliesFrameRateAndPlayOnStart_ControllerPhysicsIsSourceOfTruth()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                // Note: MmdPlaybackConfig no longer carries PhysicsMode; controller.physicsMode (default Live) is the source of truth for normal playback.
+                var config = new MmdPlaybackConfig(
+                    frameRate: 24.0f,
+                    initialFrame: 0,
+                    playOnStart: false);
+
+                controller.Configure(binding, config);
+
+                Assert.That(controller.FrameRate, Is.EqualTo(24.0f));
+                Assert.That(controller.PlayOnStart, Is.False);
+                Assert.That(controller.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Live)); // controller default
+                Assert.That(binding.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Live));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.frame, Is.EqualTo(0));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void ConfigureWithPlaybackConfigKeepsControllerPhysicsModeAsSourceOfTruth()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off); // explicit set on controller is the only way
+                var config = new MmdPlaybackConfig(
+                    frameRate: 24.0f,
+                    initialFrame: 0,
+                    playOnStart: false);
+                // config no longer owns or provides PhysicsMode
+
+                controller.Configure(binding, config);
+
+                Assert.That(controller.FrameRate, Is.EqualTo(24.0f));
+                Assert.That(controller.PlayOnStart, Is.False);
+                Assert.That(controller.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Off));
+                Assert.That(binding.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Off));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void PlaybackSourceConfigureKeepsControllerLivePhysicsMode()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(pmxBytes);
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                controller.ConfigureModelAsset(pmxAsset);
+                controller.ConfigureMotionAsset(vmdAsset);
+
+                bool configured = controller.ConfigureFromPlaybackSourceIfAvailable();
+
+                Assert.That(configured, Is.True);
+                Assert.That(controller.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Live));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void CreateSkinnedWithSuppliedInstanceAppliesPmxAssetMaterialOverride()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdMaterialOverrideAsset? overrideAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackBinding? binding = null;
+            Material? originalMaterial = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(pmxBytes);
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                previewInstance.RenderingDescriptor.urpMaterialBindings[0].shaderName = "Custom Borrowed Shader";
+                originalMaterial = previewInstance.Materials[0];
+                SkinnedMeshRenderer renderer = previewInstance.SkinnedMeshRenderer!;
+                Mesh originalMesh = renderer.sharedMesh!;
+                Transform borrowedBone = previewInstance.BoneTransforms[0];
+                borrowedBone.localPosition += new Vector3(1.0f, 2.0f, 3.0f);
+                borrowedBone.localRotation = Quaternion.Euler(0.0f, 45.0f, 0.0f);
+                borrowedBone.localScale = new Vector3(1.2f, 0.8f, 1.1f);
+                Vector3 originalBonePosition = borrowedBone.localPosition;
+                Quaternion originalBoneRotation = borrowedBone.localRotation;
+                Vector3 originalBoneScale = borrowedBone.localScale;
+                Transform? originalRootBone = renderer.rootBone;
+                Bounds originalLocalBounds = renderer.localBounds;
+
+                overrideAsset = ScriptableObject.CreateInstance<MmdMaterialOverrideAsset>();
+                overrideAsset.entries = new[]
+                {
+                    new MmdMaterialOverrideEntry
+                    {
+                        materialIndex = 0,
+                        hasAlpha = true,
+                        alpha = 0.45f
+                    }
+                };
+
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(
+                    pmxBytes,
+                    "test_1bone_cube.pmx",
+                    pmxPath,
+                    assetImportScale: 1.0f,
+                    importedMaterialOverrideAsset: overrideAsset);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+
+                binding = MmdUnityPlaybackBinding.CreateSkinned(previewInstance, pmxAsset, vmdAsset);
+                binding.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                Assert.That(binding.Instance, Is.SameAs(previewInstance));
+                Assert.That(binding.PlaybackInstance, Is.Not.SameAs(previewInstance));
+                Assert.That(binding.Instance.Root, Is.SameAs(previewInstance.Root));
+                Assert.That(binding.PlaybackInstance.Mesh, Is.SameAs(originalMesh));
+                Assert.That(renderer.sharedMesh, Is.SameAs(binding.PlaybackInstance.Mesh));
+                Assert.That(binding.PlaybackInstance.BindLocalPositions, Is.EqualTo(previewInstance.BindLocalPositions));
+                Assert.That(binding.PlaybackInstance.BindLocalRotations, Is.EqualTo(previewInstance.BindLocalRotations));
+                Assert.That(binding.PlaybackInstance.RenderingDescriptor.materials[0].alpha, Is.EqualTo(0.45f).Within(0.00001f));
+                Assert.That(binding.PlaybackInstance.RenderingDescriptor.urpMaterialBindings[0].alpha, Is.EqualTo(0.45f).Within(0.00001f));
+                Assert.That(binding.PlaybackInstance.RenderingDescriptor.urpMaterialBindings[0].isTransparent, Is.True);
+                Assert.That(binding.PlaybackInstance.RenderingDescriptor.urpMaterialBindings[0].shaderName, Is.EqualTo("Custom Borrowed Shader"));
+                Assert.That(previewInstance.RenderingDescriptor.urpMaterialBindings[0].shaderName, Is.EqualTo("Custom Borrowed Shader"));
+                Assert.That(previewInstance.RenderingDescriptor.urpMaterialBindings[0].alpha, Is.EqualTo(1.0f).Within(0.00001f));
+                Assert.That(binding.PlaybackInstance.Materials[0], Is.Not.SameAs(originalMaterial));
+                Assert.That(ReadMaterialFloat(binding.PlaybackInstance.Materials[0], MmdMaterialPropertyNames.Alpha), Is.EqualTo(0.45f).Within(0.00001f));
+                Assert.That(ReadMaterialFloat(originalMaterial!, MmdMaterialPropertyNames.Alpha), Is.EqualTo(1.0f).Within(0.00001f));
+                Assert.That(binding.PlaybackInstance.Materials[0].renderQueue, Is.EqualTo((int)UnityEngine.Rendering.RenderQueue.Transparent));
+                Assert.That(binding.PlaybackInstance.MaterialBindingDiagnostics[0].isTransparent, Is.True);
+                Assert.That(binding.PlaybackInstance.MaterialBindingDiagnostics[0].renderQueue, Is.EqualTo((int)UnityEngine.Rendering.RenderQueue.Transparent));
+                binding.ApplyFrame(9, 30.0f);
+                Assert.That(Quaternion.Angle(borrowedBone.localRotation, originalBoneRotation), Is.GreaterThan(0.1f));
+
+                binding.Dispose();
+                Assert.That(binding.Instance, Is.SameAs(previewInstance));
+                Assert.That(binding.PlaybackInstance, Is.SameAs(previewInstance));
+                Assert.That(renderer.sharedMesh, Is.SameAs(originalMesh));
+                Assert.That(renderer.sharedMaterials[0], Is.SameAs(originalMaterial));
+                Assert.That(renderer.rootBone, Is.SameAs(originalRootBone));
+                Assert.That(renderer.localBounds, Is.EqualTo(originalLocalBounds));
+                Assert.That(borrowedBone.localPosition, Is.EqualTo(originalBonePosition));
+                Assert.That(borrowedBone.localRotation, Is.EqualTo(originalBoneRotation));
+                Assert.That(borrowedBone.localScale, Is.EqualTo(originalBoneScale));
+                binding = null;
+            }
+            finally
+            {
+                binding?.Dispose();
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+                Object.DestroyImmediate(overrideAsset);
+            }
+        }
+
+        [Test]
+        public void CreateSkinnedWithSuppliedInstancePreservesMaterialRemapSlots()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdMaterialOverrideAsset? overrideAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackBinding? binding = null;
+            Material? originalMaterial = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(pmxBytes);
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                originalMaterial = previewInstance.Materials[0];
+                Material remapMaterial = new Material(originalMaterial)
+                {
+                    name = "remapped_body"
+                };
+                remapMaterial.SetFloat(MmdMaterialPropertyNames.Alpha, 0.8f);
+                remapMaterial.SetFloat("_OutlineWidth", 0.4f);
+                remapMaterial.SetFloat("_OutlineScreenSpaceWeight", 0.0f);
+                previewInstance.Materials[0] = remapMaterial;
+                previewInstance.SkinnedMeshRenderer!.sharedMaterials = previewInstance.Materials;
+
+                overrideAsset = ScriptableObject.CreateInstance<MmdMaterialOverrideAsset>();
+                overrideAsset.entries = new[]
+                {
+                    new MmdMaterialOverrideEntry
+                    {
+                        materialIndex = 0,
+                        hasAlpha = true,
+                        alpha = 0.45f
+                    }
+                };
+
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(
+                    pmxBytes,
+                    "test_1bone_cube.pmx",
+                    pmxPath,
+                    assetImportScale: 1.0f,
+                    materialRemapAssets: new[] { remapMaterial },
+                    importedMaterialAssets: new[] { originalMaterial },
+                    importedMaterialOverrideAsset: overrideAsset);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+
+                binding = MmdUnityPlaybackBinding.CreateSkinned(previewInstance, pmxAsset, vmdAsset);
+                binding.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                Assert.That(binding.Instance, Is.SameAs(previewInstance));
+                Assert.That(binding.PlaybackInstance.Materials[0], Is.Not.SameAs(remapMaterial));
+                Assert.That(binding.PlaybackInstance.SkinnedMeshRenderer!.sharedMaterials[0], Is.SameAs(binding.PlaybackInstance.Materials[0]));
+                Assert.That(ReadMaterialFloat(binding.PlaybackInstance.Materials[0], MmdMaterialPropertyNames.Alpha), Is.EqualTo(0.8f).Within(0.00001f));
+                Assert.That(ReadMaterialFloat(remapMaterial, MmdMaterialPropertyNames.Alpha), Is.EqualTo(0.8f).Within(0.00001f));
+                Assert.That(ReadMaterialFloat(binding.PlaybackInstance.Materials[0], "_OutlineScreenSpaceWeight"), Is.EqualTo(0.0f).Within(0.00001f));
+                Assert.That(ReadMaterialFloat(remapMaterial, "_OutlineScreenSpaceWeight"), Is.EqualTo(0.0f).Within(0.00001f));
+
+                binding.Dispose();
+                Assert.That(binding.Instance, Is.SameAs(previewInstance));
+                Assert.That(previewInstance.SkinnedMeshRenderer!.sharedMaterials[0], Is.SameAs(remapMaterial));
+                binding = null;
+            }
+            finally
+            {
+                binding?.Dispose();
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+                Object.DestroyImmediate(overrideAsset);
+                if (originalMaterial != null)
+                {
+                    Object.DestroyImmediate(originalMaterial);
+                }
+            }
+        }
+
+        [Test]
+        public void PmxAssetShaderPresetReachesOwnedPlaybackMaterials()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityPlaybackBinding? binding = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(
+                    File.ReadAllBytes(pmxPath),
+                    "test_1bone_cube.pmx",
+                    pmxPath,
+                    assetImportScale: 1.0f,
+                    assetShaderPreset: "MMD URP Toon");
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+
+                binding = MmdUnityPlaybackBinding.CreateSkinned(pmxAsset, vmdAsset);
+
+                Assert.That(binding.Instance.Materials[0].shader, Is.Not.Null);
+                Assert.That(binding.Instance.Materials[0].shader.name, Is.EqualTo("MMD URP Toon"));
+            }
+            finally
+            {
+                binding?.Dispose();
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void BorrowedPlaybackUsesImportedMaterialsAndDoesNotAccumulatePlaybackNames()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackController? controller = null;
+            Material? importedMaterial = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(pmxBytes);
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                Material authoredMaterial = previewInstance.Materials[0];
+                Shader importedShader = Shader.Find("MMD URP Toon")
+                    ?? throw new InvalidOperationException("MMD URP Toon shader is required for the playback material source test.");
+                importedMaterial = new Material(importedShader)
+                {
+                    name = "Cheek"
+                };
+
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(
+                    pmxBytes,
+                    "test_1bone_cube.pmx",
+                    pmxPath,
+                    assetImportScale: 1.0f,
+                    assetShaderPreset: "MMD URP Toon",
+                    importedMaterialAssets: new[] { importedMaterial });
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+                controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                for (int i = 0; i < 3; i++)
+                {
+                    MmdUnityPlaybackBinding next =
+                        MmdUnityPlaybackBinding.CreateSkinned(previewInstance, pmxAsset, vmdAsset);
+                    controller.Configure(next, 30.0f, playOnStart: false);
+                    controller.ApplyFrame(0);
+
+                    Material runtimeMaterial = previewInstance.SkinnedMeshRenderer!.sharedMaterials[0];
+                    Assert.That(runtimeMaterial.shader, Is.Not.Null);
+                    Assert.That(runtimeMaterial.shader.name, Is.EqualTo("MMD URP Toon"));
+                    Assert.That(runtimeMaterial.name, Is.EqualTo("Cheek Playback"));
+                    Assert.That(runtimeMaterial, Is.Not.SameAs(importedMaterial));
+                }
+
+                controller.ReleasePlaybackResources();
+                Assert.That(previewInstance.SkinnedMeshRenderer!.sharedMaterials[0], Is.SameAs(authoredMaterial));
+            }
+            finally
+            {
+                if (controller != null)
+                {
+                    controller.ReleasePlaybackResources();
+                    Object.DestroyImmediate(controller);
+                }
+
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+                Object.DestroyImmediate(importedMaterial);
+            }
+        }
+
+        [Test]
+        public void BorrowedPlaybackNormalizesBuiltInOutlineOnActivationWithoutMutatingSource()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackBinding? binding = null;
+            Material? importedMaterial = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                Material authoredMaterial = previewInstance.Materials[0];
+                Shader importedShader = Shader.Find("MMD URP Toon")
+                    ?? throw new InvalidOperationException("MMD URP Toon shader is required for the playback material source test.");
+                importedMaterial = new Material(importedShader)
+                {
+                    name = "Stale Imported Material"
+                };
+                importedMaterial.SetFloat("_OutlineWidth", 0.4f);
+                importedMaterial.SetFloat("_OutlineScreenSpaceWeight", 0.0f);
+
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(
+                    pmxBytes,
+                    "test_1bone_cube.pmx",
+                    pmxPath,
+                    assetShaderPreset: "MMD URP Toon",
+                    importedMaterialAssets: new[] { importedMaterial });
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+
+                binding = MmdUnityPlaybackBinding.CreateSkinned(previewInstance, pmxAsset, vmdAsset);
+                binding.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                Material playbackMaterial = binding.PlaybackInstance.Materials[0];
+                Assert.That(playbackMaterial, Is.Not.SameAs(importedMaterial));
+                Assert.That(playbackMaterial.GetFloat("_OutlineWidth"), Is.EqualTo(0.4f).Within(0.00001f));
+                Assert.That(playbackMaterial.GetFloat("_OutlineScreenSpaceWeight"), Is.EqualTo(1.0f).Within(0.00001f));
+                Assert.That(importedMaterial.GetFloat("_OutlineScreenSpaceWeight"), Is.EqualTo(0.0f).Within(0.00001f));
+                Assert.That(previewInstance.SkinnedMeshRenderer!.sharedMaterials[0], Is.SameAs(playbackMaterial));
+
+                binding.Dispose();
+                binding = null;
+                Assert.That(previewInstance.SkinnedMeshRenderer!.sharedMaterials[0], Is.SameAs(authoredMaterial));
+            }
+            finally
+            {
+                binding?.Dispose();
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+                Object.DestroyImmediate(importedMaterial);
+            }
+        }
+
+        [Test]
+        public void BorrowedPlaybackPreservesCustomOutlineTargetOnActivation()
+        {
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackBinding? binding = null;
+            Material? importedMaterial = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture(PlaybackPmxId);
+                string vmdPath = ResolvePackageFixture(PlaybackVmdId);
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(pmxBytes);
+                MmdMotionDefinition motion = parser.LoadMotion(vmdBytes);
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                Shader importedShader = Shader.Find("MMD URP Toon")
+                    ?? throw new InvalidOperationException("MMD URP Toon shader is required for the playback material source test.");
+                importedMaterial = new Material(importedShader)
+                {
+                    name = "Custom Target Material"
+                };
+                importedMaterial.SetFloat("_OutlineWidth", 0.4f);
+                importedMaterial.SetFloat("_OutlineScreenSpaceWeight", 0.0f);
+                var customTargets = new MmdMaterialRenderingTargets(
+                    outlineScreenSpaceWeightProperty: "_OutlineScreenSpaceWeight",
+                    unsupportedFeatures: new[] { "custom-outline" });
+
+                binding = MmdUnityPlaybackBinding.CreateSkinnedFromExistingSceneModel(
+                    previewInstance.Root,
+                    model,
+                    motion,
+                    PlaybackPmxId,
+                    PlaybackVmdId,
+                    sourcePath: pmxPath,
+                    importedMaterials: new[] { importedMaterial },
+                    materialRenderingTargets: new[] { customTargets });
+                binding.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                Material playbackMaterial = binding.PlaybackInstance.Materials[0];
+                Assert.That(playbackMaterial.GetFloat("_OutlineScreenSpaceWeight"), Is.EqualTo(0.0f).Within(0.00001f));
+                Assert.That(importedMaterial.GetFloat("_OutlineScreenSpaceWeight"), Is.EqualTo(0.0f).Within(0.00001f));
+            }
+            finally
+            {
+                binding?.Dispose();
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(importedMaterial);
+            }
+        }
+
+        [Test]
+        public void PmxReimportRestoresBorrowedPlaybackTextureReferencesWithoutResettingColors()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackController? controller = null;
+            Material? importedMaterial = null;
+            Texture2D? importedTexture = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+
+                Shader shader = Shader.Find("MMD URP Toon")
+                    ?? throw new InvalidOperationException("MMD URP Toon shader is required for the reimport test.");
+                importedTexture = new Texture2D(1, 1) { name = "Imported Diffuse" };
+                importedMaterial = new Material(shader) { name = "Imported Material" };
+                importedMaterial.SetTexture("_BaseMap", importedTexture);
+                importedMaterial.SetTexture("_MainTex", importedTexture);
+
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(
+                    pmxBytes,
+                    "test_1bone_cube.pmx",
+                    pmxPath,
+                    assetImportScale: 1.0f,
+                    assetShaderPreset: "MMD URP Toon",
+                    importedMaterialAssets: new[] { importedMaterial });
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+
+                controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.ConfigureModelAsset(pmxAsset);
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                controller.Configure(
+                    MmdUnityPlaybackBinding.CreateSkinned(previewInstance, pmxAsset, vmdAsset),
+                    30.0f,
+                    playOnStart: false);
+                controller.ApplyFrame(0);
+
+                Material playbackMaterial = previewInstance.SkinnedMeshRenderer!.sharedMaterials[0];
+                playbackMaterial.SetTexture("_BaseMap", null);
+                playbackMaterial.SetTexture("_MainTex", null);
+                playbackMaterial.SetColor("_Color", Color.magenta);
+
+                int updatedPropertyCount =
+                    MmdPlaybackMaterialReimportSynchronizer.RefreshController(controller);
+
+                Assert.That(updatedPropertyCount, Is.EqualTo(2));
+                Assert.That(playbackMaterial.GetTexture("_BaseMap"), Is.SameAs(importedTexture));
+                Assert.That(playbackMaterial.GetTexture("_MainTex"), Is.SameAs(importedTexture));
+                Assert.That(playbackMaterial.GetColor("_Color"), Is.EqualTo(Color.magenta),
+                    "Reimport recovery must not reset unrelated playback material properties.");
+
+                playbackMaterial.SetTextureScale("_BaseMap", new Vector2(2.0f, 3.0f));
+                playbackMaterial.SetTextureOffset("_BaseMap", new Vector2(0.25f, 0.5f));
+
+                updatedPropertyCount =
+                    MmdPlaybackMaterialReimportSynchronizer.RefreshController(controller);
+
+                Assert.That(updatedPropertyCount, Is.EqualTo(1));
+                Assert.That(playbackMaterial.GetTextureScale("_BaseMap"), Is.EqualTo(Vector2.one));
+                Assert.That(playbackMaterial.GetTextureOffset("_BaseMap"), Is.EqualTo(Vector2.zero));
+
+                playbackMaterial.name = "Different Material Playback";
+                playbackMaterial.SetTexture("_BaseMap", null);
+
+                updatedPropertyCount =
+                    MmdPlaybackMaterialReimportSynchronizer.RefreshController(controller);
+
+                Assert.That(updatedPropertyCount, Is.Zero,
+                    "A structural material mismatch must fail closed instead of updating the wrong slot.");
+                Assert.That(playbackMaterial.GetTexture("_BaseMap"), Is.Null);
+            }
+            finally
+            {
+                if (controller != null)
+                {
+                    controller.ReleasePlaybackResources();
+                    Object.DestroyImmediate(controller);
+                }
+
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+                Object.DestroyImmediate(importedMaterial);
+                Object.DestroyImmediate(importedTexture);
+            }
+        }
+
+        [Test]
+        public void ReconfigureBorrowedInstanceReleasesPreviousPlaybackClonesAndRestoresAuthoredResources()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdUnityPlaybackController? controller = null;
+
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                byte[] vmdBytes = File.ReadAllBytes(vmdPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                SkinnedMeshRenderer renderer = previewInstance.SkinnedMeshRenderer!;
+                Mesh authoredMesh = renderer.sharedMesh!;
+                Material authoredMaterial = renderer.sharedMaterials[0];
+                controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(vmdBytes, "test_1bone_cube_motion.vmd", vmdPath);
+
+                Material? previousPlaybackMaterial = null;
+                for (int i = 0; i < 20; i++)
+                {
+                    MmdUnityPlaybackBinding next = MmdUnityPlaybackBinding.CreateSkinned(previewInstance, pmxAsset, vmdAsset);
+                    controller.Configure(next, 30.0f, playOnStart: false);
+
+                    if (i > 0)
+                    {
+                        Assert.That(previousPlaybackMaterial == null, Is.True, $"reconfigure {i} must destroy the previous playback Material clone");
+                    }
+
+                    Assert.That(renderer.sharedMesh, Is.SameAs(authoredMesh));
+                    Assert.That(renderer.sharedMaterials[0], Is.Not.SameAs(authoredMaterial));
+                    Assert.That(
+                        next.PlaybackInstance.RenderingDescriptor,
+                        Is.Not.SameAs(previewInstance.RenderingDescriptor));
+                    previousPlaybackMaterial = renderer.sharedMaterials[0];
+                }
+
+                controller.ReleasePlaybackResources();
+                Assert.That(renderer.sharedMesh, Is.SameAs(authoredMesh));
+                Assert.That(renderer.sharedMaterials[0], Is.SameAs(authoredMaterial));
+                Object.DestroyImmediate(controller);
+                controller = null;
+            }
+            finally
+            {
+                if (controller != null)
+                {
+                    Object.DestroyImmediate(controller);
+                }
+
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void BorrowedMutationLeaseRestoresPhysicsBodyReadbackState()
+        {
+            MmdUnityModelInstance? previewInstance = null;
+            MmdBorrowedSceneMutationLease? lease = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_hair_physics.pmx");
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                Assert.That(previewInstance.PhysicsBodies, Is.Not.Empty);
+                MmdUnityPhysicsBody body = previewInstance.PhysicsBodies[0];
+                Assert.That(body.HasNativeTransform, Is.False);
+
+                lease = new MmdBorrowedSceneMutationLease(previewInstance);
+                lease.Activate();
+                body.RecordNativeTransform(
+                    new[] { 1.0f, 2.0f, 3.0f },
+                    new[] { 0.0f, 0.0f, 0.0f, 1.0f });
+                Assert.That(body.HasNativeTransform, Is.True);
+
+                lease.Dispose();
+                lease = null;
+                Assert.That(body.HasNativeTransform, Is.False);
+                Assert.That(body.NativePosition, Is.EqualTo(Vector3.zero));
+                Assert.That(body.NativeRotation, Is.EqualTo(Quaternion.identity));
+            }
+            finally
+            {
+                lease?.Dispose();
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+            }
+        }
+
+        [Test]
+        public void ApplyFrameUsesBindingToMoveBoneTransform()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // arbitrary EditMode evaluation (non-zero ApplyFrame), not normal Live forward playback
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                const int frame = 9;
+                float[] expectedMmdLocalPosition = { 0.0f, 0.0f, 0.0f };
+                float[] expectedMmdLocalRotation = { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f };
+                Vector3 expectedLocalPosition = binding.Instance.BindLocalPositions[0]
+                    + ToUnityPosition(expectedMmdLocalPosition) * binding.Instance.ImportScale;
+                Quaternion expectedLocalRotation = binding.Instance.BindLocalRotations[0]
+                    * ToUnityRotation(expectedMmdLocalRotation);
+
+                MmdPlaybackSnapshot snapshot = controller.ApplyFrame(frame);
+                MmdEvaluatedBonePose bonePose = snapshot.frame.bones.Single(bone => bone.index == 0);
+
+                Assert.That(snapshot.frame.frame, Is.EqualTo(frame));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(frame));
+                Assert.That(controller.LastSnapshot, Is.EqualTo(snapshot));
+                Assert.That(Vector3.Distance(ToVector3(bonePose.localPosition), ToVector3(expectedMmdLocalPosition)), Is.LessThan(0.00001f));
+                Assert.That(Quaternion.Angle(ToQuaternion(bonePose.localRotation), ToQuaternion(expectedMmdLocalRotation)), Is.LessThan(0.001f));
+                Assert.That(Vector3.Distance(binding.Instance.BoneTransforms[0].localPosition, expectedLocalPosition), Is.LessThan(0.00001f));
+                Assert.That(Quaternion.Angle(binding.Instance.BoneTransforms[0].localRotation, expectedLocalRotation), Is.LessThan(0.001f));
+                Assert.That(binding.Instance.Root.transform.localScale, Is.EqualTo(Vector3.one));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void TickAdvancesPlayingFrameAndAppliesEvaluatedPose()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // controller tick test is about frame advance + evaluated pose, not Live physics frame-0 sequencing
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                const int frame = 9;
+                float[] expectedMmdLocalRotation = { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f };
+                Quaternion expectedLocalRotation = binding.Instance.BindLocalRotations[0]
+                    * ToUnityRotation(expectedMmdLocalRotation);
+
+                controller.Play();
+                controller.Tick(frame / 30.0f);
+
+                Assert.That(controller.IsPlaying, Is.True);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(frame));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.time, Is.EqualTo(frame / 30.0f).Within(0.00001f));
+                MmdEvaluatedBonePose bonePose = controller.LastSnapshot.frame.bones.Single(bone => bone.index == 0);
+                Assert.That(Quaternion.Angle(ToQuaternion(bonePose.localRotation), ToQuaternion(expectedMmdLocalRotation)), Is.LessThan(0.001f));
+                Assert.That(Quaternion.Angle(binding.Instance.BoneTransforms[0].localRotation, expectedLocalRotation), Is.LessThan(0.001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void TickPreservesFractionalFrameProgress()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // This test is about fractional frame accumulation, not Live physics sequencing.
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                const int frame = 9;
+                float[] expectedMmdLocalRotation = { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f };
+                Quaternion expectedLocalRotation = binding.Instance.BindLocalRotations[0]
+                    * ToUnityRotation(expectedMmdLocalRotation);
+
+                const float halfTime = 4.5f / 30.0f;
+                controller.ApplyTime(halfTime);
+                Quaternion expectedHalfRotation = binding.Instance.BoneTransforms[0].localRotation;
+                controller.SeekFrame(0);
+                int poseNotifications = 0;
+                controller.PoseApplied += _ => poseNotifications++;
+                controller.Play();
+                controller.Tick(halfTime);
+                Assert.That(controller.LastSnapshot!.frame.time, Is.EqualTo(halfTime).Within(1e-7f));
+                Assert.That(Quaternion.Angle(binding.Instance.BoneTransforms[0].localRotation,
+                    expectedHalfRotation), Is.LessThan(0.001f));
+                controller.Tick(halfTime);
+                Assert.That(poseNotifications, Is.EqualTo(2));
+
+                Assert.That(controller.CurrentFrame, Is.EqualTo(frame));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.frame, Is.EqualTo(frame));
+                MmdEvaluatedBonePose bonePose = controller.LastSnapshot.frame.bones.Single(bone => bone.index == 0);
+                Assert.That(Quaternion.Angle(ToQuaternion(bonePose.localRotation), ToQuaternion(expectedMmdLocalRotation)), Is.LessThan(0.001f));
+                Assert.That(Quaternion.Angle(binding.Instance.BoneTransforms[0].localRotation, expectedLocalRotation), Is.LessThan(0.001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void ApplyTimeSupportsRepeatEvaluationAndReverseSeekWithoutAccumulation()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // arbitrary EditMode evaluation (ApplyTime random/reverse seek), not normal Live forward playback
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                const int forwardFrame = 29;
+                const int reverseFrame = 9;
+                float[] expectedForwardMmdLocalRotation = { 0.0f, 0.0f, 0.3826833665f, 0.9238795638f };
+                float[] expectedReverseMmdLocalRotation = { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f };
+                Quaternion expectedForwardLocalRotation = binding.Instance.BindLocalRotations[0]
+                    * ToUnityRotation(expectedForwardMmdLocalRotation);
+                Quaternion expectedReverseLocalRotation = binding.Instance.BindLocalRotations[0]
+                    * ToUnityRotation(expectedReverseMmdLocalRotation);
+
+                MmdPlaybackSnapshot forward = controller.ApplyTime(forwardFrame / 30.0f);
+                Quaternion forwardRotation = binding.Instance.BoneTransforms[0].localRotation;
+                MmdPlaybackSnapshot repeatedForward = controller.ApplyTime(forwardFrame / 30.0f);
+                Quaternion repeatedForwardRotation = binding.Instance.BoneTransforms[0].localRotation;
+                MmdPlaybackSnapshot reverse = controller.ApplyTime(reverseFrame / 30.0f);
+
+                Assert.That(forward.frame.frame, Is.EqualTo(forwardFrame));
+                Assert.That(forward.frame.time, Is.EqualTo(forwardFrame / 30.0f).Within(0.00001f));
+                Assert.That(forward.rendering, Is.SameAs(binding.Instance.RenderingDescriptor));
+                Assert.That(Quaternion.Angle(forwardRotation, expectedForwardLocalRotation), Is.LessThan(0.001f));
+                Assert.That(repeatedForward.frame.frame, Is.EqualTo(forwardFrame));
+                Assert.That(repeatedForward.rendering, Is.SameAs(binding.Instance.RenderingDescriptor));
+                Assert.That(Quaternion.Angle(repeatedForwardRotation, forwardRotation), Is.LessThan(0.001f));
+                Assert.That(reverse.frame.frame, Is.EqualTo(reverseFrame));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(reverseFrame));
+                Assert.That(Quaternion.Angle(binding.Instance.BoneTransforms[0].localRotation, expectedReverseLocalRotation), Is.LessThan(0.001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void TickDoesNotAdvanceWhenPaused()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    MmdTestFixtures.CreateMinimalTriangleModel(SyntheticControllerModelName),
+                    MmdTestFixtures.CreateRootTranslationMotion(SyntheticControllerModelName),
+                    "synthetic.pmx",
+                    "synthetic.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+
+                controller.Tick(10.0f / 30.0f);
+
+                Assert.That(controller.IsPlaying, Is.False);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(controller.LastSnapshot, Is.Null);
+                Assert.That(binding.Instance.BoneTransforms[0].localPosition, Is.EqualTo(Vector3.zero));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void LivePhysicsAppliesNativeAfterPhysicsPoseForDeformAfterPhysicsBone()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                model.bones[0].deformAfterPhysics = true;
+                AddPinnedRootRigidbody(model);
+                binding = CreatePhysicsPlaybackBinding(model, "native-after-physics.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                controller.ApplyFrame(LivePhysicsPlaybackFrame);
+
+                int rootBoneIndex = RootBoneIndex(model);
+                Vector3 expectedLocalPosition = binding.Instance.BindLocalPositions[rootBoneIndex] +
+                    ToUnityPosition(new[] { 2.0f, 0.0f, 0.0f }) * binding.Instance.ImportScale;
+                Assert.That(
+                    Vector3.Distance(binding.Instance.BoneTransforms[rootBoneIndex].localPosition, expectedLocalPosition),
+                    Is.LessThan(0.0001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void LivePhysicsUsesEnabledFastRuntimeMotionAsNativeBridgeAuthority()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                byte[] pmxBytes = MmdTestFixtures.ReadFixtureAssetBytes(PlaybackPmxId);
+                MmdModelDefinition model = new NativeMmdParser().LoadModel(pmxBytes);
+                model.bones[0].deformAfterPhysics = true;
+                AddPinnedRootRigidbody(model);
+                binding = CreatePhysicsPlaybackBinding(model, "managed-motion.vmd", endTranslationX: 2.0f);
+                MmdMotionDefinition fastMotion = MmdTestFixtures.ParseGeneratedBoneTranslationMotion(
+                    model.name,
+                    RootBoneName(model),
+                    LivePhysicsPlaybackFrame,
+                    endTranslationX: 4.0f);
+                Assert.That(
+                    binding.TryEnableFastRuntime(pmxBytes, fastMotion.sourceBytes!, out string reason),
+                    Is.True,
+                    reason);
+
+                binding.SetPhysicsMode(MmdPhysicsMode.Live);
+                binding.ApplyFrame(0, 30.0f);
+                binding.ApplyFrame(LivePhysicsPlaybackFrame, 30.0f);
+
+                int rootBoneIndex = RootBoneIndex(model);
+                Vector3 expectedLocalPosition = binding.Instance.BindLocalPositions[rootBoneIndex] +
+                    ToUnityPosition(new[] { 4.0f, 0.0f, 0.0f }) * binding.Instance.ImportScale;
+                Assert.That(
+                    Vector3.Distance(binding.Instance.BoneTransforms[rootBoneIndex].localPosition, expectedLocalPosition),
+                    Is.LessThan(0.0001f));
+                Assert.That(binding.LastLivePhysicsDiagnostics!.evaluationPath, Is.EqualTo("VmdNativePhysicsBridge"));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void LivePhysicsReportsPinnedRigidbodySyncToAnimatedBone()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                int rootBoneIndex = RootBoneIndex(model);
+                string rootBoneName = RootBoneName(model);
+                model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+                {
+                    index = 0,
+                    name = "root pinned body",
+                    boneIndex = rootBoneIndex,
+                    boneName = rootBoneName,
+                    shapeType = "sphere",
+                    size = new[] { 0.25f, 0.25f, 0.25f },
+                    position = new[] { 0.0f, 0.0f, 0.0f },
+                    rotation = new[] { 0.0f, 0.0f, 0.0f },
+                    mass = 0.0f,
+                    linearDamping = 0.5f,
+                    angularDamping = 0.5f,
+                    friction = 0.5f,
+                    restitution = 0.0f,
+                    group = 0,
+                    mask = 0,
+                    physicsKind = "static"
+                });
+                binding = CreatePhysicsPlaybackBinding(model, "pinned-root.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+
+                controller.ApplyFrame(0);
+                controller.ApplyFrame(LivePhysicsPlaybackFrame);
+
+                MmdLivePhysicsFrameDiagnostics? diagnostics = binding.LastLivePhysicsDiagnostics;
+                Assert.That(diagnostics, Is.Not.Null);
+                Assert.That(diagnostics!.frame, Is.EqualTo(LivePhysicsPlaybackFrame));
+                Assert.That(diagnostics.pinnedBodies.pinnedBodyCount, Is.EqualTo(1));
+                Assert.That(diagnostics.pinnedBodies.maxPinnedBodySyncDistance, Is.LessThan(0.0001f));
+                Assert.That(diagnostics.stepPhysicsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.totalMs, Is.GreaterThanOrEqualTo(diagnostics.stepPhysicsMs));
+                Assert.That(diagnostics.bodyDiagnosticsFrame, Is.EqualTo(-1),
+                    "Detailed body diagnostics must be disabled by default.");
+                Assert.That(diagnostics.bodyDiagnostics, Is.Empty);
+                Assert.That(diagnostics.readbackShapeTypeCount, Is.EqualTo(0),
+                    "Disabled detailed diagnostics must not query native shape metadata.");
+                Assert.That(binding.Instance.PhysicsBodies, Has.Length.EqualTo(1));
+                Assert.That(
+                    Vector3.Distance(binding.Instance.PhysicsBodies[0].transform.position, binding.Instance.BoneTransforms[rootBoneIndex].position),
+                    Is.LessThan(0.0001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void LivePhysicsReportsBodyDiagnosticsWithImportScaleOne()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                int rootBoneIndex = RootBoneIndex(model);
+                string rootBoneName = RootBoneName(model);
+                // Static body on root bone
+                model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+                {
+                    index = 0,
+                    name = "static-root-body",
+                    boneIndex = rootBoneIndex,
+                    boneName = rootBoneName,
+                    shapeType = "sphere",
+                    size = new[] { 0.25f, 0.25f, 0.25f },
+                    position = new[] { 0.0f, 0.0f, 0.0f },
+                    rotation = new[] { 0.0f, 0.0f, 0.0f },
+                    mass = 0.0f,
+                    linearDamping = 0.5f,
+                    angularDamping = 0.5f,
+                    friction = 0.5f,
+                    restitution = 0.0f,
+                    group = 0,
+                    mask = 0,
+                    physicsKind = "static"
+                });
+                // Dynamic-orientation body on root bone
+                model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+                {
+                    index = 1,
+                    name = "dynamic-orientation-root-body",
+                    boneIndex = rootBoneIndex,
+                    boneName = rootBoneName,
+                    shapeType = "box",
+                    size = new[] { 0.5f, 0.5f, 0.5f },
+                    position = new[] { 0.5f, 0.0f, 0.0f },
+                    rotation = new[] { 0.0f, 0.0f, 0.0f },
+                    mass = 1.0f,
+                    linearDamping = 0.5f,
+                    angularDamping = 0.5f,
+                    friction = 0.5f,
+                    restitution = 0.0f,
+                    group = 0,
+                    mask = 0,
+                    physicsKind = "dynamic-orientation"
+                });
+                binding = CreatePhysicsPlaybackBinding(model, "body-diagnostics.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                controller.LivePhysicsBodyDiagnosticsSampleInterval = 1;
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+
+                controller.ApplyFrame(0);
+                MmdLivePhysicsFrameDiagnostics? seedDiagnostics = binding.LastLivePhysicsDiagnostics;
+                Assert.That(seedDiagnostics, Is.Not.Null);
+                Assert.That(seedDiagnostics!.frame, Is.EqualTo(0));
+                Assert.That(seedDiagnostics.playbackEvaluateBeforePhysicsPresent, Is.False,
+                    "The VMD seed uses BakeClipFrames, not EvaluateBeforePhysics.");
+                Assert.That(seedDiagnostics.playbackEvaluateBeforePhysicsMs, Is.Zero);
+                Assert.That(seedDiagnostics.playbackCopyEvaluatedOutputsPresent, Is.True);
+                Assert.That(seedDiagnostics.playbackCopyEvaluatedOutputsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(seedDiagnostics.physicsWorldStepRuntimePresent, Is.True);
+                Assert.That(seedDiagnostics.physicsWorldStepRuntimeMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(seedDiagnostics.bodyDiagnosticsFrame, Is.EqualTo(0));
+                Assert.That(seedDiagnostics.readbackShapeTypeCount, Is.EqualTo(2));
+                Assert.That(seedDiagnostics.pinnedBodies.pinnedBodyCount, Is.EqualTo(2));
+                Assert.That(seedDiagnostics.pinnedBodies.staticPinnedBodyCount, Is.EqualTo(1));
+                Assert.That(seedDiagnostics.pinnedBodies.dynamicOrientationPinnedBodyCount, Is.EqualTo(1),
+                    "Mode-2 dynamic-orientation bodies are still seeded from the current bone pose on reset");
+
+                controller.ApplyFrame(LivePhysicsPlaybackFrame);
+
+                MmdLivePhysicsFrameDiagnostics? diagnostics = binding.LastLivePhysicsDiagnostics;
+                Assert.That(diagnostics, Is.Not.Null);
+                Assert.That(diagnostics!.frame, Is.EqualTo(LivePhysicsPlaybackFrame));
+                Assert.That(diagnostics.readbackTransformCount, Is.EqualTo(2),
+                    "The host-pose path performs one shared native readback per body.");
+                Assert.That(diagnostics.readbackShapeTypeCount, Is.Zero,
+                    "Shape metadata must be cached after the backend's first frame.");
+                Assert.That(diagnostics.comparisonSpace, Is.EqualTo("runtime-forward-playback-diagnostics"));
+                Assert.That(diagnostics.importScale, Is.EqualTo(1.0f).Within(0.0001f));
+                Assert.That(diagnostics.pinnedBodies.pinnedBodyCount, Is.EqualTo(1));
+                Assert.That(diagnostics.pinnedBodies.staticPinnedBodyCount, Is.EqualTo(1));
+                Assert.That(diagnostics.pinnedBodies.dynamicOrientationPinnedBodyCount, Is.EqualTo(0),
+                    "Mode-2 dynamic-orientation bodies must not be re-pinned on normal forward frames");
+                Assert.That(diagnostics.bodyDiagnostics, Is.Not.Null);
+                Assert.That(diagnostics.bodyDiagnostics.Length, Is.EqualTo(2));
+                Assert.That(diagnostics.bodyDiagnosticsFrame, Is.EqualTo(LivePhysicsPlaybackFrame));
+
+                // --- body 0: static ---
+                MmdLivePhysicsBodyDiagnostics body0 = diagnostics.bodyDiagnostics[0];
+                Assert.That(body0.bodyIndex, Is.EqualTo(0));
+                Assert.That(body0.bodyName, Is.EqualTo("static-root-body"));
+                Assert.That(body0.boneIndex, Is.EqualTo(rootBoneIndex));
+                Assert.That(body0.boneName, Is.EqualTo(rootBoneName));
+                Assert.That(body0.physicsKind, Is.EqualTo("static"));
+                Assert.That(body0.shapeType, Is.EqualTo("sphere"));
+                Assert.That(body0.nativeShapeType, Is.EqualTo(body0.shapeType));
+                Assert.That(body0.debugColliderType, Is.EqualTo(body0.shapeType));
+                Assert.That(body0.debugColliderSize, Is.EqualTo(new Vector3(0.25f, 0.25f, 0.25f)));
+                Assert.That(body0.mass, Is.EqualTo(0.0f));
+                Assert.That(body0.descriptorPosition, Is.EqualTo(Vector3.zero));
+                Assert.That(body0.descriptorRotation, Is.EqualTo(Vector3.zero));
+                // Static body is pinned — bone and debug collider should be near
+                Assert.That(body0.boneToDebugWorldDistance, Is.LessThan(0.0001f),
+                    $"bone={body0.boneWorldPosition}; debug={body0.debugColliderWorldPosition}; readback={body0.readbackWorldPosition}");
+                Assert.That(body0.boneToReadbackWorldDistance, Is.LessThan(0.0001f),
+                    $"bone={body0.boneWorldPosition}; debug={body0.debugColliderWorldPosition}; readback={body0.readbackWorldPosition}");
+                Assert.That(body0.debugToReadbackWorldDistance, Is.LessThan(0.0001f));
+
+                // --- body 1: dynamic-orientation ---
+                MmdLivePhysicsBodyDiagnostics body1 = diagnostics.bodyDiagnostics[1];
+                Assert.That(body1.bodyIndex, Is.EqualTo(1));
+                Assert.That(body1.bodyName, Is.EqualTo("dynamic-orientation-root-body"));
+                Assert.That(body1.boneIndex, Is.EqualTo(rootBoneIndex));
+                Assert.That(body1.boneName, Is.EqualTo(rootBoneName));
+                Assert.That(body1.physicsKind, Is.EqualTo("dynamic-orientation"));
+                Assert.That(body1.shapeType, Is.EqualTo("box"));
+                Assert.That(body1.nativeShapeType, Is.EqualTo(body1.shapeType));
+                Assert.That(body1.debugColliderType, Is.EqualTo(body1.shapeType));
+                Assert.That(body1.debugColliderSize, Is.EqualTo(new Vector3(1.0f, 1.0f, 1.0f)));
+                Assert.That(body1.mass, Is.EqualTo(1.0f));
+                // Descriptor position is offset from root
+                Assert.That(body1.descriptorPosition.x, Is.EqualTo(0.5f).Within(0.0001f));
+                Assert.That(body1.descriptorPosition.y, Is.EqualTo(0.0f).Within(0.0001f));
+                Assert.That(body1.descriptorPosition.z, Is.EqualTo(0.0f).Within(0.0001f));
+                // Dynamic-orientation exposes the current visual drift: debug collider follows Bullet readback,
+                // while the bone position remains animation-driven.
+                Assert.That(body1.boneToDebugWorldDistance, Is.GreaterThan(0.0001f));
+                Assert.That(body1.boneToReadbackWorldDistance, Is.GreaterThan(0.0001f));
+                Assert.That(body1.debugToReadbackWorldDistance, Is.LessThan(0.0001f));
+
+                // Both bodies should have recorded readback data (MMD and Unity space)
+                Assert.That(body0.readbackMmdPosition, Is.Not.EqualTo(Vector3.zero));
+                Assert.That(body0.readbackWorldPosition, Is.Not.EqualTo(Vector3.zero));
+                Assert.That(body1.readbackMmdPosition, Is.Not.EqualTo(Vector3.zero));
+                Assert.That(body1.readbackWorldPosition, Is.Not.EqualTo(Vector3.zero));
+
+                // Instance must report importScale=1
+                Assert.That(binding.Instance.ImportScale, Is.EqualTo(1.0f).Within(0.0001f));
+
+                MmdLivePhysicsBodyDiagnostics[] latestSample = diagnostics.bodyDiagnostics;
+                controller.LivePhysicsBodyDiagnosticsSampleInterval = 2;
+                controller.ApplyFrame(LivePhysicsPlaybackFrame + 1);
+                diagnostics = binding.LastLivePhysicsDiagnostics;
+                Assert.That(diagnostics, Is.Not.Null);
+                Assert.That(diagnostics!.frame, Is.EqualTo(LivePhysicsPlaybackFrame + 1));
+                Assert.That(diagnostics.bodyDiagnosticsFrame, Is.EqualTo(LivePhysicsPlaybackFrame));
+                Assert.That(diagnostics.bodyDiagnostics, Is.SameAs(latestSample),
+                    "Non-sampled frames must retain the latest detailed diagnostics rather than rebuilding them.");
+                Assert.That(diagnostics.readbackShapeTypeCount, Is.EqualTo(0),
+                    "Cached detailed metadata must not re-query native shapes on a later sample interval frame.");
+
+                var serializedController = new SerializedObject(controller);
+                SerializedProperty sampleInterval = serializedController.FindProperty("livePhysicsBodyDiagnosticsSampleInterval");
+                sampleInterval.intValue = -2;
+                serializedController.ApplyModifiedPropertiesWithoutUndo();
+                typeof(MmdUnityPlaybackController)
+                    .GetMethod("OnValidate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(controller, null);
+                Assert.That(controller.LivePhysicsBodyDiagnosticsSampleInterval, Is.Zero);
+                Assert.That(binding.LivePhysicsBodyDiagnosticsSampleInterval, Is.Zero,
+                    "Serialized interval changes must be clamped and synchronized to the active binding.");
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void SerializedPhysicsModeChangeAppliesToLoadedBindingAndRestartsLiveFromFrameZero()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                AddPinnedRootRigidbody(model);
+                binding = CreatePhysicsPlaybackBinding(model, "serialized-live.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // arbitrary EditMode ApplyFrame(10) to setup pre-state for Live restart test; default Live forbids non-zero first, use Off here
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                controller.ApplyFrame(LivePhysicsPlaybackFrame);
+
+                var serializedObject = new SerializedObject(controller);
+                serializedObject.FindProperty("physicsMode").enumValueIndex = (int)MmdPhysicsMode.Live;
+                serializedObject.ApplyModifiedProperties();
+
+                Assert.That(controller.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Live));
+                Assert.That(binding.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Live));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(binding.LastLivePhysicsDiagnostics, Is.Not.Null);
+                Assert.That(binding.LastLivePhysicsDiagnostics!.frame, Is.EqualTo(0));
+
+                controller.Play();
+                controller.Tick(1.0f / 30.0f);
+
+                Assert.That(controller.CurrentFrame, Is.EqualTo(1));
+                Assert.That(binding.LastLivePhysicsDiagnostics!.frame, Is.EqualTo(1));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void ControllerExposesLastLivePhysicsDiagnosticsAfterApplyFrame()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                AddPinnedRootRigidbody(model);
+                binding = CreatePhysicsPlaybackBinding(model, "controller-diagnostics.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+
+                // SetPhysicsMode(Live) implicitly applies frame 0, populating diagnostics
+                MmdLivePhysicsFrameDiagnostics? diagnostics = controller.LastLivePhysicsDiagnostics;
+                Assert.That(diagnostics, Is.Not.Null);
+                Assert.That(diagnostics!.frame, Is.EqualTo(0));
+                Assert.That(diagnostics.stepPhysicsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.pinnedBodies.pinnedBodyCount, Is.EqualTo(1));
+
+                controller.ApplyFrame(LivePhysicsPlaybackFrame);
+
+                diagnostics = controller.LastLivePhysicsDiagnostics;
+                Assert.That(diagnostics, Is.Not.Null);
+                Assert.That(diagnostics!.frame, Is.EqualTo(LivePhysicsPlaybackFrame));
+                Assert.That(diagnostics.stepPhysicsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.pinnedBodies.pinnedBodyCount, Is.EqualTo(1));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void LivePhysicsDiagnosticsExposeNativePhaseBreakdownAndStepReport()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                AddPinnedRootRigidbody(model);
+                binding = CreatePhysicsPlaybackBinding(model, "phase-diagnostics.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                // SetPhysicsMode(Live) seeds frame 0; apply it explicitly so this assertion
+                // remains tied to a normal forward (non-seed) VMD frame if that setup changes.
+                controller.ApplyFrame(0);
+                controller.ApplyFrame(LivePhysicsPlaybackFrame);
+
+                MmdLivePhysicsFrameDiagnostics? diagnostics = binding.LastLivePhysicsDiagnostics;
+                Assert.That(diagnostics, Is.Not.Null);
+                Assert.That(diagnostics!.frame, Is.EqualTo(LivePhysicsPlaybackFrame));
+                Assert.That(diagnostics.evaluationPath, Is.EqualTo("VmdNativePhysicsBridge"));
+                Assert.That(diagnostics.phaseDiagnosticsPresent, Is.True);
+                Assert.That(diagnostics.nativeStepReportPresent, Is.True);
+                Assert.That(diagnostics.hostPoseCapturePresent, Is.False,
+                    "VMD authority must remain on the borrowed native playback instance.");
+                Assert.That(diagnostics.pinnedDiagnosticsPresent, Is.True);
+                Assert.That(diagnostics.pinMarshalPresent, Is.False,
+                    "The VMD bridge must not marshal a Unity-captured host pose back to native.");
+                Assert.That(diagnostics.nativeHostFramePresent, Is.True);
+                Assert.That(diagnostics.playbackEvaluateBeforePhysicsPresent, Is.True,
+                    "A normal forward VMD frame must expose the borrowed playback before-physics call.");
+                Assert.That(diagnostics.playbackCopyEvaluatedOutputsPresent, Is.True,
+                    "A normal forward VMD frame must expose the evaluated-output copy call.");
+                Assert.That(diagnostics.physicsWorldStepRuntimePresent, Is.True,
+                    "A normal forward VMD frame must expose the runtime physics step call.");
+                Assert.That(diagnostics.nativeRigidbodyCopyPresent, Is.True);
+                Assert.That(diagnostics.managedRigidbodyFanOutPresent, Is.True);
+                Assert.That(diagnostics.managedBodyTransformApplyPresent, Is.True,
+                    "The bridge retains managed PMX body-kind application semantics after the native step.");
+                Assert.That(diagnostics.afterPhysicsMatrixReadbackPresent, Is.True,
+                    "a valid no-work matrix phase must remain present rather than unavailable");
+                Assert.That(diagnostics.matrixTransformApplyPresent, Is.True,
+                    "a valid no-work matrix phase must remain present rather than unavailable");
+                Assert.That(diagnostics.diagnosticsConstructionPresent, Is.True);
+                Assert.That(diagnostics.ensureBackendPresent, Is.True);
+                Assert.That(diagnostics.evaluateFramePresent, Is.True);
+                Assert.That(diagnostics.applyAnimationFramePresent, Is.True);
+                Assert.That(diagnostics.snapshotBuildPresent, Is.True);
+                Assert.That(diagnostics.nativeRigidbodyCount, Is.EqualTo(model.physics.rigidbodies.Count));
+                Assert.That(diagnostics.nativeBoneCount, Is.EqualTo(model.bones.Count));
+                Assert.That(diagnostics.nativeSubstepCount, Is.GreaterThanOrEqualTo(0));
+                Assert.That(diagnostics.nativeKinematicRigidbodiesFed, Is.GreaterThanOrEqualTo(0));
+                Assert.That(diagnostics.nativeBonesWrittenBack, Is.GreaterThanOrEqualTo(0));
+
+                Assert.That(diagnostics.hostPoseCaptureMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.pinnedDiagnosticsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.pinMarshalMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.nativeHostFrameMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.playbackEvaluateBeforePhysicsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.playbackCopyEvaluatedOutputsMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.physicsWorldStepRuntimeMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(
+                    diagnostics.playbackEvaluateBeforePhysicsMs +
+                    diagnostics.playbackCopyEvaluatedOutputsMs +
+                    diagnostics.physicsWorldStepRuntimeMs,
+                    Is.LessThanOrEqualTo(diagnostics.nativeHostFrameMs + 0.1),
+                    "The additive call-boundary timings must fit inside the aggregate native host-frame timing.");
+                Assert.That(diagnostics.nativeRigidbodyCopyMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.managedRigidbodyFanOutMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.managedBodyTransformApplyMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.afterPhysicsMatrixReadbackMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.matrixTransformApplyMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.sampledDiagnosticsPresent, Is.True,
+                    "the diagnostics phase is measured even when detailed sampling is disabled");
+                Assert.That(diagnostics.sampledBodyDiagnosticsThisFrame, Is.False,
+                    "default detailed body diagnostics must remain disabled");
+                Assert.That(diagnostics.sampledDiagnosticsMs, Is.Zero);
+                Assert.That(diagnostics.evaluatedFrameRefreshMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.diagnosticsConstructionMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.snapshotBuildMs, Is.GreaterThanOrEqualTo(0.0));
+                Assert.That(diagnostics.bridgeTotalMs, Is.GreaterThanOrEqualTo(0.0));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void PositiveIkIterationCapRejectsVmdLiveWithoutSeedOptionsAbi()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadPhysicsFixtureModel();
+                AddPinnedRootRigidbody(model);
+                binding = CreatePhysicsPlaybackBinding(model, "ik-cap-live-unsupported.vmd");
+                binding.IkMaxIterationsCap = 4;
+                binding.SetPhysicsMode(MmdPhysicsMode.Live);
+
+                Assert.That(
+                    () => binding.ApplyFrame(0, 30.0f),
+                    Throws.TypeOf<NotSupportedException>()
+                        .With.Message.Contains("native seed"));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void LivePhysicsDiagnosticsSummaryIncludesFrameStepMsAndPinnedCount()
+        {
+            var diagnostics = new MmdLivePhysicsFrameDiagnostics
+            {
+                frame = 5,
+                stepPhysicsMs = 3.25,
+                pinnedBodies = new MmdLivePhysicsPinnedBodyDiagnostics
+                {
+                    pinnedBodyCount = 12,
+                    staticPinnedBodyCount = 8,
+                    dynamicOrientationPinnedBodyCount = 4
+                }
+            };
+
+            string summary = MmdUnityPlaybackControllerEditor.BuildLivePhysicsDiagnosticsSummary(diagnostics);
+
+            Assert.That(summary, Does.Contain("frame=5"));
+            Assert.That(summary, Does.Contain("stepMs=3.25"));
+            Assert.That(summary, Does.Contain("pinned=12"));
+            Assert.That(summary, Does.Contain("static=8"));
+            Assert.That(summary, Does.Contain("dynOri=4"));
+        }
+
+        [Test]
+        public void PlaybackControllerInspectorDoesNotOfferPhysicsCacheAsSelectableMode()
+        {
+            GameObject? root = null;
+            UnityEditor.Editor? editor = null;
+            try
+            {
+                root = new GameObject("mmd-playback-controller-inspector");
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+
+                editor = UnityEditor.Editor.CreateEditor(controller);
+
+                Assert.That(editor, Is.TypeOf<MmdUnityPlaybackControllerEditor>());
+                Assert.That(MmdUnityPlaybackControllerEditor.InspectorAllowsPhysicsMode(MmdPhysicsMode.Off), Is.True);
+                Assert.That(MmdUnityPlaybackControllerEditor.InspectorAllowsPhysicsMode(MmdPhysicsMode.Live), Is.True);
+                Assert.That(MmdUnityPlaybackControllerEditor.InspectorAllowsPhysicsMode(MmdPhysicsMode.Cache), Is.False);
+                Assert.That(
+                    MmdUnityPlaybackControllerEditor.CacheNotImplementedMessage,
+                    Does.Contain("Physics Cache is not implemented yet"));
+            }
+            finally
+            {
+                if (editor != null)
+                {
+                    Object.DestroyImmediate(editor);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        public void PlaybackControllerInspectorHidesLegacySourceAndSettingsFieldsFromDefaultDraw()
+        {
+            string[] excluded = MmdUnityPlaybackControllerEditor.DefaultInspectorExcludedProperties;
+
+            Assert.That(excluded, Does.Contain(MmdUnityPlaybackControllerEditor.FrameRateFieldName));
+            Assert.That(excluded, Does.Contain(MmdUnityPlaybackControllerEditor.InitialFrameFieldName));
+            Assert.That(excluded, Does.Contain(MmdUnityPlaybackControllerEditor.PlayOnStartFieldName));
+            Assert.That(excluded, Does.Contain(MmdUnityPlaybackControllerEditor.PhysicsModeFieldName));
+            Assert.That(excluded, Does.Contain(MmdUnityPlaybackControllerEditor.IkMaxIterationsCapFieldName));
+            Assert.That(excluded, Does.Contain(MmdUnityPlaybackControllerEditor.LastFastRuntimeReasonFieldName));
+        }
+
+        [Test]
+        public void PhysicsCacheModeFailsWithReleaseFacingNotImplementedMessage()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    MmdTestFixtures.CreateMinimalTriangleModel(SyntheticControllerModelName),
+                    MmdTestFixtures.CreateRootTranslationMotion(SyntheticControllerModelName),
+                    "synthetic-cache-message.pmx",
+                    "synthetic-cache-message.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+
+                Assert.That(
+                    () => controller.SetPhysicsMode(MmdPhysicsMode.Cache),
+                    Throws.TypeOf<NotSupportedException>().With.Message.EqualTo("Physics Cache is not implemented yet."));
+                Assert.That(
+                    () => binding.SetPhysicsMode(MmdPhysicsMode.Cache),
+                    Throws.TypeOf<NotSupportedException>().With.Message.EqualTo("Physics Cache is not implemented yet."));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void StartPlaybackIfRequestedStartsConfiguredController()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_1bone_cube.pmx",
+                    "test_1bone_cube_motion.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // controller start/tick test is about PlayOnStart + frame advance + evaluated pose, not Live physics frame-0 sequencing
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                const int frame = 9;
+                float[] expectedMmdLocalRotation = { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f };
+                Quaternion expectedLocalRotation = binding.Instance.BindLocalRotations[0]
+                    * ToUnityRotation(expectedMmdLocalRotation);
+
+                Assert.That(controller.PlayOnStart, Is.True);
+                Assert.That(controller.IsPlaying, Is.False);
+
+                controller.StartPlaybackIfRequested();
+                controller.Tick(frame / 30.0f);
+
+                Assert.That(controller.IsPlaying, Is.True);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(frame));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(
+                    Quaternion.Angle(binding.Instance.BoneTransforms[0].localRotation, expectedLocalRotation),
+                    Is.LessThan(0.001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void StartPlaybackIfRequestedDoesNotStartWhenDisabled()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    MmdTestFixtures.CreateMinimalTriangleModel(SyntheticControllerModelName),
+                    MmdTestFixtures.CreateRootTranslationMotion(SyntheticControllerModelName),
+                    "synthetic.pmx",
+                    "synthetic.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+
+                Assert.That(controller.PlayOnStart, Is.False);
+
+                controller.StartPlaybackIfRequested();
+                controller.Tick(10.0f / 30.0f);
+
+                Assert.That(controller.IsPlaying, Is.False);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(controller.LastSnapshot, Is.Null);
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void TryEnableFastRuntimeReportsUnconfiguredController()
+        {
+            var holder = new GameObject("mmd-fast-runtime-unconfigured");
+            try
+            {
+                MmdUnityPlaybackController controller = holder.AddComponent<MmdUnityPlaybackController>();
+
+                bool enabled = controller.TryEnableFastRuntime(new byte[] { 1 }, new byte[] { 1 }, out string reason);
+
+                Assert.That(enabled, Is.False);
+                Assert.That(reason, Does.Contain("configured"));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(holder);
+            }
+        }
+
+        [Test]
+        public void TryEnableFastRuntimeFromConfiguredSourceReportsMissingSource()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    MmdTestFixtures.CreateMinimalTriangleModel(SyntheticControllerModelName),
+                    MmdTestFixtures.CreateRootTranslationMotion(SyntheticControllerModelName),
+                    "synthetic.pmx",
+                    "synthetic.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+
+                bool enabled = controller.TryEnableFastRuntimeFromConfiguredSource(out string reason);
+
+                Assert.That(enabled, Is.False);
+                Assert.That(reason, Does.Contain("source"));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void TryEnableFastRuntimeAcceptsModelsWithDeformAfterPhysicsBones()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                byte[] pmxBytes = MmdTestFixtures.ReadFixtureAssetBytes(PlaybackPmxId);
+                byte[] vmdBytes = MmdTestFixtures.ReadFixtureAssetBytes(PlaybackVmdId);
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(pmxBytes);
+                model.bones[0].deformAfterPhysics = true;
+                MmdMotionDefinition motion = parser.LoadMotion(vmdBytes);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(model, motion, PlaybackPmxId, PlaybackVmdId);
+
+                bool enabled = binding.TryEnableFastRuntime(pmxBytes, vmdBytes, out string reason);
+
+                Assert.That(model.HasDeformAfterPhysicsBones, Is.True);
+                Assert.That(enabled, Is.True, reason);
+                Assert.That(reason, Is.Empty);
+                Assert.DoesNotThrow(() => binding.ApplyFrame(10, 30.0f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsAttemptsFastRuntimeBeforeInitialFrameByDefault()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(File.ReadAllBytes(pmxPath), "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(File.ReadAllBytes(pmxPath)), pmxPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 0);
+
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+                Assert.That(controller.LastFastRuntimeReason, Is.Empty);
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.bones, Is.Not.Empty);
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsThrowsAndReleasesExistingBindingWhenNativeUnavailable()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 0, playOnStart: false);
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+
+                SkinnedMeshRenderer renderer = previewInstance.SkinnedMeshRenderer!;
+                Mesh activePlaybackMesh = renderer.sharedMesh!;
+                MmdUnityPlaybackController.NativeRuntimeAvailabilityOverrideForTests = (_, _) => false;
+
+                InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+                    controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 0, playOnStart: false))!;
+
+                Assert.That(exception.Message, Does.Contain("Normal playback requires mmd-anim native clip playback"));
+                Assert.That(exception.Message, Does.Contain("native runtime unavailable (forced by test)."));
+                Assert.That(controller.LastFastRuntimeReason, Does.Contain("forced by test"));
+                Assert.That(controller.IsConfigured, Is.False);
+                Assert.That(controller.LastSnapshot, Is.Null);
+                Assert.That(activePlaybackMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh, Is.SameAs(activePlaybackMesh));
+                Assert.That(renderer.sharedMaterials, Is.Not.Empty);
+            }
+            finally
+            {
+                MmdUnityPlaybackController.NativeRuntimeAvailabilityOverrideForTests = null;
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsPropagatesSharedVmdContextFailureToFinalNativeCaller()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            const string sharedContextFailure = "shared VMD context unavailable (forced by test).";
+            const string nativeSetupFailure = "native runtime unavailable (forced by test).";
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                MmdVmdAsset.NativeVmdContextFailureReasonOverrideForTests = _ => sharedContextFailure;
+
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 0, playOnStart: false);
+
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+                Assert.That(controller.LastFastRuntimeReason, Is.Empty);
+
+                MmdUnityPlaybackController.NativeRuntimeAvailabilityOverrideForTests = (_, _) => false;
+
+                InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+                    controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 0, playOnStart: false))!;
+
+                string expectedFailure =
+                    "Shared VMD context setup failed: " + sharedContextFailure +
+                    "; standalone native setup failed: " + nativeSetupFailure;
+                Assert.That(exception.Message, Does.Contain(expectedFailure));
+                Assert.That(controller.LastFastRuntimeReason, Is.EqualTo(expectedFailure));
+            }
+            finally
+            {
+                MmdVmdAsset.NativeVmdContextFailureReasonOverrideForTests = null;
+                MmdUnityPlaybackController.NativeRuntimeAvailabilityOverrideForTests = null;
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromPlaybackSourceUsesPlaybackConfigInitialFrame()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                var config = new MmdPlaybackConfig(frameRate: 30.0f, initialFrame: 9, playOnStart: false);
+
+                controller.ConfigureFromPlaybackSource(pmxAsset, vmdAsset, config);
+
+                Assert.That(controller.CurrentFrame, Is.EqualTo(config.InitialFrame));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.frame, Is.EqualTo(config.InitialFrame));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsWithoutSceneModelThrows()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityPlaybackController? controller = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(File.ReadAllBytes(pmxPath), "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                var holder = new GameObject("mmd-configure-assets-no-scene-model");
+                controller = holder.AddComponent<MmdUnityPlaybackController>();
+
+                InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+                    controller.ConfigureFromAssets(
+                        pmxAsset,
+                        vmdAsset,
+                        30.0f,
+                        startFrame: 0,
+                        playOnStart: false))!;
+
+                Assert.That(
+                    exception.Message,
+                    Is.EqualTo(
+                        "MMD playback requires an existing scene PMX model with a SkinnedMeshRenderer to bind motion. " +
+                        "No matching SkinnedMeshRenderer was found for provider model source (test_1bone_cube.pmx)."));
+                Assert.That(controller.IsConfigured, Is.False);
+            }
+            finally
+            {
+                DestroyInstanceFromController(controller);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsAppliesStartFrameToExistingSceneModel()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                SkinnedMeshRenderer renderer = previewInstance.SkinnedMeshRenderer!;
+                Mesh authoredMesh = renderer.sharedMesh!;
+                Material authoredMaterial = renderer.sharedMaterials[0];
+                Transform? authoredRootBone = renderer.rootBone;
+                Bounds authoredBounds = renderer.localBounds;
+                Transform bone = previewInstance.BoneTransforms[0];
+                bone.localPosition += new Vector3(1.0f, 2.0f, 3.0f);
+                bone.localRotation = Quaternion.Euler(0.0f, 35.0f, 0.0f);
+                bone.localScale = new Vector3(1.2f, 0.8f, 1.1f);
+                Vector3 authoredPosition = bone.localPosition;
+                Quaternion authoredRotation = bone.localRotation;
+                Vector3 authoredScale = bone.localScale;
+                Quaternion expectedRotation = previewInstance.BindLocalRotations[0]
+                    * ToUnityRotation(new[] { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f });
+
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 9, playOnStart: false);
+                Mesh firstPlaybackMesh = renderer.sharedMesh;
+
+                Assert.That(controller.CurrentFrame, Is.EqualTo(9));
+                Assert.That(
+                    Quaternion.Angle(previewInstance.BoneTransforms[0].localRotation, expectedRotation),
+                    Is.LessThan(0.001f));
+
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 0, playOnStart: false);
+                Mesh secondPlaybackMesh = renderer.sharedMesh;
+                Assert.That(firstPlaybackMesh, Is.SameAs(authoredMesh));
+                Assert.That(secondPlaybackMesh, Is.SameAs(authoredMesh));
+
+                controller.ReleasePlaybackResources();
+                Assert.That(secondPlaybackMesh, Is.Not.Null);
+                Assert.That(renderer.sharedMesh, Is.SameAs(authoredMesh));
+                Assert.That(renderer.sharedMaterials[0], Is.SameAs(authoredMaterial));
+                Assert.That(renderer.rootBone, Is.SameAs(authoredRootBone));
+                Assert.That(renderer.localBounds, Is.EqualTo(authoredBounds));
+                Assert.That(bone.localPosition, Is.EqualTo(authoredPosition));
+                Assert.That(bone.localRotation, Is.EqualTo(authoredRotation));
+                Assert.That(bone.localScale, Is.EqualTo(authoredScale));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsLiveInitialSeedFailureReleasesCandidateAndRestoresScene()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                SkinnedMeshRenderer renderer = previewInstance.SkinnedMeshRenderer!;
+                Mesh authoredMesh = renderer.sharedMesh!;
+                Material[] authoredMaterials = renderer.sharedMaterials;
+                Transform? authoredRootBone = renderer.rootBone;
+                Bounds authoredBounds = renderer.localBounds;
+
+                InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+                    controller.ConfigureFromAssets(
+                        pmxAsset,
+                        vmdAsset,
+                        30.0f,
+                        startFrame: 1,
+                        playOnStart: false))!;
+
+                Assert.That(exception.Message, Is.EqualTo("Physics Live playback must start from frame 0."));
+                Assert.That(controller.IsConfigured, Is.False);
+                Assert.That(controller.LastSnapshot, Is.Null);
+                Assert.That(controller.ConfiguredInstanceRoot, Is.Null);
+                Assert.That(renderer.sharedMesh, Is.SameAs(authoredMesh));
+                Assert.That(renderer.sharedMaterials, Has.Length.EqualTo(authoredMaterials.Length));
+                for (int i = 0; i < authoredMaterials.Length; i++)
+                {
+                    Assert.That(renderer.sharedMaterials[i], Is.SameAs(authoredMaterials[i]));
+                }
+
+                Assert.That(renderer.rootBone, Is.SameAs(authoredRootBone));
+                Assert.That(renderer.localBounds, Is.EqualTo(authoredBounds));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromAssetsCompatibilityFailurePreservesCurrentPlaybackBinding()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdPmxAsset? incompatibleAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string incompatiblePath = ResolvePackageFixture("test_append_bone.pmx");
+                string incompatibleMotionPath = ResolvePackageFixture("test_append_bone.vmd");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath);
+                incompatibleAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                incompatibleAsset.Initialize(File.ReadAllBytes(incompatiblePath), "test_append_bone.pmx", incompatiblePath);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, 30.0f, startFrame: 9, playOnStart: false);
+                SkinnedMeshRenderer renderer = previewInstance.SkinnedMeshRenderer!;
+                Mesh activePlaybackMesh = renderer.sharedMesh;
+                int revision = controller.ConfigurationRevision;
+
+                InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+                    controller.ConfigureFromAssets(
+                        incompatibleAsset,
+                        vmdAsset,
+                        30.0f,
+                        startFrame: 0,
+                        playOnStart: false))!;
+
+                Assert.That(exception.Message, Does.Contain("bones do not match the PMX bone descriptor"));
+                Assert.That(exception.Message, Does.Not.Contain("No matching SkinnedMeshRenderer"));
+
+                InvalidOperationException rawPathException = Assert.Throws<InvalidOperationException>(() =>
+                    controller.ConfigureFromRuntimeImporterPaths(
+                        incompatiblePath,
+                        incompatibleMotionPath,
+                        new MmdPlaybackConfig(30.0f, 0, playOnStart: false)))!;
+                Assert.That(rawPathException.Message, Does.Contain("bones do not match the PMX bone descriptor"));
+                Assert.That(rawPathException.Message, Does.Not.Contain("No matching SkinnedMeshRenderer"));
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.ConfigurationRevision, Is.EqualTo(revision));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(9));
+                Assert.That(renderer.sharedMesh, Is.SameAs(activePlaybackMesh));
+                Assert.That(activePlaybackMesh == null, Is.False);
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(incompatibleAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureMotionFromProviderAssetAppliesStartFrameToExistingSceneModel()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                byte[] pmxBytes = File.ReadAllBytes(pmxPath);
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(pmxBytes), pmxPath);
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(pmxBytes, "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+                controller.ConfigureModelAsset(pmxAsset);
+                Quaternion expectedRotation = previewInstance.BindLocalRotations[0]
+                    * ToUnityRotation(new[] { -0.3826833665f, 0.0f, 0.0f, 0.9238795638f });
+
+                controller.ConfigureMotionFromProviderModelSource(
+                    vmdAsset,
+                    30.0f,
+                    startFrame: 9,
+                    playOnStart: false);
+
+                Assert.That(controller.CurrentFrame, Is.EqualTo(9));
+                Assert.That(
+                    Quaternion.Angle(previewInstance.BoneTransforms[0].localRotation, expectedRotation),
+                    Is.LessThan(0.001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ConfigureFromRawModelPathAndMotionAssetAttemptsFastRuntimeByDefault()
+        {
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                Renderer[] previewRenderers = previewInstance.Root.GetComponentsInChildren<Renderer>();
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                MmdRuntimeImporterComponent importer = previewInstance.Root.AddComponent<MmdRuntimeImporterComponent>();
+                importer.ConfigureModelPath(pmxPath);
+                // Model source provider pre-configured (model-only via importer), then motion attach via ConfigureMotionFromProviderModelSource.
+                Assert.That(controller.HasModelSource, Is.True);
+                Assert.That(controller.IsConfigured, Is.False);
+
+                controller.ConfigureMotionFromProviderModelSource(vmdAsset, 30.0f, startFrame: 0);
+
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+                Assert.That(controller.LastFastRuntimeReason, Is.Empty);
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.bones, Is.Not.Empty);
+
+                Assert.That(previewRenderers.All(renderer => renderer.enabled), Is.True);
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void ControllerModelSourcePlusMotionAssetConfiguresViaConfigureMotionFromProviderModelSource()
+        {
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdPmxAsset? pmxAssetForSource = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                Renderer[] previewRenderers = previewInstance.Root.GetComponentsInChildren<Renderer>();
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                pmxAssetForSource = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAssetForSource.Initialize(File.ReadAllBytes(pmxPath), "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                controller.ConfigureModelAsset(pmxAssetForSource);
+                Assert.That(controller.HasModelSource, Is.True);
+                Assert.That(controller.IsConfigured, Is.False);
+
+                controller.ConfigureMotionFromProviderModelSource(vmdAsset, 30.0f, startFrame: 0);
+
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+                Assert.That(controller.LastFastRuntimeReason, Is.Empty);
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.bones, Is.Not.Empty);
+
+                Assert.That(previewRenderers.All(renderer => renderer.enabled), Is.True);
+                Assert.That(controller.ModelAssetSource, Is.SameAs(pmxAssetForSource));
+                Assert.That(controller.MotionAssetSource, Is.SameAs(vmdAsset));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(vmdAsset);
+                if (pmxAssetForSource != null) Object.DestroyImmediate(pmxAssetForSource);
+            }
+        }
+
+        [Test]
+        public void ControllerModelMotionSourcesConfigureViaConfigureFromPlaybackSourceIfAvailable()
+        {
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? previewInstance = null;
+            MmdPmxAsset? pmxAssetForSource = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                var parser = new NativeMmdParser();
+                MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(model, pmxPath);
+                Renderer[] previewRenderers = previewInstance.Root.GetComponentsInChildren<Renderer>();
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                pmxAssetForSource = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAssetForSource.Initialize(File.ReadAllBytes(pmxPath), "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                controller.ConfigureModelAsset(pmxAssetForSource);
+                controller.ConfigureMotionAsset(vmdAsset);
+                Assert.That(controller.HasModelSource, Is.True);
+                Assert.That(controller.IsConfigured, Is.False);
+                Assert.That(controller.MotionSourceId, Is.EqualTo(vmdAsset.SourceId));
+
+                bool configured = controller.ConfigureFromPlaybackSourceIfAvailable();
+
+                Assert.That(configured, Is.True);
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+                Assert.That(controller.LastFastRuntimeReason, Is.Empty);
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.bones, Is.Not.Empty);
+                Assert.That(previewRenderers.All(renderer => renderer.enabled), Is.True);
+                Assert.That(controller.ModelAssetSource, Is.SameAs(pmxAssetForSource));
+                Assert.That(controller.MotionAssetSource, Is.SameAs(vmdAsset));
+
+                LogAssert.Expect(
+                    LogType.Warning,
+                    "Standalone native worker playback faulted and was disabled for this controller: forced test fault");
+                controller.HandleStandaloneWorkerPreparationFailure("forced test fault");
+                Assert.That(controller.IsStandaloneWorkerFaulted, Is.True);
+
+                // Exercise the asset-source branch and prove an explicit successful re-enable is
+                // also the retry boundary for a faulted automatic worker.
+                Assert.That(
+                    controller.TryEnableFastRuntimeFromConfiguredSource(out string retryReason),
+                    Is.True,
+                    retryReason);
+                Assert.That(controller.IsStandaloneWorkerFaulted, Is.False);
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                Object.DestroyImmediate(vmdAsset);
+                if (pmxAssetForSource != null) Object.DestroyImmediate(pmxAssetForSource);
+            }
+        }
+
+        [Test]
+        public void DedicatedModelMotionSourcesConfigureControllerByRebindingExistingGeneratedModel()
+        {
+        }
+
+        [Test]
+        public void RuntimeImporterComponentConfiguresControllerFromRawPaths()
+        {
+            MmdUnityModelInstance? previewInstance = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(File.ReadAllBytes(pmxPath)), pmxPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                MmdRuntimeImporterComponent importer = previewInstance.Root.AddComponent<MmdRuntimeImporterComponent>();
+                importer.ConfigurePaths(
+                    pmxPath,
+                    vmdPath,
+                    playbackFrameRate: 24.0f,
+                    startFrame: 5,
+                    shouldPlayOnStart: false);
+                // importer non-zero startFrame leads to internal initial Apply; explicit Off for EditMode non-zero first-frame config test (arbitrary snapshot)
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                bool configured = controller.ConfigureFromPlaybackSourceIfAvailable();
+
+                Assert.That(configured, Is.True);
+                Assert.That(controller.IsConfigured, Is.True);
+                Assert.That(controller.FrameRate, Is.EqualTo(24.0f));
+                Assert.That(controller.PlayOnStart, Is.False);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(5));
+                Assert.That(controller.MotionSourceId, Is.EqualTo(vmdPath));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(importer.LastConfigurationStatus, Is.EqualTo("configured"));
+                Assert.That(importer.LastConfiguredSourceId, Is.EqualTo(pmxPath + " -> " + vmdPath));
+                Assert.That(importer.LastConfiguredControllerRevision, Is.EqualTo(controller.ConfigurationRevision));
+                Assert.That(controller.ConfigureFromPlaybackSourceIfAvailable(), Is.False);
+                Assert.That(importer.LastConfigurationStatus, Is.EqualTo("controller-already-configured"));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+            }
+        }
+
+        [Test]
+        public void RuntimeImporterComponentUsesPlaybackConfigAssetWhenPresent()
+        {
+            MmdUnityModelInstance? previewInstance = null;
+            MmdPlaybackConfigAsset? configAsset = null;
+            try
+            {
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                var parser = new NativeMmdParser();
+                previewInstance = MmdUnityModelFactory.CreateSkinnedModel(parser.LoadModel(File.ReadAllBytes(pmxPath)), pmxPath);
+                MmdUnityPlaybackController controller = previewInstance.Root.AddComponent<MmdUnityPlaybackController>();
+                MmdRuntimeImporterComponent importer = previewInstance.Root.AddComponent<MmdRuntimeImporterComponent>();
+                importer.ConfigurePaths(
+                    pmxPath,
+                    vmdPath,
+                    playbackFrameRate: 24.0f,
+                    startFrame: 5,
+                    shouldPlayOnStart: true);
+                configAsset = ScriptableObject.CreateInstance<MmdPlaybackConfigAsset>();
+                // configAsset no longer owns PhysicsMode; controller.SetPhysicsMode is source of truth
+                configAsset.Initialize(
+                    playbackFrameRate: 60.0f,
+                    startFrame: 8,
+                    shouldPlayOnStart: false);
+                importer.ConfigurePlaybackConfigAsset(configAsset);
+                // config asset non-zero startFrame (8) leads to internal initial Apply on configure; explicit Off for this EditMode non-zero first frame snapshot assertion
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                bool configured = controller.ConfigureFromPlaybackSourceIfAvailable();
+
+                Assert.That(configured, Is.True);
+                Assert.That(controller.FrameRate, Is.EqualTo(60.0f));
+                Assert.That(controller.PlayOnStart, Is.False);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(8));
+                Assert.That(importer.PlaybackConfigAsset, Is.SameAs(configAsset));
+                Assert.That(importer.LastConfigurationStatus, Is.EqualTo("configured"));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(previewInstance);
+                if (configAsset != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(configAsset);
+                }
+            }
+        }
+
+        [Test]
+        public void RuntimeImporterComponentReportsMissingRawPathWithoutConfiguringController()
+        {
+            MmdUnityPlaybackController? controller = null;
+            try
+            {
+                string missingPmxPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                var holder = new GameObject("mmd-runtime-importer-missing-path");
+                controller = holder.AddComponent<MmdUnityPlaybackController>();
+                MmdRuntimeImporterComponent importer = holder.AddComponent<MmdRuntimeImporterComponent>();
+                importer.ConfigurePaths(
+                    missingPmxPath,
+                    vmdPath,
+                    playbackFrameRate: 30.0f,
+                    startFrame: 0,
+                    shouldPlayOnStart: false);
+
+                bool configured = controller.ConfigureFromPlaybackSourceIfAvailable();
+
+                Assert.That(configured, Is.False);
+                Assert.That(controller.IsConfigured, Is.False);
+                Assert.That(importer.LastConfigurationStatus, Is.EqualTo("model-path-missing"));
+            }
+            finally
+            {
+                DestroyInstanceFromController(controller);
+            }
+        }
+
+        [Test]
+        public void ApplyTimeUsesFastRuntimeSnapshotWhenFastRuntimeIsActive()
+        {
+            MmdPmxAsset? pmxAsset = null;
+            MmdVmdAsset? vmdAsset = null;
+            MmdUnityModelInstance? instance = null;
+            try
+            {
+                const float frameRate = 30.0f;
+                float inputTime = 10.25f / frameRate;
+                string pmxPath = ResolvePackageFixture("test_1bone_cube.pmx");
+                string vmdPath = ResolvePackageFixture("test_1bone_cube_motion.vmd");
+                pmxAsset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+                pmxAsset.Initialize(File.ReadAllBytes(pmxPath), "test_1bone_cube.pmx", pmxPath, assetImportScale: 1.0f);
+                vmdAsset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+                vmdAsset.Initialize(File.ReadAllBytes(vmdPath), "test_1bone_cube_motion.vmd", vmdPath);
+                var parser = new NativeMmdParser();
+                instance = MmdUnityModelFactory.CreateSkinnedModel(
+                    parser.LoadModel(File.ReadAllBytes(pmxPath)),
+                    pmxPath);
+                MmdUnityPlaybackController controller = instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.ConfigureFromAssets(pmxAsset, vmdAsset, frameRate, startFrame: 0);
+                // ApplyTime random access requires explicit Off (Live does not support); arbitrary EditMode evaluation for fast snapshot test
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                MmdPlaybackSnapshot snapshot = controller.ApplyTime(inputTime, frameRate);
+                Vector3 actualPosition = instance.BoneTransforms[0].position;
+                Quaternion actualRotation = instance.BoneTransforms[0].rotation;
+
+                Assert.That(snapshot.frame.frame, Is.EqualTo(10));
+                Assert.That(snapshot.frame.time, Is.EqualTo(inputTime).Within(0.00001f));
+                Assert.That(controller.CurrentFrame, Is.EqualTo(10));
+                Assert.That(controller.LastSnapshot, Is.SameAs(snapshot));
+                Assert.That(controller.IsFastRuntimeEnabled, Is.True);
+                Assert.That(controller.LastFastRuntimeReason, Is.Empty);
+                // random-access ApplyTime forces Off; the native path returns a lightweight snapshot.
+                Assert.That(snapshot.frame.bones, Is.Empty);
+                using (var expectedSession = MmdRuntimeFfiPlaybackSession.Create(
+                    File.ReadAllBytes(pmxPath),
+                    File.ReadAllBytes(vmdPath)))
+                {
+                    var expectedWorld = new float[expectedSession.WorldMatrixFloatCount];
+                    var expectedMorphs = new float[expectedSession.MorphWeightCount];
+                    var expectedIk = new byte[expectedSession.IkEnabledCount];
+                    expectedSession.EvaluateAndCopy(
+                        inputTime * frameRate,
+                        expectedWorld,
+                        expectedMorphs,
+                        expectedIk);
+                    MmdUnityWorldMatrixFrameApplier.ApplyColumnMajorWorldMatrices(
+                        instance,
+                        expectedWorld);
+                    Vector3 expectedPosition = instance.BoneTransforms[0].position;
+                    Quaternion expectedRotation = instance.BoneTransforms[0].rotation;
+
+                    expectedSession.EvaluateAndCopy(
+                        snapshot.frame.frame,
+                        expectedWorld,
+                        expectedMorphs,
+                        expectedIk);
+                    MmdUnityWorldMatrixFrameApplier.ApplyColumnMajorWorldMatrices(
+                        instance,
+                        expectedWorld);
+                    float integerFrameDifference =
+                        Vector3.Distance(expectedPosition, instance.BoneTransforms[0].position) +
+                        Quaternion.Angle(expectedRotation, instance.BoneTransforms[0].rotation);
+
+                    Assert.That(integerFrameDifference, Is.GreaterThan(0.0001f));
+                    Assert.That(
+                        Vector3.Distance(actualPosition, expectedPosition),
+                        Is.LessThan(0.0001f));
+                    Assert.That(
+                        Quaternion.Angle(actualRotation, expectedRotation),
+                        Is.LessThan(0.0001f));
+                }
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(instance);
+                Object.DestroyImmediate(pmxAsset);
+                Object.DestroyImmediate(vmdAsset);
+            }
+        }
+
+        [Test]
+        public void StopAppliesBindFrameAndClearsPlayingState()
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                (MmdModelDefinition model, MmdMotionDefinition motion) = LoadAppendFixturePair();
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    "test_append_bone.pmx",
+                    "test_append_bone.vmd");
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f);
+                // arbitrary EditMode evaluation (non-zero ApplyFrame to reach non-bind state), not normal Live forward playback
+                controller.SetPhysicsMode(MmdPhysicsMode.Off);
+
+                int translatedBoneIndex = model.bones.FindIndex(bone => bone.name == "A親");
+                Assert.That(translatedBoneIndex, Is.Not.EqualTo(-1));
+                const int nonBindFrame = 5;
+                float[] expectedMmdLocalPosition = { -1.0f, 0.0f, 0.0f };
+                float[] expectedMmdLocalRotation = { 0.3826833665f, 0.0f, 0.0f, 0.9238795638f };
+                Vector3 expectedNonBindLocalPosition = binding.Instance.BindLocalPositions[translatedBoneIndex]
+                    + ToUnityPosition(expectedMmdLocalPosition);
+                Quaternion expectedNonBindLocalRotation = binding.Instance.BindLocalRotations[translatedBoneIndex]
+                    * ToUnityRotation(expectedMmdLocalRotation);
+
+                controller.ApplyFrame(nonBindFrame);
+                Assert.That(binding.Instance.BoneTransforms[translatedBoneIndex].localPosition, Is.EqualTo(expectedNonBindLocalPosition));
+                Assert.That(
+                    Quaternion.Angle(binding.Instance.BoneTransforms[translatedBoneIndex].localRotation, expectedNonBindLocalRotation),
+                    Is.LessThan(0.001f));
+                controller.Play();
+                controller.Stop();
+
+                Assert.That(controller.IsPlaying, Is.False);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(controller.LastSnapshot, Is.Not.Null);
+                Assert.That(controller.LastSnapshot!.frame.frame, Is.EqualTo(0));
+                Assert.That(
+                    binding.Instance.BoneTransforms[translatedBoneIndex].localPosition,
+                    Is.EqualTo(binding.Instance.BindLocalPositions[translatedBoneIndex]));
+                Assert.That(
+                    Quaternion.Angle(
+                        binding.Instance.BoneTransforms[translatedBoneIndex].localRotation,
+                        binding.Instance.BindLocalRotations[translatedBoneIndex]),
+                    Is.LessThan(0.001f));
+            }
+            finally
+            {
+                MmdTestInstanceScope.DestroyInstance(binding?.Instance);
+            }
+        }
+
+        private static void AddPinnedRootRigidbody(MmdModelDefinition model)
+        {
+            int rootBoneIndex = RootBoneIndex(model);
+            string rootBoneName = RootBoneName(model);
+            model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+            {
+                index = 0,
+                name = "root pinned body",
+                boneIndex = rootBoneIndex,
+                boneName = rootBoneName,
+                shapeType = "sphere",
+                size = new[] { 0.25f, 0.25f, 0.25f },
+                position = new[] { 0.0f, 0.0f, 0.0f },
+                rotation = new[] { 0.0f, 0.0f, 0.0f },
+                mass = 0.0f,
+                linearDamping = 0.5f,
+                angularDamping = 0.5f,
+                friction = 0.5f,
+                restitution = 0.0f,
+                group = 0,
+                mask = 0,
+                physicsKind = "static"
+            });
+        }
+
+        private static float ReadMaterialFloat(Material material, string propertyName)
+        {
+            Assert.That(material.HasProperty(propertyName), Is.True, $"Material should expose {propertyName}");
+            return material.GetFloat(propertyName);
+        }
+
+        private static void DestroyInstanceFromController(MmdUnityPlaybackController? controller)
+        {
+            if (controller == null)
+            {
+                return;
+            }
+
+            GameObject holder = controller.gameObject;
+            GameObject? root = controller.ConfiguredInstanceRoot;
+            if (root != null && root != holder)
+            {
+                DestroyHierarchy(root);
+            }
+
+            if (holder != null)
+            {
+                DestroyHierarchy(holder);
+            }
+        }
+
+        private static string ResolvePackageFixture(string fileName)
+        {
+            return MmdTestFixtures.FixtureAssetPath(fileName);
+        }
+
+        private static (MmdModelDefinition Model, MmdMotionDefinition Motion) LoadPlaybackFixturePair()
+        {
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(MmdTestFixtures.ReadFixtureAssetBytes(PlaybackPmxId));
+            MmdMotionDefinition motion = parser.LoadMotion(MmdTestFixtures.ReadFixtureAssetBytes(PlaybackVmdId));
+            return (model, motion);
+        }
+
+        private static MmdUnityPlaybackBinding CreatePlaybackBinding()
+        {
+            (MmdModelDefinition model, MmdMotionDefinition motion) = LoadPlaybackFixturePair();
+            return MmdUnityPlaybackBinding.CreateSkinned(model, motion, PlaybackPmxId, PlaybackVmdId);
+        }
+
+        private static MmdModelDefinition LoadPhysicsFixtureModel()
+        {
+            var parser = new NativeMmdParser();
+            return parser.LoadModel(MmdTestFixtures.ReadFixtureAssetBytes(PlaybackPmxId));
+        }
+
+        private static MmdUnityPlaybackBinding CreatePhysicsPlaybackBinding(
+            MmdModelDefinition model,
+            string motionId,
+            int maxFrame = LivePhysicsPlaybackFrame,
+            float endTranslationX = 2.0f)
+        {
+            MmdMotionDefinition motion = MmdTestFixtures.ParseGeneratedBoneTranslationMotion(
+                model.name,
+                RootBoneName(model),
+                maxFrame,
+                endTranslationX);
+            return MmdUnityPlaybackBinding.CreateSkinned(
+                model,
+                motion,
+                PlaybackPmxId,
+                motionId,
+                ResolvePackageFixture(PlaybackPmxId));
+        }
+
+        private static int RootBoneIndex(MmdModelDefinition model)
+        {
+            Assert.That(model.bones, Is.Not.Null.And.Not.Empty);
+            return model.bones[0].index;
+        }
+
+        private static string RootBoneName(MmdModelDefinition model)
+        {
+            Assert.That(model.bones, Is.Not.Null.And.Not.Empty);
+            Assert.That(model.bones[0].name, Is.Not.Null.And.Not.Empty);
+            return model.bones[0].name;
+        }
+
+        private static (MmdModelDefinition Model, MmdMotionDefinition Motion) LoadAppendFixturePair()
+        {
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(MmdTestFixtures.ReadFixtureAssetBytes("test_append_bone.pmx"));
+            MmdMotionDefinition motion = parser.LoadMotion(MmdTestFixtures.ReadFixtureAssetBytes("test_append_bone.vmd"));
+            return (model, motion);
+        }
+
+        private static Vector3 ToUnityPosition(float[] position)
+        {
+            return new Vector3(-position[0], position[1], -position[2]);
+        }
+
+        private static Vector3 ToVector3(float[] position)
+        {
+            return new Vector3(position[0], position[1], position[2]);
+        }
+
+        private static Quaternion ToUnityRotation(float[] rotation)
+        {
+            return new Quaternion(-rotation[0], rotation[1], -rotation[2], rotation[3]);
+        }
+
+        private static Quaternion ToQuaternion(float[] rotation)
+        {
+            return new Quaternion(rotation[0], rotation[1], rotation[2], rotation[3]);
+        }
+
+        private static MmdPmxAsset CreatePmxAsset(string name)
+        {
+            var asset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+            asset.name = name;
+            return asset;
+        }
+
+        private static MmdVmdAsset CreateVmdAsset(string name)
+        {
+            var asset = ScriptableObject.CreateInstance<MmdVmdAsset>();
+            asset.name = name;
+            return asset;
+        }
+
+        private static void DestroyHierarchy(GameObject? root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            var meshes = new HashSet<Mesh>();
+            var materials = new HashSet<Material>();
+            var textures = new HashSet<Texture2D>();
+            foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>())
+            {
+                if (renderer is SkinnedMeshRenderer skinnedMeshRenderer && skinnedMeshRenderer.sharedMesh != null)
+                {
+                    meshes.Add(skinnedMeshRenderer.sharedMesh);
+                }
+
+                foreach (Material material in renderer.sharedMaterials.Where(material => material != null))
+                {
+                    materials.Add(material);
+                    Texture texture = material.mainTexture;
+                    if (texture is Texture2D texture2D)
+                    {
+                        textures.Add(texture2D);
+                    }
+                }
+            }
+
+            Object.DestroyImmediate(root);
+            foreach (Mesh mesh in meshes)
+            {
+                Object.DestroyImmediate(mesh);
+            }
+
+            foreach (Material material in materials)
+            {
+                Object.DestroyImmediate(material);
+            }
+
+            foreach (Texture2D texture in textures)
+            {
+                Object.DestroyImmediate(texture);
+            }
+        }
+    }
+}

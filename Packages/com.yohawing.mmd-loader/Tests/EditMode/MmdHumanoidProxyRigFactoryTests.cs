@@ -1,0 +1,1883 @@
+#nullable enable
+
+using System.Collections.Generic;
+using System.Linq;
+using UnityEditor;
+using NUnit.Framework;
+using UnityEngine;
+using Mmd.Parser;
+
+namespace Mmd.Tests
+{
+    public sealed class MmdHumanoidProxyRigFactoryTests
+    {
+        [Test]
+        public void ProxyRigFactoryCreatesHiddenRootWithMappedTransforms()
+        {
+            // Arrange: a model with full standard MMD bone names (16 required + 3 optional).
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身",
+                "上半身",
+                "首",
+                "頭",
+                "左足",
+                "左ひざ",
+                "左足首",
+                "右足",
+                "右ひざ",
+                "右足首",
+                "左腕",
+                "左ひじ",
+                "左手首",
+                "右腕",
+                "右ひじ",
+                "右手首",
+                "上半身2",
+                "左肩",
+                "右肩");
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: root is created and hidden
+            Assert.That(result.ProxyRoot, Is.Not.Null, "proxy root must be created");
+            Assert.That(result.ProxyRoot!.hideFlags, Is.EqualTo(HideFlags.HideInHierarchy),
+                "root must have HideInHierarchy flag");
+            Assert.That(result.ProxyRoot.activeSelf, Is.False,
+                "root must be inactive");
+
+            // Assert: major HumanBodyBones transforms exist
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Hips), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Spine), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Neck), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Head), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftUpperLeg), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftLowerLeg), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftFoot), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightUpperLeg), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightLowerLeg), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightFoot), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftUpperArm), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftLowerArm), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftHand), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightUpperArm), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightLowerArm), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightHand), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Chest), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftShoulder), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightShoulder), Is.True);
+
+            // Assert: total 19 mapped (16 required + 3 optional)
+            Assert.That(result.BoneMap.Count, Is.EqualTo(19));
+
+            // Assert: readiness is Ready
+            Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+
+            // Assert: each transform has HideInHierarchy and is named after HumanBodyBones
+            foreach (Transform t in result.BoneMap.Values)
+            {
+                Assert.That(t.hideFlags, Is.EqualTo(HideFlags.HideInHierarchy),
+                    "each proxy bone Transform must be hidden");
+                Assert.That(t.name, Does.Not.Contain("_"), "name should be HumanBodyBones enum name");
+            }
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void ProxyRigFactoryCreatesShoulderToeEyeTransformsAsOptionalMappedBones()
+        {
+            // Arrange: full required bones plus shoulders, toes, and eyes.
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身",
+                "上半身",
+                "首",
+                "頭",
+                "左足",
+                "左ひざ",
+                "左足首",
+                "右足",
+                "右ひざ",
+                "右足首",
+                "左腕",
+                "左ひじ",
+                "左手首",
+                "右腕",
+                "右ひじ",
+                "右手首",
+                "上半身2",
+                "左肩",
+                "右肩",
+                "左つま先",
+                "右つま先",
+                "左目",
+                "右目");
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: optional shoulder / toe / eye bones are mapped and hidden.
+            Assert.That(result.ProxyRoot, Is.Not.Null, "proxy root must exist");
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftShoulder), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightShoulder), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftToes), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightToes), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftEye), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightEye), Is.True);
+
+            Assert.That(result.BoneMap[HumanBodyBones.LeftToes].hideFlags, Is.EqualTo(HideFlags.HideInHierarchy));
+            Assert.That(result.BoneMap[HumanBodyBones.RightToes].hideFlags, Is.EqualTo(HideFlags.HideInHierarchy));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftEye].hideFlags, Is.EqualTo(HideFlags.HideInHierarchy));
+            Assert.That(result.BoneMap[HumanBodyBones.RightEye].hideFlags, Is.EqualTo(HideFlags.HideInHierarchy));
+
+            // 16 required + 7 optional = 23 mappings.
+            Assert.That(result.BoneMap.Count, Is.EqualTo(23));
+            Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void ProxyRigIgnoresIkTwistAndHelperBones()
+        {
+            // Arrange: add IK, twist, and operation helper bones alongside standard names.
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身",
+                "上半身",
+                "首",
+                "頭",
+                "左足",
+                "左ひざ",
+                "左足首",
+                "右足",
+                "右ひざ",
+                "右足首",
+                "左腕",
+                "左ひじ",
+                "左手首",
+                "右腕",
+                "右ひじ",
+                "右手首",
+                "左足ＩＫ",
+                "右腕捩",
+                "左目操作",
+                "左足IK親",
+                "右足IK",
+                "腰捩");
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: standard bones are mapped
+            Assert.That(result.ProxyRoot, Is.Not.Null);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Hips), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Head), Is.True);
+
+            // Assert: IK/twist/operation helper bones are NOT created as transforms
+            foreach (string ignoredName in new[] { "左足ＩＫ", "右腕捩", "左目操作", "左足IK親", "右足IK", "腰捩" })
+            {
+                bool foundInMatches = false;
+                foreach (MmdHumanoidBoneMappingMatch match in result.Matches)
+                {
+                    if (match.MmdBoneName == ignoredName)
+                    {
+                        foundInMatches = true;
+                        break;
+                    }
+                }
+                Assert.That(foundInMatches, Is.False,
+                    "helper bone '" + ignoredName + "' must not appear in matches");
+            }
+
+            // Assert: total mapped count is 16 (no helpers)
+            Assert.That(result.BoneMap.Count, Is.EqualTo(16));
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void ProxyRigReportsMissingRequiredReadinessWithIncompleteBones()
+        {
+            // Arrange: only 3 required bones
+            MmdModelDefinition model = CreateHumanoidMappingModel("下半身", "上半身", "頭");
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: readiness is MissingRequired
+            Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.MissingRequired));
+            Assert.That(result.ProxyRoot, Is.Not.Null,
+                "proxy root should still be created with whatever bones are available");
+            Assert.That(result.BoneMap.Count, Is.EqualTo(3),
+                "only the 3 available bones should be mapped");
+
+            // Assert: diagnostics contain missing-required
+            bool hasMissingDiagnostic = false;
+            foreach (string d in result.Diagnostics)
+            {
+                if (d.Contains("missing-required"))
+                {
+                    hasMissingDiagnostic = true;
+                    break;
+                }
+            }
+            Assert.That(hasMissingDiagnostic, Is.True, "diagnostics must mention missing required bones");
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void ManualMappingOverrideCanFillMissingRequiredBone()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身",
+                "上半身",
+                "首",
+                "custom-head",
+                "左足",
+                "左ひざ",
+                "左足首",
+                "右足",
+                "右ひざ",
+                "右足首",
+                "左腕",
+                "左ひじ",
+                "左手首",
+                "右腕",
+                "右ひじ",
+                "右手首");
+
+            MmdHumanoidProxyRigResult automatic = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            Assert.That(automatic.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.MissingRequired));
+
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(
+                model,
+                mappingOverrides: new[]
+                {
+                    new MmdHumanoidBoneMappingOverride("custom-head", HumanBodyBones.Head),
+                });
+
+            Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Head), Is.True);
+            MmdHumanoidBoneMappingMatch headMatch = result.Matches.Single(match => match.HumanBone == HumanBodyBones.Head);
+            Assert.That(headMatch.MmdBoneName, Is.EqualTo("custom-head"));
+            Assert.That(headMatch.MmdBoneIndex, Is.EqualTo(3));
+            Assert.That(result.Diagnostics, Has.Some.Contains("manual-overrides: applied=1 ignored=0"));
+
+            if (automatic.ProxyRoot != null)
+            {
+                Object.DestroyImmediate(automatic.ProxyRoot);
+            }
+
+            if (result.ProxyRoot != null)
+            {
+                Object.DestroyImmediate(result.ProxyRoot);
+            }
+        }
+
+        [Test]
+        public void MappingDiagnosticSummaryClassifiesManualSourceMissingRequiredAndSuppressedOverrides()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身",
+                "上半身",
+                "首",
+                "custom-head",
+                "左足",
+                "左ひざ",
+                "左足首",
+                "右足",
+                "右ひざ",
+                "右足首",
+                "左腕",
+                "左ひじ",
+                "左手首",
+                "右腕",
+                "右ひじ",
+                "右手首");
+
+            var overrides = new[]
+            {
+                new MmdHumanoidBoneMappingOverride("custom-head", HumanBodyBones.Head),
+                new MmdHumanoidBoneMappingOverride("custom-head", HumanBodyBones.Spine),
+                new MmdHumanoidBoneMappingOverride("does-not-exist", HumanBodyBones.LeftEye),
+            };
+
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(
+                model,
+                mappingOverrides: overrides);
+
+            try
+            {
+                MmdHumanoidBoneMappingDiagnosticSummary summary =
+                    MmdHumanoidBoneMappingDiagnosticsBuilder.Build(result, overrides);
+
+                Assert.That(summary.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.MissingRequired));
+                Assert.That(
+                    summary.MappedEntries.Any(entry =>
+                        entry.HumanBone == HumanBodyBones.Head
+                        && entry.MmdBoneName == "custom-head"
+                        && entry.Source == MmdHumanoidBoneMappingDiagnosticsBuilder.ManualOverrideSource),
+                    Is.True,
+                    "The final Head mapping must be labeled as manual override.");
+                Assert.That(
+                    summary.MissingRequiredBones.Any(missing => missing.HumanBone == HumanBodyBones.Spine),
+                    Is.True,
+                    "The duplicate-source Spine override suppresses the automatic Spine mapping, so Spine is missing.");
+                Assert.That(
+                    string.Join("\n", summary.ConflictDiagnostics),
+                    Does.Contain("manual-override: skipped duplicate MMD bone 'custom-head'#3")
+                        .And.Contain("manual-override: ignored missing MMD bone 'does-not-exist' for LeftEye")
+                        .And.Contain("manual-overrides: applied=2 ignored=1"));
+            }
+            finally
+            {
+                if (result.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(result.ProxyRoot);
+                }
+            }
+        }
+
+        [Test]
+        public void ProxyRigDoesNotCreateAvatarOrAnimatorOrStoreAvatarFields()
+        {
+            // Arrange
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身", "上半身", "首", "頭",
+                "左足", "左ひざ", "左足首",
+                "右足", "右ひざ", "右足首",
+                "左腕", "左ひじ", "左手首",
+                "右腕", "右ひじ", "右手首");
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: no Avatar or Animator on the proxy root or any child
+            Assert.That(result.ProxyRoot, Is.Not.Null);
+            Assert.That(result.ProxyRoot!.GetComponentsInChildren<Animator>(includeInactive: true), Is.Empty,
+                "proxy rig must not create Animator components");
+
+            foreach (Transform child in result.ProxyRoot.GetComponentsInChildren<Transform>(includeInactive: true))
+            {
+                if (child == result.ProxyRoot.transform)
+                {
+                    continue;
+                }
+
+                Assert.That(child.GetComponent<Animator>(), Is.Null,
+                    "proxy bone " + child.name + " must not have an Animator component");
+            }
+
+            foreach (System.Reflection.FieldInfo field in typeof(MmdHumanoidProxyRigResult).GetFields(
+                         System.Reflection.BindingFlags.Instance |
+                         System.Reflection.BindingFlags.Public |
+                         System.Reflection.BindingFlags.NonPublic))
+            {
+                Assert.That(field.FieldType, Is.Not.EqualTo(typeof(Avatar)), field.Name);
+            }
+
+            foreach (System.Reflection.PropertyInfo property in typeof(MmdHumanoidProxyRigResult).GetProperties(
+                         System.Reflection.BindingFlags.Instance |
+                         System.Reflection.BindingFlags.Public |
+                         System.Reflection.BindingFlags.NonPublic))
+            {
+                Assert.That(property.PropertyType, Is.Not.EqualTo(typeof(Avatar)), property.Name);
+            }
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void ProxyRigHierarchyMirrorsMmdParentChildStructure()
+        {
+            // Arrange: create a model with parent-child relationships and origins.
+            // Origins (MMD space):
+            //   0: 下半身 origin=[0, 0, 0]   (hips at model origin)
+            //   1: 上半身 origin=[0, 10, 0]  (spine above hips)
+            //   2: 首    origin=[0, 18, 0]   (neck)
+            //   3: 頭    origin=[0, 20, 0]   (head)
+            //   4: 左足  origin=[-4, 0, 0]   (left leg, MMD left = -x)
+            //   5: 左ひざ origin=[-4, -6, 0] (knee)
+            //   6: 左足首 origin=[-4, -12, 0](ankle)
+            var model = new MmdModelDefinition();
+            AddBoneWithOrigin(model, 0, "下半身", -1, new[] { 0f, 0f, 0f });
+            AddBoneWithOrigin(model, 1, "上半身", 0, new[] { 0f, 10f, 0f });
+            AddBoneWithOrigin(model, 2, "首", 1, new[] { 0f, 18f, 0f });
+            AddBoneWithOrigin(model, 3, "頭", 2, new[] { 0f, 20f, 0f });
+            AddBoneWithOrigin(model, 4, "左足", 0, new[] { -4f, 0f, 0f });
+            AddBoneWithOrigin(model, 5, "左ひざ", 4, new[] { -4f, -6f, 0f });
+            AddBoneWithOrigin(model, 6, "左足首", 5, new[] { -4f, -12f, 0f });
+
+            // Expected Unity-space positions [-x, y, -z]:
+            //   0: [0, 0, 0]
+            //   1: [0, 10, 0]     parent=0: local = [0,10,0]-[0,0,0] = [0,10,0]
+            //   2: [0, 18, 0]     parent=1: local = [0,18,0]-[0,10,0] = [0,8,0]
+            //   3: [0, 20, 0]     parent=2: local = [0,20,0]-[0,18,0] = [0,2,0]
+            //   4: [4, 0, 0]      parent=0: local = [4,0,0]-[0,0,0] = [4,0,0]
+            //   5: [4, -6, 0]     parent=4: local = [4,-6,0]-[4,0,0] = [0,-6,0]
+            //   6: [4, -12, 0]    parent=5: local = [4,-12,0]-[4,-6,0] = [0,-6,0]
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: hierarchy mirrors parent relationships
+            Assert.That(result.ProxyRoot, Is.Not.Null);
+            GameObject proxyRoot = result.ProxyRoot!;
+            Transform hips = result.BoneMap[HumanBodyBones.Hips];
+            Transform spine = result.BoneMap[HumanBodyBones.Spine];
+            Transform neck = result.BoneMap[HumanBodyBones.Neck];
+            Transform head = result.BoneMap[HumanBodyBones.Head];
+            Transform leftUpperLeg = result.BoneMap[HumanBodyBones.LeftUpperLeg];
+            Transform leftLowerLeg = result.BoneMap[HumanBodyBones.LeftLowerLeg];
+            Transform leftFoot = result.BoneMap[HumanBodyBones.LeftFoot];
+
+            // All bones should be children of the proxy root
+            Assert.That(hips.parent, Is.EqualTo(proxyRoot.transform),
+                "Hips should be direct child of proxy root");
+
+            // spine should be child of hips (上半身 parent is 下半身)
+            Assert.That(spine.parent, Is.EqualTo(hips),
+                "Spine should be child of Hips");
+
+            // neck should be child of spine (首 parent is 上半身)
+            Assert.That(neck.parent, Is.EqualTo(spine),
+                "Neck should be child of Spine");
+
+            // head should be child of neck (頭 parent is 首)
+            Assert.That(head.parent, Is.EqualTo(neck),
+                "Head should be child of Neck");
+
+            // leftUpperLeg should be child of hips (左足 parent is 下半身)
+            Assert.That(leftUpperLeg.parent, Is.EqualTo(hips),
+                "LeftUpperLeg should be child of Hips");
+
+            // leftLowerLeg should be child of leftUpperLeg (左ひざ parent is 左足)
+            Assert.That(leftLowerLeg.parent, Is.EqualTo(leftUpperLeg),
+                "LeftLowerLeg should be child of LeftUpperLeg");
+
+            // leftFoot should be child of leftLowerLeg (左足首 parent is 左ひざ)
+            Assert.That(leftFoot.parent, Is.EqualTo(leftLowerLeg),
+                "LeftFoot should be child of LeftLowerLeg");
+
+            // Assert: localPosition from origin (parent-relative)
+            Assert.That(hips.localPosition, Is.EqualTo(new Vector3(0, 0, 0)).Within(1e-5f),
+                "Hips localPosition should be derived from origin");
+            Assert.That(spine.localPosition, Is.EqualTo(new Vector3(0, 10, 0)).Within(1e-5f),
+                "Spine localPosition should be parent-relative from origin");
+            Assert.That(neck.localPosition, Is.EqualTo(new Vector3(0, 8, 0)).Within(1e-5f),
+                "Neck localPosition should be parent-relative from origin");
+            Assert.That(head.localPosition, Is.EqualTo(new Vector3(0, 2, 0)).Within(1e-5f),
+                "Head localPosition should be parent-relative from origin");
+            Assert.That(leftUpperLeg.localPosition, Is.EqualTo(new Vector3(4, 0, 0)).Within(1e-5f),
+                "LeftUpperLeg localPosition should be parent-relative from origin");
+            Assert.That(leftLowerLeg.localPosition, Is.EqualTo(new Vector3(0, -6, 0)).Within(1e-5f),
+                "LeftLowerLeg localPosition should be parent-relative from origin");
+            Assert.That(leftFoot.localPosition, Is.EqualTo(new Vector3(0, -6, 0)).Within(1e-5f),
+                "LeftFoot localPosition should be parent-relative from origin");
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void BuildAvatarWithFullBonesRunsBuildAndReturnsAvatar()
+        {
+            // Arrange: full required bone set with anatomically plausible synthetic origins.
+            MmdModelDefinition model = CreateHumanoidMappingModelWithOrigins();
+
+            // Act: create proxy rig first, then build avatar.
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            Assert.That(proxyResult.ProxyRoot, Is.Not.Null);
+            Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+
+            MmdHumanoidAvatarBuildResult avatarResult =
+                MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+            // Assert: diagnostics produced
+            Assert.That(avatarResult.Diagnostics, Is.Not.Empty,
+                "BuildAvatar must produce diagnostics");
+            Assert.That(avatarResult.Avatar, Is.Not.Null,
+                "full required synthetic proxy rig should call BuildHumanAvatar and return an Avatar object");
+            Assert.That(avatarResult.IsValidHumanAvatar, Is.True,
+                "full required synthetic proxy rig should produce a valid human Avatar");
+            Assert.That(avatarResult.Avatar!.hideFlags, Is.EqualTo(HideFlags.HideAndDontSave));
+            Assert.That(avatarResult.Diagnostics.Count, Is.GreaterThanOrEqualTo(2),
+                "BuildAvatar should produce multiple diagnostic entries");
+            bool hasAvatarBuildPrefix = false;
+            foreach (string d in avatarResult.Diagnostics)
+            {
+                if (d.StartsWith("avatar-build:"))
+                    hasAvatarBuildPrefix = true;
+            }
+            Assert.That(hasAvatarBuildPrefix, Is.True,
+                "at least one diagnostic should start with 'avatar-build:'");
+
+            // No Animator created
+            Assert.That(proxyResult.ProxyRoot!.GetComponentsInChildren<Animator>(includeInactive: true),
+                Is.Empty, "BuildAvatar must not create Animator");
+
+            // The MmdHumanoidAvatarBuildResult does not reference or store Animator
+            System.Type avatarResultType = typeof(MmdHumanoidAvatarBuildResult);
+            foreach (System.Reflection.PropertyInfo prop in avatarResultType.GetProperties(
+                         System.Reflection.BindingFlags.Instance |
+                         System.Reflection.BindingFlags.Public |
+                         System.Reflection.BindingFlags.NonPublic))
+            {
+                Assert.That(prop.PropertyType, Is.Not.EqualTo(typeof(Animator)),
+                    "MmdHumanoidAvatarBuildResult must not have an Animator property: " + prop.Name);
+            }
+
+            // Cleanup
+            if (avatarResult.Avatar != null)
+            {
+                Object.DestroyImmediate(avatarResult.Avatar, allowDestroyingAssets: true);
+            }
+            Object.DestroyImmediate(proxyResult.ProxyRoot);
+        }
+
+        [Test]
+        public void BuildAvatarWithStandardMmdSiblingTorsoCreatesValidHumanoidAvatar()
+        {
+            MmdModelDefinition model = CreateStandardMmdSiblingTorsoModel();
+
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            Assert.That(proxyResult.ProxyRoot, Is.Not.Null);
+            Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+
+            Transform hips = proxyResult.BoneMap[HumanBodyBones.Hips];
+            Transform spine = proxyResult.BoneMap[HumanBodyBones.Spine];
+            Transform chest = proxyResult.BoneMap[HumanBodyBones.Chest];
+            Transform neck = proxyResult.BoneMap[HumanBodyBones.Neck];
+
+            Assert.That(spine.parent, Is.EqualTo(hips),
+                "Standard MMD makes Hips and Spine siblings under waist/center helpers; the proxy must use Humanoid hierarchy.");
+            Assert.That(spine.IsChildOf(hips), Is.True);
+            Assert.That(chest.parent, Is.EqualTo(spine));
+            Assert.That(neck.parent, Is.EqualTo(chest));
+            Assert.That(proxyResult.BoneMap[HumanBodyBones.LeftUpperLeg].parent, Is.EqualTo(hips));
+            Assert.That(proxyResult.BoneMap[HumanBodyBones.RightUpperLeg].parent, Is.EqualTo(hips));
+            Assert.That(proxyResult.BoneMap[HumanBodyBones.LeftUpperArm].parent,
+                Is.EqualTo(proxyResult.BoneMap[HumanBodyBones.LeftShoulder]));
+            Assert.That(proxyResult.BoneMap[HumanBodyBones.RightUpperArm].parent,
+                Is.EqualTo(proxyResult.BoneMap[HumanBodyBones.RightShoulder]));
+
+            MmdHumanoidAvatarBuildResult avatarResult =
+                MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+            Assert.That(avatarResult.IsValidHumanAvatar, Is.True,
+                string.Join("\n", avatarResult.Diagnostics));
+            Assert.That(avatarResult.Avatar, Is.Not.Null);
+            Assert.That(avatarResult.Avatar!.isValid, Is.True);
+            Assert.That(avatarResult.Avatar.isHuman, Is.True);
+
+            if (avatarResult.Avatar != null)
+            {
+                Object.DestroyImmediate(avatarResult.Avatar, allowDestroyingAssets: true);
+            }
+
+            Object.DestroyImmediate(proxyResult.ProxyRoot);
+        }
+
+        [Test]
+        public void BuildAvatarAppliesGeometricTPoseToUpperArmsOnly()
+        {
+            MmdModelDefinition model = CreateStandardMmdSiblingTorsoAPoseModel();
+
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            Assert.That(proxyResult.ProxyRoot, Is.Not.Null);
+            Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+
+            Transform hips = proxyResult.BoneMap[HumanBodyBones.Hips];
+            Transform spine = proxyResult.BoneMap[HumanBodyBones.Spine];
+            Transform chest = proxyResult.BoneMap[HumanBodyBones.Chest];
+            Transform head = proxyResult.BoneMap[HumanBodyBones.Head];
+            Transform leftUpperLeg = proxyResult.BoneMap[HumanBodyBones.LeftUpperLeg];
+            Transform rightUpperLeg = proxyResult.BoneMap[HumanBodyBones.RightUpperLeg];
+            Transform leftUpperArm = proxyResult.BoneMap[HumanBodyBones.LeftUpperArm];
+            Transform leftLowerArm = proxyResult.BoneMap[HumanBodyBones.LeftLowerArm];
+            Transform rightUpperArm = proxyResult.BoneMap[HumanBodyBones.RightUpperArm];
+            Transform rightLowerArm = proxyResult.BoneMap[HumanBodyBones.RightLowerArm];
+
+            Vector3 hipsLocalPosition = hips.localPosition;
+            Quaternion hipsLocalRotation = hips.localRotation;
+            Vector3 spineLocalPosition = spine.localPosition;
+            Quaternion spineLocalRotation = spine.localRotation;
+            Vector3 chestLocalPosition = chest.localPosition;
+            Quaternion chestLocalRotation = chest.localRotation;
+            Vector3 headLocalPosition = head.localPosition;
+            Quaternion headLocalRotation = head.localRotation;
+            Vector3 leftUpperLegLocalPosition = leftUpperLeg.localPosition;
+            Quaternion leftUpperLegLocalRotation = leftUpperLeg.localRotation;
+            Vector3 rightUpperLegLocalPosition = rightUpperLeg.localPosition;
+            Quaternion rightUpperLegLocalRotation = rightUpperLeg.localRotation;
+
+            Vector3 leftBefore = (leftLowerArm.position - leftUpperArm.position).normalized;
+            Vector3 rightBefore = (rightLowerArm.position - rightUpperArm.position).normalized;
+            Assert.That(Vector3.Dot(leftBefore, Vector3.left), Is.LessThan(0.999f),
+                "fixture must start as an A-pose, not already a perfect left T-pose.");
+            Assert.That(Vector3.Dot(rightBefore, Vector3.right), Is.LessThan(0.999f),
+                "fixture must start as an A-pose, not already a perfect right T-pose.");
+
+            MmdHumanoidAvatarBuildResult avatarResult = MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+            Assert.That(avatarResult.IsValidHumanAvatar, Is.True, string.Join("\n", avatarResult.Diagnostics));
+            Assert.That(Vector3.Dot((leftLowerArm.position - leftUpperArm.position).normalized, Vector3.left),
+                Is.GreaterThan(0.999f),
+                "LeftUpperArm must point toward Unity -X after BuildAvatar T-pose capture.");
+            Assert.That(Vector3.Dot((rightLowerArm.position - rightUpperArm.position).normalized, Vector3.right),
+                Is.GreaterThan(0.999f),
+                "RightUpperArm must point toward Unity +X after BuildAvatar T-pose capture.");
+
+            Assert.That(hips.localPosition, Is.EqualTo(hipsLocalPosition).Within(1e-5f));
+            Assert.That(Quaternion.Angle(hips.localRotation, hipsLocalRotation), Is.LessThan(0.001f));
+            Assert.That(spine.localPosition, Is.EqualTo(spineLocalPosition).Within(1e-5f));
+            Assert.That(Quaternion.Angle(spine.localRotation, spineLocalRotation), Is.LessThan(0.001f));
+            Assert.That(chest.localPosition, Is.EqualTo(chestLocalPosition).Within(1e-5f));
+            Assert.That(Quaternion.Angle(chest.localRotation, chestLocalRotation), Is.LessThan(0.001f));
+            Assert.That(head.localPosition, Is.EqualTo(headLocalPosition).Within(1e-5f));
+            Assert.That(Quaternion.Angle(head.localRotation, headLocalRotation), Is.LessThan(0.001f));
+            Assert.That(leftUpperLeg.localPosition, Is.EqualTo(leftUpperLegLocalPosition).Within(1e-5f));
+            Assert.That(Quaternion.Angle(leftUpperLeg.localRotation, leftUpperLegLocalRotation), Is.LessThan(0.001f));
+            Assert.That(rightUpperLeg.localPosition, Is.EqualTo(rightUpperLegLocalPosition).Within(1e-5f));
+            Assert.That(Quaternion.Angle(rightUpperLeg.localRotation, rightUpperLegLocalRotation), Is.LessThan(0.001f));
+            Assert.That(avatarResult.Diagnostics, Has.Some.Contains("avatar-build-tpose: applied LeftUpperArm"));
+            Assert.That(avatarResult.Diagnostics, Has.Some.Contains("avatar-build-tpose: applied RightUpperArm"));
+
+            if (avatarResult.Avatar != null)
+            {
+                Object.DestroyImmediate(avatarResult.Avatar, allowDestroyingAssets: true);
+            }
+
+            Object.DestroyImmediate(proxyResult.ProxyRoot);
+        }
+
+        [Test]
+        public void BuildAvatarWithMissingBonesStillReportsDiagnosticsAndNoAnimator()
+        {
+            // Arrange: only 3 required bones with origins.
+            MmdModelDefinition model = CreateHumanoidMappingModel("下半身", "上半身", "頭");
+            // Add origins so the proxy rig positions are valid.
+            foreach (MmdBoneDefinition b in model.bones)
+            {
+                if (b.origin == null || b.origin.Length < 3)
+                    b.origin = new[] { 0f, (float)b.index * 10f, 0f };
+            }
+
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            Assert.That(proxyResult.ProxyRoot, Is.Not.Null);
+            Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.MissingRequired));
+
+            // Act
+            MmdHumanoidAvatarBuildResult avatarResult = MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+            // Assert: AvatarBuilder was not called, avoiding Unity error logs for incomplete skeletons.
+            Assert.That(avatarResult.Diagnostics, Is.Not.Empty,
+                "BuildAvatar must produce diagnostics even with missing bones");
+            Assert.That(avatarResult.Avatar, Is.Null);
+            Assert.That(string.Join("\n", avatarResult.Diagnostics), Does.Contain("skipped because proxy rig readiness is MissingRequired"));
+
+            // No Animator
+            Assert.That(proxyResult.ProxyRoot!.GetComponentsInChildren<Animator>(includeInactive: true),
+                Is.Empty, "BuildAvatar must not create Animator with missing bones");
+
+            // Cleanup
+            if (avatarResult.Avatar != null)
+            {
+                Object.DestroyImmediate(avatarResult.Avatar, allowDestroyingAssets: true);
+            }
+            Object.DestroyImmediate(proxyResult.ProxyRoot);
+        }
+
+        [Test]
+        public void BuildAvatarWithNoBonesThrowsInvalidOperation()
+        {
+            // Arrange: no bones -> ProxyRoot is null.
+            var model = new MmdModelDefinition();
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            Assert.That(proxyResult.ProxyRoot, Is.Null);
+            Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.NoBones));
+
+            // Act & Assert
+            System.InvalidOperationException? ex = Assert.Throws<System.InvalidOperationException>(
+                () => MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult));
+            Assert.That(ex!.Message, Does.Contain("proxy rig root is null"));
+        }
+
+        [Test]
+        public void BuildAvatarWithNullProxyRigThrowsArgumentNull()
+        {
+            Assert.Throws<System.ArgumentNullException>(
+                () => MmdHumanoidProxyRigFactory.BuildAvatar(null!));
+        }
+
+        [Test]
+        public void MmdOriginToUnityPositionConvertsCorrectly()
+        {
+            // MMD->Unity: [-x, y, -z]
+            Assert.That(MmdHumanoidProxyRigFactory.MmdOriginToUnityPosition(new[] { 1f, 2f, 3f }),
+                Is.EqualTo(new Vector3(-1, 2, -3)).Within(1e-5f));
+            Assert.That(MmdHumanoidProxyRigFactory.MmdOriginToUnityPosition(new[] { -5f, 10f, -2f }),
+                Is.EqualTo(new Vector3(5, 10, 2)).Within(1e-5f));
+            Assert.That(MmdHumanoidProxyRigFactory.MmdOriginToUnityPosition(new[] { 0f, 0f, 0f }),
+                Is.EqualTo(Vector3.zero).Within(1e-5f));
+        }
+
+        [Test]
+        public void MmdOriginToUnityPositionFallsBackToZeroForNullEmptyShort()
+        {
+            Assert.That(MmdHumanoidProxyRigFactory.MmdOriginToUnityPosition(null),
+                Is.EqualTo(Vector3.zero).Within(1e-5f), "null origin should return zero");
+            Assert.That(MmdHumanoidProxyRigFactory.MmdOriginToUnityPosition(new float[0]),
+                Is.EqualTo(Vector3.zero).Within(1e-5f), "empty origin should return zero");
+            Assert.That(MmdHumanoidProxyRigFactory.MmdOriginToUnityPosition(new[] { 1f, 2f }),
+                Is.EqualTo(Vector3.zero).Within(1e-5f), "short origin should return zero");
+        }
+
+        [Test]
+        public void ProxyRigUsesTryMapBoneNameForMapping()
+        {
+            // Arrange: verify that standard MMD names work through TryMapBoneName
+            Assert.That(MmdHumanoidBoneMappingEvaluator.TryMapBoneName("下半身", out HumanBodyBones hipsBone, out bool hipsRequired), Is.True);
+            Assert.That(hipsBone, Is.EqualTo(HumanBodyBones.Hips));
+            Assert.That(hipsRequired, Is.True);
+
+            Assert.That(MmdHumanoidBoneMappingEvaluator.TryMapBoneName("上半身2", out HumanBodyBones chestBone, out _), Is.True);
+            Assert.That(chestBone, Is.EqualTo(HumanBodyBones.Chest));
+
+            Assert.That(MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左肩", out HumanBodyBones shoulderBone, out _), Is.True);
+            Assert.That(shoulderBone, Is.EqualTo(HumanBodyBones.LeftShoulder));
+
+            // Helper bones must not map
+            Assert.That(MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左足ＩＫ", out _, out _), Is.False);
+            Assert.That(MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右腕捩", out _, out _), Is.False);
+        }
+
+        [Test]
+        public void TryMapBoneNameMapsAliasesAndNormalizedNames()
+        {
+            AssertMapped("胸", HumanBodyBones.Chest, required: false);
+            AssertMapped("上半身２", HumanBodyBones.Chest, required: false);
+            AssertMapped("左膝", HumanBodyBones.LeftLowerLeg, required: true);
+            AssertMapped("Hips", HumanBodyBones.Hips, required: true);
+            AssertMapped("hips", HumanBodyBones.Hips, required: true);
+            AssertMapped("HIPS", HumanBodyBones.Hips, required: true);
+            AssertMapped("Head", HumanBodyBones.Head, required: true);
+            AssertMapped("Left arm", HumanBodyBones.LeftUpperArm, required: true);
+            AssertMapped("LEFT ARM", HumanBodyBones.LeftUpperArm, required: true);
+            AssertMapped("left elbow", HumanBodyBones.LeftLowerArm, required: true);
+            AssertMapped("Left Wrist", HumanBodyBones.LeftHand, required: true);
+            AssertMapped("Right Knee", HumanBodyBones.RightLowerLeg, required: true);
+            AssertMapped("Right Ankle", HumanBodyBones.RightFoot, required: true);
+            AssertMapped("Left Eye", HumanBodyBones.LeftEye, required: false);
+
+            Assert.That(MmdHumanoidBoneMappingEvaluator.TryMapBoneName("Left arm IK", out _, out _), Is.False);
+        }
+
+        [Test]
+        public void ModelBasedMappingUsesAliasesWithoutChangingUiSurface()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "HIPS",
+                "Upper Body",
+                "neck",
+                "Head",
+                "Left Leg",
+                "左膝",
+                "Left Ankle",
+                "Right Leg",
+                "右膝",
+                "Right Foot",
+                "Left arm",
+                "left elbow",
+                "Left Wrist",
+                "Right Arm",
+                "Right Elbow",
+                "Right Wrist",
+                "胸",
+                "Left Shoulder",
+                "Right Shoulder",
+                "Left Toe",
+                "Right Toes",
+                "Left Eye",
+                "Right Eye");
+
+            MmdHumanoidBoneMappingReport report = MmdHumanoidBoneMappingEvaluator.Evaluate(model);
+
+            Assert.That(report.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+            Assert.That(report.RequiredMappedBoneCount, Is.EqualTo(MmdHumanoidBoneMappingEvaluator.RequiredHumanBoneCount));
+            Assert.That(report.OptionalMappedBoneCount, Is.EqualTo(7));
+            Assert.That(report.AmbiguousMappingCount, Is.EqualTo(0));
+            AssertEntry(report, HumanBodyBones.Hips, "HIPS", 0);
+            AssertEntry(report, HumanBodyBones.Chest, "胸", 16);
+            AssertEntry(report, HumanBodyBones.LeftLowerLeg, "左膝", 5);
+            AssertEntry(report, HumanBodyBones.LeftUpperArm, "Left arm", 10);
+        }
+
+        [Test]
+        public void ImportedHierarchyMappingUsesAliasesAndNormalizesCase()
+        {
+            var root = new GameObject("ImportedHierarchyRoot");
+            MmdHumanoidProxyRigResult? result = null;
+            try
+            {
+                Transform hips = AddBoneToHierarchy(root, "hips", null, new Vector3(0f, 90f, 0f));
+                Transform spine = AddBoneToHierarchy(root, "upper body", hips, new Vector3(0f, 115f, 0f));
+                Transform neck = AddBoneToHierarchy(root, "NECK", spine, new Vector3(0f, 150f, 0f));
+                Transform head = AddBoneToHierarchy(root, "HEAD", neck, new Vector3(0f, 165f, 0f));
+                Transform leftUpperLeg = AddBoneToHierarchy(root, "Left Leg", hips, new Vector3(-8f, 85f, 0f));
+                Transform leftLowerLeg = AddBoneToHierarchy(root, "Left Knee", leftUpperLeg, new Vector3(-8f, 45f, 0f));
+                Transform leftFoot = AddBoneToHierarchy(root, "Left Ankle", leftLowerLeg, new Vector3(-8f, 5f, 3f));
+                Transform rightUpperLeg = AddBoneToHierarchy(root, "Right Leg", hips, new Vector3(8f, 85f, 0f));
+                Transform rightLowerLeg = AddBoneToHierarchy(root, "Right Knee", rightUpperLeg, new Vector3(8f, 45f, 0f));
+                Transform rightFoot = AddBoneToHierarchy(root, "Right Ankle", rightLowerLeg, new Vector3(8f, 5f, 3f));
+                Transform leftUpperArm = AddBoneToHierarchy(root, "LEFT ARM", spine, new Vector3(-25f, 135f, 0f));
+                Transform leftLowerArm = AddBoneToHierarchy(root, "Left Elbow", leftUpperArm, new Vector3(-50f, 135f, 0f));
+                Transform leftHand = AddBoneToHierarchy(root, "Left Wrist", leftLowerArm, new Vector3(-70f, 135f, 0f));
+                Transform rightUpperArm = AddBoneToHierarchy(root, "Right Arm", spine, new Vector3(25f, 135f, 0f));
+                Transform rightLowerArm = AddBoneToHierarchy(root, "Right Elbow", rightUpperArm, new Vector3(50f, 135f, 0f));
+                Transform rightHand = AddBoneToHierarchy(root, "Right Wrist", rightLowerArm, new Vector3(70f, 135f, 0f));
+                Transform chest = AddBoneToHierarchy(root, "上半身２", spine, new Vector3(0f, 130f, 0f));
+
+                result = MmdHumanoidProxyRigFactory.CreateProxyRigFromBoneTransforms(
+                    new[]
+                    {
+                        hips, spine, neck, head,
+                        leftUpperLeg, leftLowerLeg, leftFoot,
+                        rightUpperLeg, rightLowerLeg, rightFoot,
+                        leftUpperArm, leftLowerArm, leftHand,
+                        rightUpperArm, rightLowerArm, rightHand,
+                        chest,
+                    },
+                    root.transform,
+                    "ImportedProxyRig");
+
+                Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                Assert.That(result.BoneMap.Count, Is.EqualTo(17));
+                Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Hips), Is.True);
+                Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Chest), Is.True);
+                Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftUpperArm), Is.True);
+                Assert.That(result.Matches.Single(match => match.HumanBone == HumanBodyBones.Hips).MmdBoneName,
+                    Is.EqualTo("hips"));
+                Assert.That(result.Matches.Single(match => match.HumanBone == HumanBodyBones.Chest).MmdBoneName,
+                    Is.EqualTo("上半身２"));
+            }
+            finally
+            {
+                if (result?.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(result.ProxyRoot);
+                }
+
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void OptionalAliasDuplicateCandidatesReportDiagnosticsButRemainReady()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModel(
+                "下半身",
+                "上半身",
+                "首",
+                "頭",
+                "左足",
+                "左ひざ",
+                "左足首",
+                "右足",
+                "右ひざ",
+                "右足首",
+                "左腕",
+                "左ひじ",
+                "左手首",
+                "右腕",
+                "右ひじ",
+                "右手首",
+                "上半身2",
+                "胸");
+
+            MmdHumanoidBoneMappingReport report = MmdHumanoidBoneMappingEvaluator.Evaluate(model);
+            Assert.That(report.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+            Assert.That(report.AmbiguousMappingCount, Is.EqualTo(1));
+            Assert.That(string.Join("\n", report.Diagnostics),
+                Does.Contain("ambiguous: Chest <- 上半身2#16, 胸#17"));
+
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            try
+            {
+                Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                MmdHumanoidBoneMappingMatch chest = result.Matches.Single(match => match.HumanBone == HumanBodyBones.Chest);
+                Assert.That(chest.MmdBoneName, Is.EqualTo("上半身2"));
+                Assert.That(chest.MmdBoneIndex, Is.EqualTo(16));
+            }
+            finally
+            {
+                if (result.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(result.ProxyRoot);
+                }
+            }
+        }
+
+        [Test]
+        public void RequiredDuplicateCandidatesRemainAmbiguousAndSkipAvatarBuild()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModelWithOrigins();
+            AddBoneWithOrigin(model, model.bones.Count, "左膝", 4, new[] { 8f, 44f, 0f });
+
+            MmdHumanoidBoneMappingReport report = MmdHumanoidBoneMappingEvaluator.Evaluate(model);
+
+            Assert.That(report.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ambiguous));
+            Assert.That(report.AmbiguousMappingCount, Is.EqualTo(1));
+            Assert.That(string.Join("\n", report.Diagnostics), Does.Contain("ambiguous: LeftLowerLeg"));
+
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            try
+            {
+                Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ambiguous));
+
+                MmdHumanoidAvatarBuildResult avatarResult =
+                    MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+                Assert.That(avatarResult.Avatar, Is.Null);
+                Assert.That(string.Join("\n", avatarResult.Diagnostics),
+                    Does.Contain("skipped because proxy rig readiness is Ambiguous"));
+            }
+            finally
+            {
+                if (proxyResult.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(proxyResult.ProxyRoot);
+                }
+            }
+        }
+
+        [Test]
+        public void FingerDistalDuplicateCandidatesRemainReadyAndBuildAvatar()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModelWithOrigins();
+            AddTdaStyleFingerDistalDuplicates(model);
+
+            MmdHumanoidBoneMappingReport report = MmdHumanoidBoneMappingEvaluator.Evaluate(model);
+
+            Assert.That(report.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+            Assert.That(report.RequiredMappedBoneCount, Is.EqualTo(16));
+            Assert.That(report.MissingRequiredBoneCount, Is.EqualTo(0));
+            Assert.That(report.AmbiguousMappingCount, Is.EqualTo(8));
+            Assert.That(string.Join("\n", report.Diagnostics),
+                Does.Contain("ambiguous: LeftIndexDistal")
+                    .And.Contain("ambiguous: RightLittleDistal"));
+
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            MmdHumanoidAvatarBuildResult? avatarResult = null;
+            try
+            {
+                Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                MmdHumanoidBoneMappingMatch leftIndexDistal =
+                    proxyResult.Matches.Single(match => match.HumanBone == HumanBodyBones.LeftIndexDistal);
+                Assert.That(leftIndexDistal.MmdBoneName, Is.EqualTo("左人指３"));
+
+                avatarResult = MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+                Assert.That(avatarResult.Avatar, Is.Not.Null);
+                Assert.That(avatarResult.Avatar!.isValid, Is.True);
+                Assert.That(avatarResult.Avatar.isHuman, Is.True);
+                Assert.That(avatarResult.IsValidHumanAvatar, Is.True);
+            }
+            finally
+            {
+                if (avatarResult?.Avatar != null)
+                {
+                    Object.DestroyImmediate(avatarResult.Avatar, allowDestroyingAssets: true);
+                }
+
+                if (proxyResult.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(proxyResult.ProxyRoot);
+                }
+            }
+        }
+
+        [Test]
+        public void BuildAvatarWithFullFingerBonesUsesUnityHumanTraitNames()
+        {
+            MmdModelDefinition model = CreateHumanoidMappingModelWithOrigins();
+            AddFullFingerChains(model);
+
+            MmdHumanoidProxyRigResult proxyResult = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+            MmdHumanoidAvatarBuildResult? avatarResult = null;
+            try
+            {
+                Assert.That(proxyResult.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                Assert.That(proxyResult.BoneMap.Keys.Count(IsFingerHumanBone), Is.EqualTo(30));
+
+                avatarResult = MmdHumanoidProxyRigFactory.BuildAvatar(proxyResult);
+
+                Assert.That(avatarResult.Avatar, Is.Not.Null, string.Join("\n", avatarResult.Diagnostics));
+                Assert.That(avatarResult.IsValidHumanAvatar, Is.True, string.Join("\n", avatarResult.Diagnostics));
+
+                var expectedFingerHumanNames = new HashSet<string>(
+                    EnumerateFingerHumanBones().Select(bone => HumanTrait.BoneName[(int)bone]));
+                var actualHumanNames = new HashSet<string>(
+                    avatarResult.Avatar!.humanDescription.human.Select(human => human.humanName));
+
+                Assert.That(actualHumanNames.Intersect(expectedFingerHumanNames).Count(), Is.EqualTo(30));
+                Assert.That(actualHumanNames, Does.Contain("Left Thumb Proximal"));
+                Assert.That(actualHumanNames, Does.Contain("Right Little Distal"));
+                Assert.That(actualHumanNames, Does.Not.Contain(HumanBodyBones.LeftThumbProximal.ToString()));
+            }
+            finally
+            {
+                if (avatarResult?.Avatar != null)
+                {
+                    Object.DestroyImmediate(avatarResult.Avatar, allowDestroyingAssets: true);
+                }
+
+                if (proxyResult.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(proxyResult.ProxyRoot);
+                }
+            }
+        }
+
+        [Test]
+        public void StandardJapaneseMappingKeepsCanonicalMatches()
+        {
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(
+                CreateStandardMmdSiblingTorsoModel());
+
+            try
+            {
+                Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                Assert.That(string.Join(",", CanonicalizeMatches(result.Matches)), Is.EqualTo(string.Join(",", new[]
+                {
+                    "Hips:4:下半身",
+                    "Spine:5:上半身",
+                    "Chest:6:上半身2",
+                    "Neck:7:首",
+                    "Head:8:頭",
+                    "LeftUpperLeg:9:左足",
+                    "LeftLowerLeg:10:左ひざ",
+                    "LeftFoot:11:左足首",
+                    "RightUpperLeg:12:右足",
+                    "RightLowerLeg:13:右ひざ",
+                    "RightFoot:14:右足首",
+                    "LeftShoulder:15:左肩",
+                    "LeftUpperArm:16:左腕",
+                    "LeftLowerArm:17:左ひじ",
+                    "LeftHand:18:左手首",
+                    "RightShoulder:19:右肩",
+                    "RightUpperArm:20:右腕",
+                    "RightLowerArm:21:右ひじ",
+                    "RightHand:22:右手首",
+                })));
+            }
+            finally
+            {
+                if (result.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(result.ProxyRoot);
+                }
+            }
+        }
+
+        [Test]
+        public void ProxyRigWithNoBonesReturnsNullRoot()
+        {
+            // Arrange
+            var model = new MmdModelDefinition();
+            // No bones added.
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert
+            Assert.That(result.ProxyRoot, Is.Null, "root must be null when there are no bones");
+            Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.NoBones));
+            Assert.That(result.BoneMap, Is.Empty);
+            Assert.That(result.Matches, Is.Empty);
+        }
+
+        [Test]
+        public void TryMapBoneNameMapsLeftFingerBones()
+        {
+            // Left thumb
+            bool ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左親指１", out HumanBodyBones bone, out bool req);
+            Assert.That(ok, Is.True, "左親指１ should map");
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftThumbProximal));
+            Assert.That(req, Is.False, "finger bones are optional");
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左親指２", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftThumbIntermediate));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左親指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftThumbDistal));
+
+            // Left index (人指 variant)
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人指２", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexIntermediate));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人指３", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexDistal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexDistal));
+
+            // Left index (人差指 variant)
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人差指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人差指３", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexDistal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左人差指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftIndexDistal));
+
+            // Left middle
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左中指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftMiddleProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左中指２", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftMiddleIntermediate));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左中指３", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftMiddleDistal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左中指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftMiddleDistal));
+
+            // Left ring
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左薬指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftRingProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左薬指３", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftRingDistal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左薬指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftRingDistal));
+
+            // Left little
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左小指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftLittleProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左小指２", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftLittleIntermediate));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("左小指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.LeftLittleDistal));
+        }
+
+        [Test]
+        public void TryMapBoneNameMapsRightFingerBones()
+        {
+            // Right thumb
+            bool ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右親指１", out HumanBodyBones bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightThumbProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右親指２", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightThumbIntermediate));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右親指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightThumbDistal));
+
+            // Right index (人指 variant)
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右人指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightIndexProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右人指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightIndexDistal));
+
+            // Right index (人差指 variant)
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右人差指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightIndexProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右人差指３", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightIndexDistal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右人差指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightIndexDistal));
+
+            // Right middle
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右中指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightMiddleProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右中指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightMiddleDistal));
+
+            // Right ring
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右薬指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightRingProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右薬指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightRingDistal));
+
+            // Right little
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右小指１", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightLittleProximal));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右小指２", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightLittleIntermediate));
+
+            ok = MmdHumanoidBoneMappingEvaluator.TryMapBoneName("右小指先", out bone, out _);
+            Assert.That(ok, Is.True);
+            Assert.That(bone, Is.EqualTo(HumanBodyBones.RightLittleDistal));
+        }
+
+        [Test]
+        public void ProxyRigCreatesFingerTransformsForLeftHandWithHierarchy()
+        {
+            // Arrange: a model with left arm + hand + finger bones.
+            var model = new MmdModelDefinition();
+            // Indices 0-3: 左腕, 左ひじ, 左手首, 左人指１(parent=2=左手首)
+            AddBoneWithOrigin(model, 0, "左腕", -1, new[] { 20f, 135f, 0f });
+            AddBoneWithOrigin(model, 1, "左ひじ", 0, new[] { 40f, 135f, 0f });
+            AddBoneWithOrigin(model, 2, "左手首", 1, new[] { 60f, 135f, 0f });
+            // Finger bones parented under 左手首
+            AddBoneWithOrigin(model, 3, "左親指１", 2, new[] { 68f, 130f, 5f });
+            AddBoneWithOrigin(model, 4, "左親指２", 3, new[] { 72f, 128f, 10f });
+            AddBoneWithOrigin(model, 5, "左親指先", 4, new[] { 76f, 126f, 14f });
+            AddBoneWithOrigin(model, 6, "左人指１", 2, new[] { 64f, 130f, 0f });
+            AddBoneWithOrigin(model, 7, "左人指２", 6, new[] { 66f, 125f, 0f });
+            AddBoneWithOrigin(model, 8, "左人指先", 7, new[] { 68f, 120f, 0f });
+            AddBoneWithOrigin(model, 9, "左中指１", 2, new[] { 64f, 134f, 0f });
+            AddBoneWithOrigin(model, 10, "左中指２", 9, new[] { 66f, 139f, 0f });
+            AddBoneWithOrigin(model, 11, "左中指先", 10, new[] { 68f, 144f, 0f });
+            AddBoneWithOrigin(model, 12, "左薬指１", 2, new[] { 64f, 138f, 0f });
+            AddBoneWithOrigin(model, 13, "左薬指２", 12, new[] { 66f, 143f, 0f });
+            AddBoneWithOrigin(model, 14, "左薬指先", 13, new[] { 68f, 148f, 0f });
+            AddBoneWithOrigin(model, 15, "左小指１", 2, new[] { 64f, 142f, 0f });
+            AddBoneWithOrigin(model, 16, "左小指２", 15, new[] { 66f, 147f, 0f });
+            AddBoneWithOrigin(model, 17, "左小指先", 16, new[] { 68f, 152f, 0f });
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: proxy rig created with correct transforms
+            Assert.That(result.ProxyRoot, Is.Not.Null);
+
+            // Verify all finger HumanBodyBones are present
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftThumbProximal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftThumbIntermediate), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftThumbDistal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftIndexProximal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftIndexIntermediate), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftIndexDistal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftMiddleProximal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftMiddleIntermediate), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftMiddleDistal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftRingProximal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftRingIntermediate), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftRingDistal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftLittleProximal), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftLittleIntermediate), Is.True);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.LeftLittleDistal), Is.True);
+
+            // Verify hierarchy: fingers are children of hand (LeftHand)
+            Transform hand = result.BoneMap[HumanBodyBones.LeftHand];
+            Assert.That(result.BoneMap[HumanBodyBones.LeftThumbProximal].parent, Is.EqualTo(hand));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftThumbIntermediate].parent,
+                Is.EqualTo(result.BoneMap[HumanBodyBones.LeftThumbProximal]));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftThumbDistal].parent,
+                Is.EqualTo(result.BoneMap[HumanBodyBones.LeftThumbIntermediate]));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftIndexProximal].parent, Is.EqualTo(hand));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftIndexIntermediate].parent,
+                Is.EqualTo(result.BoneMap[HumanBodyBones.LeftIndexProximal]));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftIndexDistal].parent,
+                Is.EqualTo(result.BoneMap[HumanBodyBones.LeftIndexIntermediate]));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftMiddleProximal].parent, Is.EqualTo(hand));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftMiddleDistal].parent,
+                Is.EqualTo(result.BoneMap[HumanBodyBones.LeftMiddleIntermediate]));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftLittleProximal].parent, Is.EqualTo(hand));
+            Assert.That(result.BoneMap[HumanBodyBones.LeftRingDistal].parent,
+                Is.EqualTo(result.BoneMap[HumanBodyBones.LeftRingIntermediate]));
+
+            // Verify finger count in total mapped (16 required + 3 optional + 15 finger = 34)
+            // This model has: 16 required bones + shoulders(2) + chest(1) = all present
+            // But only if we include all required/optional/finger.
+            // The model only has 左腕/左ひじ/左手首 + 15 finger bones = 18 total
+            // Mapped: LeftUpperArm, LeftLowerArm, LeftHand + 15 finger = 18
+            int mappedCount = result.BoneMap.Count;
+            Assert.That(mappedCount, Is.EqualTo(18),
+                "Should have 3 arm bones + 15 finger bones mapped");
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void FingerDuplicateCandidatesKeepAmbiguousDiagnosticsWithoutOverridingMissingRequired()
+        {
+            var model = new MmdModelDefinition();
+            AddBone(model, 0, "左人指３", -1);
+            AddBone(model, 1, "左人指先", 0);
+
+            MmdHumanoidBoneMappingReport report = MmdHumanoidBoneMappingEvaluator.Evaluate(model);
+
+            Assert.That(report.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.MissingRequired));
+            Assert.That(report.AmbiguousMappingCount, Is.EqualTo(1));
+            Assert.That(string.Join("\n", report.Diagnostics), Does.Contain("ambiguous: LeftIndexDistal"));
+        }
+
+        [Test]
+        public void ProxyRigWithMultipleDuplicateNamesTakesFirstMatch()
+        {
+            // Arrange: two bones with the same MMD name "下半身" -> only the first should map to Hips
+            var model = new MmdModelDefinition();
+            AddBone(model, 0, "下半身", -1);
+            AddBone(model, 1, "下半身", -1); // duplicate
+            AddBone(model, 2, "上半身", 0);
+            AddBone(model, 3, "首", 2);
+            AddBone(model, 4, "頭", 3);
+
+            // Act
+            MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: only one Hips transform (the first duplicate is ignored)
+            Assert.That(result.ProxyRoot, Is.Not.Null);
+            Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Hips), Is.True);
+            // Only 4 unique HumanBodyBones should be mapped (下半身 -> Hips, 上半身 -> Spine, 首 -> Neck, 頭 -> Head)
+            Assert.That(result.BoneMap.Count, Is.EqualTo(4));
+
+            // Cleanup
+            Object.DestroyImmediate(result.ProxyRoot);
+        }
+
+        [Test]
+        public void CreateProxyRigFromPmxAssetWithoutImportedRootReturnsHierarchyNotReady()
+        {
+            // Arrange: a fresh asset without ImportedRoot must be validated before attempting
+            // proxy rig generation.
+            MmdPmxAsset asset = ScriptableObject.CreateInstance<MmdPmxAsset>();
+            try
+            {
+                // Act
+                MmdHumanoidProxyRigResult result = MmdHumanoidProxyRigFactory.CreateProxyRig(asset);
+
+                // Assert
+                Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.HierarchyNotReady));
+                Assert.That(result.ProxyRoot, Is.Null);
+                Assert.That(string.Join("\n", result.Diagnostics), Does.StartWith("hierarchy-not-ready"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(asset);
+            }
+        }
+
+        [Test]
+        public void CreateProxyRigFromBoneTransformsMapsRequiredBonesAndComposesWorldPositions()
+        {
+            // Arrange: a synthetic importer hierarchy with all 16 required bones.
+            var root = new GameObject("ImportedHierarchyRoot");
+            root.transform.position = new Vector3(2f, 4f, 6f);
+            root.transform.rotation = Quaternion.Euler(0f, 30f, 0f);
+            try
+            {
+                Transform hips = AddBoneToHierarchy(root, "下半身", null, new Vector3(2f, 4f, 6f));
+                Transform spine = AddBoneToHierarchy(root, "上半身", hips, new Vector3(2f, 14f, 6f));
+                Transform neck = AddBoneToHierarchy(root, "首", spine, new Vector3(2f, 24f, 6f));
+                Transform head = AddBoneToHierarchy(root, "頭", neck, new Vector3(2f, 34f, 6f));
+                Transform leftUpperLeg = AddBoneToHierarchy(root, "左足", hips, new Vector3(6f, 4f, 6f));
+                Transform leftLowerLeg = AddBoneToHierarchy(root, "左ひざ", leftUpperLeg, new Vector3(10f, 4f, 6f));
+                Transform leftFoot = AddBoneToHierarchy(root, "左足首", leftLowerLeg, new Vector3(14f, 4f, 6f));
+                Transform rightUpperLeg = AddBoneToHierarchy(root, "右足", hips, new Vector3(-2f, 4f, 6f));
+                Transform rightLowerLeg = AddBoneToHierarchy(root, "右ひざ", rightUpperLeg, new Vector3(-6f, 4f, 6f));
+                Transform rightFoot = AddBoneToHierarchy(root, "右足首", rightLowerLeg, new Vector3(-10f, 4f, 6f));
+                Transform leftUpperArm = AddBoneToHierarchy(root, "左腕", spine, new Vector3(2f, 24f, 8f));
+                Transform leftLowerArm = AddBoneToHierarchy(root, "左ひじ", leftUpperArm, new Vector3(2f, 24f, 12f));
+                Transform leftHand = AddBoneToHierarchy(root, "左手首", leftLowerArm, new Vector3(2f, 24f, 16f));
+                Transform rightUpperArm = AddBoneToHierarchy(root, "右腕", spine, new Vector3(2f, 24f, 4f));
+                Transform rightLowerArm = AddBoneToHierarchy(root, "右ひじ", rightUpperArm, new Vector3(2f, 24f, 0f));
+                Transform rightHand = AddBoneToHierarchy(root, "右手首", rightLowerArm, new Vector3(2f, 24f, -4f));
+
+                var bones = new[]
+                {
+                    hips, spine, neck, head,
+                    leftUpperLeg, leftLowerLeg, leftFoot,
+                    rightUpperLeg, rightLowerLeg, rightFoot,
+                    leftUpperArm, leftLowerArm, leftHand,
+                    rightUpperArm, rightLowerArm, rightHand,
+                };
+
+                // Act
+                MmdHumanoidProxyRigResult result =
+                    MmdHumanoidProxyRigFactory.CreateProxyRigFromBoneTransforms(bones, root.transform, "ImportedProxyRig");
+
+                // Assert
+                Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                Assert.That(result.ProxyRoot, Is.Not.Null);
+                Assert.That(result.BoneMap.Count, Is.EqualTo(16));
+                Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Hips), Is.True);
+                Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.Head), Is.True);
+                Assert.That(result.BoneMap.ContainsKey(HumanBodyBones.RightHand), Is.True);
+                Assert.That(Vector3.Distance(result.BoneMap[HumanBodyBones.Hips].position, hips.position), Is.LessThan(0.0001f));
+                Assert.That(Vector3.Distance(result.BoneMap[HumanBodyBones.Spine].position, spine.position), Is.LessThan(0.0001f));
+                Assert.That(Vector3.Distance(result.BoneMap[HumanBodyBones.RightHand].position, rightHand.position), Is.LessThan(0.0001f));
+                Assert.That(string.Join(";", result.Diagnostics), Does.Contain("proxy-rig: input=ImportedHierarchy"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void CreateProxyRigFromBoneTransformsUsesHumanoidHierarchyAndPreservesWorldPoseForSiblingTorso()
+        {
+            var root = new GameObject("ImportedHierarchyRoot");
+            MmdHumanoidProxyRigResult? result = null;
+            root.transform.position = new Vector3(3f, 5f, 7f);
+            root.transform.rotation = Quaternion.Euler(0f, 25f, 0f);
+            try
+            {
+                Transform allParent = AddBoneToHierarchy(root, "全ての親", null, new Vector3(3f, 5f, 7f));
+                Transform center = AddBoneToHierarchy(root, "センター", allParent, new Vector3(3f, 90f, 7f));
+                Transform groove = AddBoneToHierarchy(root, "グルーブ", center, new Vector3(3f, 92f, 7f));
+                Transform waist = AddBoneToHierarchy(root, "腰", groove, new Vector3(3f, 94f, 7f));
+                Transform hips = AddBoneToHierarchy(root, "下半身", waist, new Vector3(3f, 95f, 7f));
+                Transform spine = AddBoneToHierarchy(root, "上半身", waist, new Vector3(3f, 118f, 7f));
+                Transform chest = AddBoneToHierarchy(root, "上半身2", spine, new Vector3(3f, 133f, 7f));
+                Transform neck = AddBoneToHierarchy(root, "首", chest, new Vector3(3f, 153f, 7f));
+                Transform head = AddBoneToHierarchy(root, "頭", neck, new Vector3(3f, 168f, 7f));
+                Transform leftUpperLeg = AddBoneToHierarchy(root, "左足", hips, new Vector3(-5f, 88f, 7f));
+                Transform leftLowerLeg = AddBoneToHierarchy(root, "左ひざ", leftUpperLeg, new Vector3(-5f, 48f, 7f));
+                Transform leftFoot = AddBoneToHierarchy(root, "左足首", leftLowerLeg, new Vector3(-5f, 8f, 10f));
+                Transform rightUpperLeg = AddBoneToHierarchy(root, "右足", hips, new Vector3(11f, 88f, 7f));
+                Transform rightLowerLeg = AddBoneToHierarchy(root, "右ひざ", rightUpperLeg, new Vector3(11f, 48f, 7f));
+                Transform rightFoot = AddBoneToHierarchy(root, "右足首", rightLowerLeg, new Vector3(11f, 8f, 10f));
+                Transform leftShoulder = AddBoneToHierarchy(root, "左肩", chest, new Vector3(-17f, 138f, 7f));
+                Transform leftUpperArm = AddBoneToHierarchy(root, "左腕", leftShoulder, new Vector3(-27f, 138f, 7f));
+                Transform leftLowerArm = AddBoneToHierarchy(root, "左ひじ", leftUpperArm, new Vector3(-52f, 138f, 7f));
+                Transform leftHand = AddBoneToHierarchy(root, "左手首", leftLowerArm, new Vector3(-72f, 138f, 7f));
+                Transform rightShoulder = AddBoneToHierarchy(root, "右肩", chest, new Vector3(23f, 138f, 7f));
+                Transform rightUpperArm = AddBoneToHierarchy(root, "右腕", rightShoulder, new Vector3(33f, 138f, 7f));
+                Transform rightLowerArm = AddBoneToHierarchy(root, "右ひじ", rightUpperArm, new Vector3(58f, 138f, 7f));
+                Transform rightHand = AddBoneToHierarchy(root, "右手首", rightLowerArm, new Vector3(78f, 138f, 7f));
+
+                var bones = new[]
+                {
+                    allParent, center, groove, waist,
+                    hips, spine, chest, neck, head,
+                    leftUpperLeg, leftLowerLeg, leftFoot,
+                    rightUpperLeg, rightLowerLeg, rightFoot,
+                    leftShoulder, leftUpperArm, leftLowerArm, leftHand,
+                    rightShoulder, rightUpperArm, rightLowerArm, rightHand,
+                };
+
+                result = MmdHumanoidProxyRigFactory.CreateProxyRigFromBoneTransforms(
+                    bones,
+                    root.transform,
+                    "ImportedProxyRig");
+
+                Assert.That(result.Readiness, Is.EqualTo(MmdHumanoidMappingReadiness.Ready));
+                Assert.That(result.ProxyRoot, Is.Not.Null);
+                Assert.That(result.BoneMap[HumanBodyBones.Spine].parent, Is.EqualTo(result.BoneMap[HumanBodyBones.Hips]));
+                Assert.That(result.BoneMap[HumanBodyBones.Neck].parent, Is.EqualTo(result.BoneMap[HumanBodyBones.Chest]));
+                Assert.That(result.BoneMap[HumanBodyBones.LeftUpperLeg].parent, Is.EqualTo(result.BoneMap[HumanBodyBones.Hips]));
+                Assert.That(result.BoneMap[HumanBodyBones.RightUpperLeg].parent, Is.EqualTo(result.BoneMap[HumanBodyBones.Hips]));
+
+                AssertWorldPositionMatches(result.BoneMap[HumanBodyBones.Hips], hips);
+                AssertWorldPositionMatches(result.BoneMap[HumanBodyBones.Spine], spine);
+                AssertWorldPositionMatches(result.BoneMap[HumanBodyBones.Chest], chest);
+                AssertWorldPositionMatches(result.BoneMap[HumanBodyBones.LeftUpperArm], leftUpperArm);
+                AssertWorldPositionMatches(result.BoneMap[HumanBodyBones.RightHand], rightHand);
+            }
+            finally
+            {
+                if (result?.ProxyRoot != null)
+                {
+                    Object.DestroyImmediate(result.ProxyRoot);
+                }
+
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void CreateProxyRigFromPmxAssetUsesImportedHierarchyAndMatchesModelBasedResultForFixture()
+        {
+            // Arrange: fixture-based PMX asset from package fixtures.
+            const string pmxFixturePath = "Packages/com.yohawing.mmd-loader/Tests/Fixtures/Assets/test_1bone_cube.pmx";
+            MmdPmxAsset? asset = AssetDatabase.LoadAssetAtPath<MmdPmxAsset>(pmxFixturePath);
+            Assert.That(asset, Is.Not.Null);
+
+            MmdModelDefinition model = asset!.LoadModel();
+
+            // Act
+            MmdHumanoidProxyRigResult fromAsset = MmdHumanoidProxyRigFactory.CreateProxyRig(asset);
+            MmdHumanoidProxyRigResult fromModel = MmdHumanoidProxyRigFactory.CreateProxyRig(model);
+
+            // Assert: readiness and mapping matches should be equivalent for imported hierarchy input.
+            Assert.That(fromAsset.Readiness, Is.EqualTo(fromModel.Readiness));
+            Assert.That(fromAsset.Matches.Count, Is.EqualTo(fromModel.Matches.Count),
+                "imported hierarchy and model-based overloads should produce equivalent first-match results");
+            Assert.That(string.Join(",", CanonicalizeMatches(fromAsset.Matches)),
+                Is.EqualTo(string.Join(",", CanonicalizeMatches(fromModel.Matches))),
+                "proxy rig matches should be equivalent (empty vs empty is acceptable)");
+        }
+
+        private static MmdModelDefinition CreateHumanoidMappingModel(params string[] boneNames)
+        {
+            var model = new MmdModelDefinition();
+            for (int i = 0; i < boneNames.Length; i++)
+            {
+                model.bones.Add(new MmdBoneDefinition
+                {
+                    index = i,
+                    name = boneNames[i],
+                    parentIndex = i - 1,
+                });
+            }
+
+            return model;
+        }
+
+        private static void AssertMapped(string boneName, HumanBodyBones expectedBone, bool required)
+        {
+            Assert.That(
+                MmdHumanoidBoneMappingEvaluator.TryMapBoneName(
+                    boneName,
+                    out HumanBodyBones actualBone,
+                    out bool actualRequired),
+                Is.True,
+                boneName + " should map");
+            Assert.That(actualBone, Is.EqualTo(expectedBone), boneName);
+            Assert.That(actualRequired, Is.EqualTo(required), boneName);
+        }
+
+        private static void AssertEntry(
+            MmdHumanoidBoneMappingReport report,
+            HumanBodyBones humanBone,
+            string mmdBoneName,
+            int mmdBoneIndex)
+        {
+            Assert.That(
+                report.MappingEntries.Any(entry =>
+                    entry.HumanBone == humanBone
+                    && entry.MmdBoneName == mmdBoneName
+                    && entry.MmdBoneIndex == mmdBoneIndex),
+                Is.True,
+                humanBone + " should map from " + mmdBoneName + "#" + mmdBoneIndex);
+        }
+
+        private static Transform AddBoneToHierarchy(
+            GameObject root,
+            string name,
+            Transform? parent,
+            Vector3 worldPosition)
+        {
+            var bone = new GameObject(name);
+            Transform boneTransform = bone.transform;
+            boneTransform.SetParent(parent != null ? parent : root.transform, worldPositionStays: false);
+            boneTransform.position = worldPosition;
+            return boneTransform;
+        }
+
+        private static void AssertWorldPositionMatches(Transform actual, Transform expected)
+        {
+            Assert.That(Vector3.Distance(actual.position, expected.position), Is.LessThan(0.0001f),
+                actual.name + " world position must match source " + expected.name);
+        }
+
+        private static IEnumerable<string> CanonicalizeMatches(IReadOnlyList<MmdHumanoidBoneMappingMatch> matches)
+        {
+            return matches
+                .OrderBy(match => match.MmdBoneIndex)
+                .Select(match =>
+                    match.HumanBone + ":" + match.MmdBoneIndex + ":" + match.MmdBoneName);
+        }
+
+        private static void AddBone(MmdModelDefinition model, int index, string name, int parentIndex)
+        {
+            model.bones.Add(new MmdBoneDefinition
+            {
+                index = index,
+                name = name,
+                parentIndex = parentIndex,
+            });
+        }
+
+        private static void AddBoneWithOrigin(
+            MmdModelDefinition model, int index, string name, int parentIndex, float[] origin)
+        {
+            model.bones.Add(new MmdBoneDefinition
+            {
+                index = index,
+                name = name,
+                parentIndex = parentIndex,
+                origin = origin,
+            });
+        }
+
+        /// <summary>
+        /// Create a model with all 16 required bones + some optional bones,
+        /// each with a plausible synthetic origin for Avatar building.
+        /// Origins are in MMD space and increase along Y for the spine/head chain.
+        /// </summary>
+        private static MmdModelDefinition CreateHumanoidMappingModelWithOrigins()
+        {
+            var model = new MmdModelDefinition();
+
+            // Required bones with plausible origins (MMD space).
+            // 下半身 (Hips) at origin.
+            AddBoneWithOrigin(model, 0, "下半身", -1, new[] { 0f, 90f, 0f });
+            // 上半身 (Spine) above hips.
+            AddBoneWithOrigin(model, 1, "上半身", 0, new[] { 0f, 115f, 0f });
+            // 首 (Neck) above spine.
+            AddBoneWithOrigin(model, 2, "首", 1, new[] { 0f, 150f, 0f });
+            // 頭 (Head) above neck.
+            AddBoneWithOrigin(model, 3, "頭", 2, new[] { 0f, 165f, 0f });
+            // 左足 (LeftUpperLeg) at hips level, left side.
+            AddBoneWithOrigin(model, 4, "左足", 0, new[] { 8f, 85f, 0f });
+            // 左ひざ (LeftLowerLeg) below left leg.
+            AddBoneWithOrigin(model, 5, "左ひざ", 4, new[] { 8f, 45f, 0f });
+            // 左足首 (LeftFoot) below knee.
+            AddBoneWithOrigin(model, 6, "左足首", 5, new[] { 8f, 5f, 3f });
+            // 右足 (RightUpperLeg) at hips level, right side.
+            AddBoneWithOrigin(model, 7, "右足", 0, new[] { -8f, 85f, 0f });
+            // 右ひざ (RightLowerLeg) below right leg.
+            AddBoneWithOrigin(model, 8, "右ひざ", 7, new[] { -8f, 45f, 0f });
+            // 右足首 (RightFoot) below knee.
+            AddBoneWithOrigin(model, 9, "右足首", 8, new[] { -8f, 5f, 3f });
+            // 左腕 (LeftUpperArm) at spine level, left side.
+            AddBoneWithOrigin(model, 10, "左腕", 1, new[] { 25f, 135f, 0f });
+            // 左ひじ (LeftLowerArm) below left arm.
+            AddBoneWithOrigin(model, 11, "左ひじ", 10, new[] { 50f, 135f, 0f });
+            // 左手首 (LeftHand) below elbow.
+            AddBoneWithOrigin(model, 12, "左手首", 11, new[] { 70f, 135f, 0f });
+            // 右腕 (RightUpperArm) at spine level, right side.
+            AddBoneWithOrigin(model, 13, "右腕", 1, new[] { -25f, 135f, 0f });
+            // 右ひじ (RightLowerArm) below right arm.
+            AddBoneWithOrigin(model, 14, "右ひじ", 13, new[] { -50f, 135f, 0f });
+            // 右手首 (RightHand) below elbow.
+            AddBoneWithOrigin(model, 15, "右手首", 14, new[] { -70f, 135f, 0f });
+            // Optional: 上半身2 (Chest) above spine.
+            AddBoneWithOrigin(model, 16, "上半身2", 1, new[] { 0f, 130f, 0f });
+            // Optional: 左肩 (LeftShoulder) at spine level.
+            AddBoneWithOrigin(model, 17, "左肩", 1, new[] { 15f, 135f, 0f });
+            // Optional: 右肩 (RightShoulder) at spine level.
+            AddBoneWithOrigin(model, 18, "右肩", 1, new[] { -15f, 135f, 0f });
+
+            return model;
+        }
+
+        private static void AddTdaStyleFingerDistalDuplicates(MmdModelDefinition model)
+        {
+            AddFingerChain(model, "左人指", 12, new[] { 78f, 137f, 2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右人指", 15, new[] { -78f, 137f, 2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "左中指", 12, new[] { 80f, 135f, 0f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右中指", 15, new[] { -80f, 135f, 0f }, duplicateDistalTip: true);
+            AddFingerChain(model, "左薬指", 12, new[] { 78f, 133f, -2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右薬指", 15, new[] { -78f, 133f, -2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "左小指", 12, new[] { 76f, 131f, -4f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右小指", 15, new[] { -76f, 131f, -4f }, duplicateDistalTip: true);
+        }
+
+        private static void AddFullFingerChains(MmdModelDefinition model)
+        {
+            AddThumbChain(model, "左親指", 12, new[] { 74f, 133f, 5f });
+            AddThumbChain(model, "右親指", 15, new[] { -74f, 133f, 5f });
+            AddFingerChain(model, "左人指", 12, new[] { 78f, 137f, 2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右人指", 15, new[] { -78f, 137f, 2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "左中指", 12, new[] { 80f, 135f, 0f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右中指", 15, new[] { -80f, 135f, 0f }, duplicateDistalTip: true);
+            AddFingerChain(model, "左薬指", 12, new[] { 78f, 133f, -2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右薬指", 15, new[] { -78f, 133f, -2f }, duplicateDistalTip: true);
+            AddFingerChain(model, "左小指", 12, new[] { 76f, 131f, -4f }, duplicateDistalTip: true);
+            AddFingerChain(model, "右小指", 15, new[] { -76f, 131f, -4f }, duplicateDistalTip: true);
+        }
+
+        private static void AddThumbChain(
+            MmdModelDefinition model,
+            string prefix,
+            int handParentIndex,
+            float[] baseOrigin)
+        {
+            AddBoneWithOrigin(
+                model,
+                model.bones.Count,
+                prefix + "０",
+                handParentIndex,
+                new[] { baseOrigin[0] - FingerDirection(baseOrigin[0]) * 3f, baseOrigin[1], baseOrigin[2] });
+            int proximalIndex = model.bones.Count;
+            AddBoneWithOrigin(model, proximalIndex, prefix + "１", handParentIndex, baseOrigin);
+            int intermediateIndex = model.bones.Count;
+            AddBoneWithOrigin(
+                model,
+                intermediateIndex,
+                prefix + "２",
+                proximalIndex,
+                new[] { baseOrigin[0] + FingerDirection(baseOrigin[0]) * 4f, baseOrigin[1] + 1f, baseOrigin[2] });
+            AddBoneWithOrigin(
+                model,
+                model.bones.Count,
+                prefix + "先",
+                intermediateIndex,
+                new[] { baseOrigin[0] + FingerDirection(baseOrigin[0]) * 8f, baseOrigin[1] + 2f, baseOrigin[2] });
+        }
+
+        private static void AddFingerChain(
+            MmdModelDefinition model,
+            string prefix,
+            int handParentIndex,
+            float[] baseOrigin,
+            bool duplicateDistalTip)
+        {
+            int proximalIndex = model.bones.Count;
+            AddBoneWithOrigin(model, proximalIndex, prefix + "１", handParentIndex, baseOrigin);
+            int intermediateIndex = model.bones.Count;
+            AddBoneWithOrigin(
+                model,
+                intermediateIndex,
+                prefix + "２",
+                proximalIndex,
+                new[] { baseOrigin[0] + FingerDirection(baseOrigin[0]) * 4f, baseOrigin[1], baseOrigin[2] });
+            int distalIndex = model.bones.Count;
+            AddBoneWithOrigin(
+                model,
+                distalIndex,
+                prefix + "３",
+                intermediateIndex,
+                new[] { baseOrigin[0] + FingerDirection(baseOrigin[0]) * 8f, baseOrigin[1], baseOrigin[2] });
+
+            if (duplicateDistalTip)
+            {
+                AddBoneWithOrigin(
+                    model,
+                    model.bones.Count,
+                    prefix + "先",
+                    distalIndex,
+                    new[] { baseOrigin[0] + FingerDirection(baseOrigin[0]) * 11f, baseOrigin[1], baseOrigin[2] });
+            }
+        }
+
+        private static float FingerDirection(float x)
+        {
+            return x < 0f ? -1f : 1f;
+        }
+
+        private static IEnumerable<HumanBodyBones> EnumerateFingerHumanBones()
+        {
+            yield return HumanBodyBones.LeftThumbProximal;
+            yield return HumanBodyBones.LeftThumbIntermediate;
+            yield return HumanBodyBones.LeftThumbDistal;
+            yield return HumanBodyBones.LeftIndexProximal;
+            yield return HumanBodyBones.LeftIndexIntermediate;
+            yield return HumanBodyBones.LeftIndexDistal;
+            yield return HumanBodyBones.LeftMiddleProximal;
+            yield return HumanBodyBones.LeftMiddleIntermediate;
+            yield return HumanBodyBones.LeftMiddleDistal;
+            yield return HumanBodyBones.LeftRingProximal;
+            yield return HumanBodyBones.LeftRingIntermediate;
+            yield return HumanBodyBones.LeftRingDistal;
+            yield return HumanBodyBones.LeftLittleProximal;
+            yield return HumanBodyBones.LeftLittleIntermediate;
+            yield return HumanBodyBones.LeftLittleDistal;
+            yield return HumanBodyBones.RightThumbProximal;
+            yield return HumanBodyBones.RightThumbIntermediate;
+            yield return HumanBodyBones.RightThumbDistal;
+            yield return HumanBodyBones.RightIndexProximal;
+            yield return HumanBodyBones.RightIndexIntermediate;
+            yield return HumanBodyBones.RightIndexDistal;
+            yield return HumanBodyBones.RightMiddleProximal;
+            yield return HumanBodyBones.RightMiddleIntermediate;
+            yield return HumanBodyBones.RightMiddleDistal;
+            yield return HumanBodyBones.RightRingProximal;
+            yield return HumanBodyBones.RightRingIntermediate;
+            yield return HumanBodyBones.RightRingDistal;
+            yield return HumanBodyBones.RightLittleProximal;
+            yield return HumanBodyBones.RightLittleIntermediate;
+            yield return HumanBodyBones.RightLittleDistal;
+        }
+
+        private static bool IsFingerHumanBone(HumanBodyBones bone)
+        {
+            return EnumerateFingerHumanBones().Contains(bone);
+        }
+
+        private static MmdModelDefinition CreateStandardMmdSiblingTorsoModel()
+        {
+            var model = new MmdModelDefinition();
+
+            AddBoneWithOrigin(model, 0, "全ての親", -1, new[] { 0f, 0f, 0f });
+            AddBoneWithOrigin(model, 1, "センター", 0, new[] { 0f, 90f, 0f });
+            AddBoneWithOrigin(model, 2, "グルーブ", 1, new[] { 0f, 92f, 0f });
+            AddBoneWithOrigin(model, 3, "腰", 2, new[] { 0f, 94f, 0f });
+            AddBoneWithOrigin(model, 4, "下半身", 3, new[] { 0f, 95f, 0f });
+            AddBoneWithOrigin(model, 5, "上半身", 3, new[] { 0f, 118f, 0f });
+            AddBoneWithOrigin(model, 6, "上半身2", 5, new[] { 0f, 133f, 0f });
+            AddBoneWithOrigin(model, 7, "首", 6, new[] { 0f, 153f, 0f });
+            AddBoneWithOrigin(model, 8, "頭", 7, new[] { 0f, 168f, 0f });
+            AddBoneWithOrigin(model, 9, "左足", 4, new[] { 8f, 88f, 0f });
+            AddBoneWithOrigin(model, 10, "左ひざ", 9, new[] { 8f, 48f, 0f });
+            AddBoneWithOrigin(model, 11, "左足首", 10, new[] { 8f, 8f, 3f });
+            AddBoneWithOrigin(model, 12, "右足", 4, new[] { -8f, 88f, 0f });
+            AddBoneWithOrigin(model, 13, "右ひざ", 12, new[] { -8f, 48f, 0f });
+            AddBoneWithOrigin(model, 14, "右足首", 13, new[] { -8f, 8f, 3f });
+            AddBoneWithOrigin(model, 15, "左肩", 6, new[] { 15f, 138f, 0f });
+            AddBoneWithOrigin(model, 16, "左腕", 15, new[] { 25f, 138f, 0f });
+            AddBoneWithOrigin(model, 17, "左ひじ", 16, new[] { 50f, 138f, 0f });
+            AddBoneWithOrigin(model, 18, "左手首", 17, new[] { 70f, 138f, 0f });
+            AddBoneWithOrigin(model, 19, "右肩", 6, new[] { -15f, 138f, 0f });
+            AddBoneWithOrigin(model, 20, "右腕", 19, new[] { -25f, 138f, 0f });
+            AddBoneWithOrigin(model, 21, "右ひじ", 20, new[] { -50f, 138f, 0f });
+            AddBoneWithOrigin(model, 22, "右手首", 21, new[] { -70f, 138f, 0f });
+
+            return model;
+        }
+
+        private static MmdModelDefinition CreateStandardMmdSiblingTorsoAPoseModel()
+        {
+            var model = CreateStandardMmdSiblingTorsoModel();
+
+            model.bones[17].origin = new[] { 50f, 128f, 0f };
+            model.bones[18].origin = new[] { 70f, 118f, 0f };
+            model.bones[21].origin = new[] { -50f, 128f, 0f };
+            model.bones[22].origin = new[] { -70f, 118f, 0f };
+
+            return model;
+        }
+    }
+}

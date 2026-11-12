@@ -40,6 +40,54 @@ def read_catalog(source):
     return entries
 
 
+def package_files(selection, max_bytes, max_files):
+    """Read a selected package with the same bounds as the existing importer."""
+    import stat
+    selection = Path(selection)
+    root = selection if selection.is_dir() else selection.parent
+    files = selection.rglob('*') if selection.is_dir() else [selection]
+    total = count = 0
+    for file in files:
+        if file.is_symlink() or file.is_junction():
+            raise ValueError('Model imports cannot include symbolic links or junctions.')
+        if not file.is_file():
+            continue
+        if getattr(file.stat(), 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0):
+            raise ValueError('Model imports cannot include linked files.')
+        count += 1
+        if count > max_files or file.stat().st_size > max_bytes - total:
+            raise ValueError('Model packages must be under 512 MB and 5,000 files.')
+        with file.open('rb') as stream:
+            content = stream.read(max_bytes - total + 1)
+        total += len(content)
+        if total > max_bytes:
+            raise ValueError('Model packages must be under 512 MB and 5,000 files.')
+        if len(content) != file.stat().st_size:
+            raise ValueError('A model file changed during import. Try again after copying finishes.')
+        yield file.relative_to(root).as_posix(), content
+
+
+def import_selected(source, kind, selection=None):
+    if kind not in ('pmx', 'vrm', 'live2d'):
+        raise ValueError('Choose PMX, VRM or Live2D.')
+    if selection is None:
+        import tkinter
+        from tkinter import filedialog
+        window = tkinter.Tk()
+        window.withdraw()
+        window.attributes('-topmost', True)
+        try:
+            selection = (filedialog.askopenfilename(title='Import a VRM character', filetypes=[('VRM model', '*.vrm')], parent=window)
+                         if kind == 'vrm' else filedialog.askdirectory(title='Choose the complete ' + kind.upper() + ' model folder', parent=window))
+        finally:
+            window.destroy()
+    if not selection:
+        return {'cancelled': True}
+    sys.path.insert(0, str(source))
+    from model_import import import_package, MAX_BYTES, MAX_FILES
+    return import_package(source / 'models', package_files(selection, MAX_BYTES, MAX_FILES), kind)
+
+
 def install_unity_lifecycle(module):
     """Account/model UI starts without loading AI, audio, camera or automations."""
     service_context = None
@@ -96,18 +144,71 @@ def serve(source):
     server.run(sockets=[sock])
 
 
+def pmx_tool(source, tool, payload):
+    """Explicit native UI actions; never run a shell or load AI services."""
+    sys.path.insert(0, str(source))
+    from pmx_editor import model_file, open_model
+    relative = payload.get('model')
+    model_file(relative)
+    settings = json.loads((source / 'settings.json').read_text(encoding='utf-8-sig'))
+    if tool == 'editor':
+        return open_model(relative, settings.get('pmx_editor_path'))
+    if tool == 'mmd':
+        from mmd_launcher import open_mmd
+        return open_mmd(settings.get('mmd_path'), relative)
+    if tool == 'reference':
+        from pmx_appearance_reference import capture_reference
+        return capture_reference(relative, payload.get('direction', [0, 0, 1]), settings.get('pmx_editor_path'))
+    if tool == 'texture':
+        import tkinter
+        from tkinter import filedialog
+        from PIL import Image
+        import base64
+        import io
+        window = tkinter.Tk()
+        window.withdraw()
+        window.attributes('-topmost', True)
+        try:
+            selected = filedialog.askopenfilename(title='Replace selected PMX texture', parent=window,
+                filetypes=[('Images', '*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds *.sph *.spa')])
+        finally:
+            window.destroy()
+        if not selected:
+            return {'cancelled': True}
+        file = Path(selected)
+        if file.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError('Texture exceeds 64 MB.')
+        with Image.open(file) as image:
+            if image.width * image.height > 16777216:
+                raise ValueError('Texture exceeds 16 megapixels.')
+            encoded = io.BytesIO()
+            image.convert('RGBA').save(encoded, format='PNG')
+        return {'image': base64.b64encode(encoded.getvalue()).decode('ascii')}
+    raise ValueError('Unsupported PMX tool.')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', required=True)
     parser.add_argument('--serve', action='store_true')
+    parser.add_argument('--import-format', choices=('pmx', 'vrm', 'live2d'))
+    parser.add_argument('--package')
+    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture'))
     args = parser.parse_args()
     try:
         source = validate_source(args.source)
-        if args.serve:
+        if args.pmx_tool:
+            payload = json.loads(sys.stdin.readline(16385))
+            if not isinstance(payload, dict):
+                raise ValueError('Invalid PMX request.')
+            print(json.dumps(pmx_tool(source, args.pmx_tool, payload), ensure_ascii=True), flush=True)
+        elif args.import_format:
+            print(json.dumps(import_selected(source, args.import_format, args.package), ensure_ascii=True), flush=True)
+        elif args.serve:
             serve(source)
         else:
             print(json.dumps({'items': read_catalog(source)}, ensure_ascii=True), flush=True)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({'error': str(error)}), flush=True)
         return 1
     return 0

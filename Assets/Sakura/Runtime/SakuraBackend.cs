@@ -14,6 +14,7 @@ namespace Sakura.Unity
     [Serializable] internal class BridgeIdentity { public int port; public string token; }
     [Serializable] internal class ChatRequest { public string text; }
     [Serializable] internal class ChatResponse { public string reply; public string error; }
+    [Serializable] internal class ModelImportReply { public string[] models; public string error; public bool cancelled; }
     [Serializable] public class ApiReply { public bool ok; public bool configured; public bool confirmation_required; public string error; public string message; public string url; }
 
     public sealed class SakuraBackend : MonoBehaviour
@@ -22,10 +23,13 @@ namespace Sakura.Unity
         public event Action<CharacterEntry[]> CatalogReceived;
         public event Action<string> StatusChanged;
         public event Action<string> ReplyReceived;
+        public event Action<string> ModelImported;
         public bool Connected { get; private set; }
         public bool Busy { get; private set; }
         private Process server;
         private Process catalogProcess;
+        private Process importProcess;
+        private Process modelToolProcess;
         private BridgeIdentity identity;
         private readonly ConcurrentQueue<Action> pending = new ConcurrentQueue<Action>();
 
@@ -80,6 +84,82 @@ namespace Sakura.Unity
                 process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
             }
             catch (Exception error) { catalogProcess?.Dispose(); catalogProcess = null; StatusChanged?.Invoke(error.Message); }
+        }
+
+        public void RunPmxTool(string tool, string model, Action<string, string> completed, float[] direction = null)
+        {
+            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture") throw new ArgumentException("Invalid PMX tool.");
+            if (modelToolProcess != null) { completed(null, "Finish the open PMX tool first."); return; }
+            try
+            {
+                var command = Command(false); command.Arguments += " --pmx-tool " + tool;
+                var process = new Process { StartInfo = command, EnableRaisingEvents = true };
+                modelToolProcess = process;
+                string response = null;
+                process.OutputDataReceived += (_, args) => { if (args.Data != null && args.Data.StartsWith("{", StringComparison.Ordinal)) response = args.Data; };
+                process.ErrorDataReceived += (_, args) => { };
+                process.Exited += (_, args) =>
+                {
+                    process.WaitForExit();
+                    pending.Enqueue(() =>
+                    {
+                        modelToolProcess = null;
+                        try
+                        {
+                            if (response == null) completed(null, "The PMX tool exited without a result.");
+                            else
+                            {
+                                var result = JsonUtility.FromJson<ApiReply>(response);
+                                completed(string.IsNullOrEmpty(result.error) ? response : null, result.error);
+                            }
+                        }
+                        finally { process.Dispose(); }
+                    });
+                };
+                process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                process.StandardInput.WriteLine(JsonUtility.ToJson(new PmxToolRequest { model = model, direction = direction ?? new[] { 0f, 0f, 1f } }));
+                process.StandardInput.Close();
+            }
+            catch (Exception error) { modelToolProcess?.Dispose(); modelToolProcess = null; completed(null, error.Message); }
+        }
+
+        [Serializable] private class PmxToolRequest { public string model; public float[] direction; }
+
+        public void ImportModel(string format)
+        {
+            format = format.ToLowerInvariant();
+            if (format != "pmx" && format != "vrm" && format != "live2d") throw new ArgumentException("Unsupported model format.");
+            if (importProcess != null) { StatusChanged?.Invoke("Finish the open model import first."); return; }
+            try
+            {
+                StatusChanged?.Invoke("Choose your " + format.ToUpperInvariant() + " model package…");
+                var command = Command(false);
+                command.Arguments += " --import-format " + format;
+                var process = new Process { StartInfo = command, EnableRaisingEvents = true };
+                importProcess = process;
+                process.OutputDataReceived += (_, args) =>
+                {
+                    if (args.Data == null || !args.Data.StartsWith("{", StringComparison.Ordinal)) return;
+                    string json = args.Data;
+                    pending.Enqueue(() =>
+                    {
+                        try
+                        {
+                            var result = JsonUtility.FromJson<ModelImportReply>(json);
+                            if (!string.IsNullOrEmpty(result.error)) { StatusChanged?.Invoke(result.error); return; }
+                            if (result.cancelled) { StatusChanged?.Invoke("Import cancelled."); return; }
+                            if (result.models == null || result.models.Length == 0) { StatusChanged?.Invoke("No compatible character was found in this package."); return; }
+                            RefreshCatalog();
+                            ModelImported?.Invoke(result.models[0]);
+                        }
+                        catch (ArgumentException) { StatusChanged?.Invoke("The model importer returned an unreadable result."); }
+                    });
+                };
+                process.ErrorDataReceived += (_, args) => { };
+                process.Exited += (_, args) => pending.Enqueue(() => { importProcess?.Dispose(); importProcess = null; });
+                process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
+            }
+            catch (Exception error) { importProcess?.Dispose(); importProcess = null; StatusChanged?.Invoke("Import failed. " + error.Message); }
         }
 
         public void Connect()
@@ -202,7 +282,7 @@ namespace Sakura.Unity
 
         private void OnDestroy()
         {
-            foreach (var process in new[] { server, catalogProcess })
+            foreach (var process in new[] { server, catalogProcess, importProcess, modelToolProcess })
             {
                 if (process == null) continue;
                 try

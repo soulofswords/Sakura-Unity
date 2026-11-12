@@ -33,10 +33,12 @@ The Unity client owns the interface, avatar rendering, animation and eventually 
 |---|---|
 | Existing app checkpoint | Committed locally |
 | Native Unity shell | Running in Editor Play mode, navigation and theme switching verified |
-| Local catalog | 544 real references discovered, four bridge unit tests passing |
+| Local catalog | 544 real references discovered; eight bridge unit tests passing |
 | Authenticated backend | Loopback bridge and authorization probe verified. AI services start lazily. Chat generation remains unverified |
-| Avatar rendering | VRM runtime import and rendering verified with ArisuMaid, PMX and Live2D pending |
-| Tracking, expressions and physics | Pending |
+| Avatar rendering | Native PMX (Ringo, Killer Luka), Live2D (DeepSeek, Amika) and VRM (ArisuMaid) import/render/switching verified |
+| Idle motion | Native breathing and blinking verified. Six original 3D idle poses ported; authored Live2D Idle groups load when supplied. Exact motion parity and live tracking priority remain under verification |
+| PMX editing | Native independent colour/transparency, diffuse replacement, texture diagnostics/confirmed path repair, indexed bone freezing and eight appearance controls implemented. Editor reference matching tested. Pick-on-model, automatic rig diagnosis, material-expression presets and migration of old browser overrides remain pending. Existing package textures.json overrides are read at import |
+| Tracking, expressions and physics | Tracking, expression UI/hotkeys and physics parity pending |
 | Voice and microphone | Pending |
 | Agent and browser | Pending |
 | Cloud library and mobile | Native library sign-in, registration, recovery and download controls wired to existing routes. Live account/download verification and mobile integration pending |
@@ -72,3 +74,17 @@ The native shell now uses the original app's DM Sans and Bricolage Grotesque fon
 Double-click the background or avatar to hide controls. Companion retains its chat window. VTuber retains its avatar stage. Double-click again restores controls, including the prior closed-panel state. Agent mode ignores this gesture. These checks use dispatched Unity UI events and resolved display styles, with screenshots in C:/AI/Unity-Verification.
 
 The native Settings tabs reuse the existing settings API. Camera, microphone, renderer-specific physics and other partially migrated preferences still require their corresponding native integrations. Visible controls and saved preferences do not establish full feature parity.
+
+## Native PMX and idle checkpoint — 2026-11-12
+
+PMX controls now keep independent per-model overrides under Application.persistentDataPath/pmx-overrides. They do not edit the PMX, original textures or original app's browser storage. Stored native settings use replacement writes. Original browser colour/texture/expression overrides are not yet migrated into the native profile.
+
+The PMX Editor and MikuMikuDance buttons use the existing source application's validated launch helpers. Ringo was opened in PMX Editor with its full model filename on the process command line. MMD opened and accepted the selected model's file-drop import request. That is not a claim of testing every MMD operation.
+
+Texture diagnostics reuse the original authenticated route and apply only confirmed package-relative paths to native diffuse/toon/sphere bindings. Missing or ambiguous images still require a replacement. Appearance matching reuses the real editor capture plugin, compares whole-frame and corresponding-material RGB statistics, preserves directional shading, and rejects regressions. It does not reconstruct artwork or guarantee identical rendering of unsupported editor effects.
+
+Verification artifacts are in C:/AI/Unity-Verification. pmx-tools-check.json covers colour pixels, transparency independence, shader uniforms, frozen bones, reload persistence, snapshots and advancing breathing. model-import-check.json covers five real model packages and failed-load recovery. An intentionally darkened Ringo matched against the live PMX Editor capture with measured error reduced from 0.27653 to 0.09491; its original native settings were restored afterwards. Amika's ParamBreath changed while 48 real frames advanced, and the VRM blink weight reached 0.998.
+
+No installer, APK or published update is produced by this checkpoint. Full native feature/UI parity is still incomplete. The original application remains intact.
+
+The eight native appearance sliders use the same ranges as the reference app. Automatic matching searches the original .3/.12/.05 steps, retains directional shading and checks whole-model plus up to six measurable material references. After snapshots wait for a fresh frame, so they cannot accidentally show the final isolated reference material.

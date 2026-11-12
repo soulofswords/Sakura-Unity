@@ -1,0 +1,30 @@
+{
+  "name": "Mmd.EditModeTests",
+  "rootNamespace": "Mmd.Tests",
+  "references": [
+    "Mmd.Runtime",
+    "Mmd.Timeline",
+    "Mmd.Rendering.Universal",
+    "Mmd.Editor",
+    "Mmd.EditModeTestKit",
+    "Unity.Timeline",
+    "Unity.RenderPipelines.Universal.Runtime",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

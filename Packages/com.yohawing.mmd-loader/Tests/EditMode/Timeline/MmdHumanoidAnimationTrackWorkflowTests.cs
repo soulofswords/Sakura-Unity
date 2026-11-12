@@ -1,0 +1,586 @@
+#nullable enable
+
+using System;
+using NUnit.Framework;
+using UnityEngine;
+using UnityEditor;
+using UnityEngine.Playables;
+using UnityEngine.Timeline;
+using Mmd.Editor.Timeline;
+using Mmd.Timeline;
+using Mmd.UnityIntegration;
+using Object = UnityEngine.Object;
+
+namespace Mmd.Tests
+{
+    // Slice 3: authoring wiring for the single MMD Humanoid Track. The workflow must bind the
+    // controller, assign the AnimationClip, and auto-resolve the proxy Animator (on the controller's
+    // GameObject) into the clip's ExposedReference — so the user adds ONE track + ONE clip and the
+    // model drives, with no second track or manual Animator reference.
+    public sealed class MmdHumanoidAnimationTrackWorkflowTests
+    {
+        [Test]
+        public void CreateHumanoidAnimationTrackAndClipWiresControllerAndProxyAnimator()
+        {
+            GameObject? root = null;
+            GameObject? directorObject = null;
+            TimelineAsset? timeline = null;
+            AnimationClip? muscleClip = null;
+            try
+            {
+                root = new GameObject("workflow-root");
+                Animator animator = root.AddComponent<Animator>();
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+
+                muscleClip = new AnimationClip { frameRate = 30.0f };
+                muscleClip.SetCurve(
+                    string.Empty,
+                    typeof(Animator),
+                    ResolveSpineMuscleName(),
+                    AnimationCurve.Linear(0.0f, 0.0f, 1.0f, 0.5f));
+                Assert.That(muscleClip.humanMotion, Is.True, "muscle-curve clip should be recognized as Humanoid motion");
+
+                timeline = ScriptableObject.CreateInstance<TimelineAsset>();
+                directorObject = new GameObject("workflow-director");
+                PlayableDirector director = directorObject.AddComponent<PlayableDirector>();
+                director.playOnAwake = false;
+                director.playableAsset = timeline;
+
+                MmdHumanoidAnimationTrack track =
+                    MmdTimelineAssetWorkflow.CreateHumanoidAnimationTrack(timeline, director, controller);
+                Assert.That(director.GetGenericBinding(track), Is.SameAs(controller),
+                    "the humanoid track must be bound to the controller");
+
+                TimelineClip clip =
+                    MmdTimelineAssetWorkflow.CreateHumanoidAnimationClip(track, muscleClip, controller, director);
+                var clipAsset = (MmdHumanoidAnimationClip)clip.asset;
+
+                Assert.That(clipAsset.clip, Is.SameAs(muscleClip), "the AnimationClip must be assigned to the clip asset");
+                Assert.That(clip.duration, Is.EqualTo((double)muscleClip.length).Within(0.01),
+                    "the clip duration should match the AnimationClip length");
+            }
+            finally
+            {
+                if (directorObject != null)
+                {
+                    Object.DestroyImmediate(directorObject);
+                }
+
+                if (timeline != null)
+                {
+                    Object.DestroyImmediate(timeline);
+                }
+
+                if (muscleClip != null)
+                {
+                    Object.DestroyImmediate(muscleClip);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        public void CreateHumanoidAnimationClipRejectsNonHumanoidClip()
+        {
+            GameObject? root = null;
+            GameObject? directorObject = null;
+            TimelineAsset? timeline = null;
+            AnimationClip? genericClip = null;
+            try
+            {
+                root = new GameObject("workflow-reject-root");
+                root.AddComponent<Animator>();
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+
+                genericClip = new AnimationClip { frameRate = 30.0f };
+                genericClip.SetCurve("Bone", typeof(Transform), "localPosition.x",
+                    AnimationCurve.Linear(0.0f, 0.0f, 1.0f, 1.0f));
+                Assert.That(genericClip.humanMotion, Is.False, "a transform-curve clip must not be Humanoid motion");
+
+                timeline = ScriptableObject.CreateInstance<TimelineAsset>();
+                directorObject = new GameObject("workflow-reject-director");
+                PlayableDirector director = directorObject.AddComponent<PlayableDirector>();
+                director.playOnAwake = false;
+                director.playableAsset = timeline;
+
+                MmdHumanoidAnimationTrack track =
+                    MmdTimelineAssetWorkflow.CreateHumanoidAnimationTrack(timeline, director, controller);
+
+                Assert.Throws<InvalidOperationException>(
+                    () => MmdTimelineAssetWorkflow.CreateHumanoidAnimationClip(track, genericClip, controller, director),
+                    "a Generic/transform AnimationClip must be rejected (it cannot retarget onto the proxy avatar)");
+            }
+            finally
+            {
+                if (directorObject != null)
+                {
+                    Object.DestroyImmediate(directorObject);
+                }
+
+                if (timeline != null)
+                {
+                    Object.DestroyImmediate(timeline);
+                }
+
+                if (genericClip != null)
+                {
+                    Object.DestroyImmediate(genericClip);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        public void DirectlyAddedHumanoidClipUsesAssignedAnimationClipLength()
+        {
+            TimelineAsset? timeline = null;
+            AnimationClip? animationClip = null;
+            try
+            {
+                timeline = ScriptableObject.CreateInstance<TimelineAsset>();
+                MmdHumanoidAnimationTrack track =
+                    timeline.CreateTrack<MmdHumanoidAnimationTrack>(null, "MMD Humanoid");
+                TimelineClip timelineClip = track.CreateClip<MmdHumanoidAnimationClip>();
+                double defaultDuration = timelineClip.duration;
+
+                animationClip = new AnimationClip { frameRate = 30.0f };
+                animationClip.SetCurve(
+                    string.Empty,
+                    typeof(Animator),
+                    ResolveSpineMuscleName(),
+                    AnimationCurve.Linear(0.0f, 0.0f, 2.5f, 0.5f));
+                ((MmdHumanoidAnimationClip)timelineClip.asset).clip = animationClip;
+
+                bool applied = MmdHumanoidAnimationClipEditor.ApplyDurationFromAnimationClip(timelineClip);
+
+                Assert.That(applied, Is.True);
+                Assert.That(timelineClip.duration, Is.EqualTo((double)animationClip.length).Within(0.001));
+                Assert.That(timelineClip.duration, Is.Not.EqualTo(defaultDuration).Within(0.001));
+            }
+            finally
+            {
+                if (timeline != null)
+                {
+                    Object.DestroyImmediate(timeline);
+                }
+
+                if (animationClip != null)
+                {
+                    Object.DestroyImmediate(animationClip);
+                }
+            }
+        }
+
+        [Test]
+        public void DirectlyAddedHumanoidClipKeepsFallbackDurationUntilAnimationClipIsAssigned()
+        {
+            TimelineAsset? timeline = null;
+            AnimationClip? animationClip = null;
+            try
+            {
+                timeline = ScriptableObject.CreateInstance<TimelineAsset>();
+                MmdHumanoidAnimationTrack track =
+                    timeline.CreateTrack<MmdHumanoidAnimationTrack>(null, "MMD Humanoid");
+                TimelineClip timelineClip = track.CreateClip<MmdHumanoidAnimationClip>();
+                double fallbackDuration = timelineClip.duration;
+
+                Assert.That(
+                    MmdHumanoidAnimationClipEditor.ApplyDurationFromAnimationClip(timelineClip),
+                    Is.False);
+                Assert.That(timelineClip.duration, Is.EqualTo(fallbackDuration));
+
+                animationClip = new AnimationClip();
+                ((MmdHumanoidAnimationClip)timelineClip.asset).clip = animationClip;
+
+                Assert.That(animationClip.length, Is.GreaterThan(0.0f),
+                    "Unity assigns a positive runtime length even to a newly created empty AnimationClip");
+                Assert.That(
+                    MmdHumanoidAnimationClipEditor.ApplyDurationFromAnimationClip(timelineClip),
+                    Is.True);
+                Assert.That(timelineClip.duration, Is.EqualTo((double)animationClip.length).Within(0.001));
+            }
+            finally
+            {
+                if (timeline != null)
+                {
+                    Object.DestroyImmediate(timeline);
+                }
+
+                if (animationClip != null)
+                {
+                    Object.DestroyImmediate(animationClip);
+                }
+            }
+        }
+
+        [Test]
+        public void HumanoidAnimationClipAutoResolvesProxyAnimatorFromTrackBinding()
+        {
+            GameObject? root = null;
+            GameObject? directorObject = null;
+            TimelineAsset? timeline = null;
+            AnimationClip? animationClip = null;
+            PlayableGraph graph = default;
+            try
+            {
+                root = new GameObject("workflow-auto-proxy-root");
+                Animator animator = root.AddComponent<Animator>();
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+
+                timeline = ScriptableObject.CreateInstance<TimelineAsset>();
+                MmdHumanoidAnimationTrack track =
+                    timeline.CreateTrack<MmdHumanoidAnimationTrack>(null, "MMD Humanoid");
+                TimelineClip clip = track.CreateClip<MmdHumanoidAnimationClip>();
+                var clipAsset = (MmdHumanoidAnimationClip)clip.asset;
+                animationClip = new AnimationClip();
+                clipAsset.clip = animationClip;
+                directorObject = new GameObject("workflow-auto-proxy-director");
+                PlayableDirector director = directorObject.AddComponent<PlayableDirector>();
+                director.playableAsset = timeline;
+                director.SetGenericBinding(track, controller);
+
+                graph = PlayableGraph.Create();
+                Playable playable = clipAsset.CreatePlayable(graph, directorObject);
+                Assert.That(playable.IsValid(), Is.True,
+                    "clip must derive the proxy Animator from its track-bound playback controller instead of returning Playable.Null");
+            }
+            finally
+            {
+                if (graph.IsValid())
+                {
+                    graph.Destroy();
+                }
+
+                if (directorObject != null)
+                {
+                    Object.DestroyImmediate(directorObject);
+                }
+
+                if (timeline != null)
+                {
+                    Object.DestroyImmediate(timeline);
+                }
+
+                if (animationClip != null)
+                {
+                    Object.DestroyImmediate(animationClip);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        public void HumanoidAnimationClipHasNoIndependentProxyAnimatorSourceOfTruth()
+        {
+            Assert.That(
+                typeof(MmdHumanoidAnimationClip).GetField("proxyAnimator"),
+                Is.Null,
+                "Humanoid clips must derive the Animator exclusively from the track-bound playback controller.");
+        }
+
+        [Test]
+        public void HumanoidAnimationClipPreservesRootMotionDuringEditModeTimelineEvaluation()
+        {
+            GameObject? root = null;
+            GameObject? directorObject = null;
+            TimelineAsset? timeline = null;
+            AnimationClip? muscleClip = null;
+            try
+            {
+                root = new GameObject("workflow-edit-rootmotion-root");
+                Animator animator = root.AddComponent<Animator>();
+                animator.applyRootMotion = true;
+                MmdUnityPlaybackController controller = root.AddComponent<MmdUnityPlaybackController>();
+
+                muscleClip = new AnimationClip { frameRate = 30.0f };
+                muscleClip.SetCurve(
+                    string.Empty,
+                    typeof(Animator),
+                    ResolveSpineMuscleName(),
+                    AnimationCurve.Linear(0.0f, 0.0f, 1.0f, 0.5f));
+                Assert.That(muscleClip.humanMotion, Is.True, "muscle-curve clip should be recognized as Humanoid motion");
+
+                timeline = ScriptableObject.CreateInstance<TimelineAsset>();
+                MmdHumanoidAnimationTrack track =
+                    timeline.CreateTrack<MmdHumanoidAnimationTrack>(null, "MMD Humanoid");
+                TimelineClip clip = track.CreateClip<MmdHumanoidAnimationClip>();
+                var clipAsset = (MmdHumanoidAnimationClip)clip.asset;
+                clipAsset.clip = muscleClip;
+                TimelineClip secondClip = track.CreateClip<MmdHumanoidAnimationClip>();
+                secondClip.start = 1.0;
+                var secondClipAsset = (MmdHumanoidAnimationClip)secondClip.asset;
+                secondClipAsset.clip = muscleClip;
+
+                directorObject = new GameObject("workflow-edit-rootmotion-director");
+                PlayableDirector director = directorObject.AddComponent<PlayableDirector>();
+                director.playOnAwake = false;
+                director.playableAsset = timeline;
+                director.SetGenericBinding(track, controller);
+
+                director.time = 0.0;
+                director.Evaluate();
+
+                Assert.That(animator.applyRootMotion, Is.True,
+                    "Edit Mode Timeline evaluation must preserve the Animator's serialized root-motion setting.");
+
+                director.Stop();
+
+                Assert.That(animator.applyRootMotion, Is.True,
+                    "Edit Mode Timeline evaluation should restore the user's serialized applyRootMotion setting after the graph stops.");
+            }
+            finally
+            {
+                if (directorObject != null)
+                {
+                    Object.DestroyImmediate(directorObject);
+                }
+
+                if (timeline != null)
+                {
+                    Object.DestroyImmediate(timeline);
+                }
+
+                if (muscleClip != null)
+                {
+                    Object.DestroyImmediate(muscleClip);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        [Explicit("Uses UnityEditor.AnimationMode; run in an isolated process to avoid polluting later Editor tests.")]
+        public void DestroyedHumanoidEditModeTargetReleasesOwnedAnimationModeOnGraphCleanup()
+        {
+            GameObject? root = null;
+            AnimationClip? animationClip = null;
+            PlayableGraph graph = default;
+            MmdHumanoidEditModeSampleBehaviour? behaviour = null;
+            bool animationModeWasInactive = !AnimationMode.InAnimationMode();
+            try
+            {
+                Assume.That(animationModeWasInactive, Is.True,
+                    "this lifecycle test must not interfere with an existing AnimationMode session");
+
+                root = new GameObject("workflow-destroyed-edit-target");
+                Animator animator = root.AddComponent<Animator>();
+                animationClip = new AnimationClip();
+
+                graph = PlayableGraph.Create("workflow-destroyed-edit-target-graph");
+                ScriptPlayable<MmdHumanoidEditModeSampleBehaviour> samplePlayable =
+                    ScriptPlayable<MmdHumanoidEditModeSampleBehaviour>.Create(graph);
+                MmdHumanoidEditModeSampleBehaviour sampleBehaviour = samplePlayable.GetBehaviour();
+                behaviour = sampleBehaviour;
+                sampleBehaviour.Initialize(animator, animationClip);
+                ScriptPlayableOutput output = ScriptPlayableOutput.Create(graph, "workflow-destroyed-edit-target-output");
+                output.SetSourcePlayable(samplePlayable);
+
+                graph.Play();
+                graph.Evaluate();
+                Assert.That(AnimationMode.InAnimationMode(), Is.True,
+                    "the edit-mode sampler must own AnimationMode while it is active");
+
+                root.SetActive(false);
+                graph.Evaluate();
+                Assert.That(AnimationMode.InAnimationMode(), Is.False,
+                    "disabling the target must release package-owned AnimationMode");
+
+                root.SetActive(true);
+                graph.Evaluate();
+                Assert.That(AnimationMode.InAnimationMode(), Is.True,
+                    "reenabling the target while the graph is active must resume sampling");
+
+                Object.DestroyImmediate(root);
+                graph.Evaluate();
+                Assert.That(AnimationMode.InAnimationMode(), Is.False,
+                    "the next graph evaluation must release package-owned AnimationMode for a destroyed target");
+                graph.Stop();
+                graph.Evaluate();
+                graph.Destroy();
+                Assert.That(AnimationMode.InAnimationMode(), Is.False,
+                    "destroying the graph must release package-owned AnimationMode after its target was destroyed");
+            }
+            finally
+            {
+                if (graph.IsValid())
+                {
+                    graph.Destroy();
+                }
+
+                behaviour?.OnPlayableDestroy(Playable.Null);
+                if (animationModeWasInactive && AnimationMode.InAnimationMode())
+                {
+                    AnimationMode.StopAnimationMode();
+                }
+
+                if (animationClip != null)
+                {
+                    Object.DestroyImmediate(animationClip);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        public void DestroyedHumanoidRuntimeTargetRemovesRootMotionGuardWhenGraphDestroyedBeforeFirstEvaluation()
+        {
+            GameObject? root = null;
+            GameObject? directorObject = null;
+            PlayableGraph graph = default;
+            MmdHumanoidAnimationRootMotionGuardBehaviour? behaviour = null;
+            try
+            {
+                root = new GameObject("workflow-destroyed-runtime-before-evaluation-target");
+                Animator animator = root.AddComponent<Animator>();
+                animator.applyRootMotion = true;
+                directorObject = new GameObject("workflow-destroyed-runtime-before-evaluation-director");
+                PlayableDirector director = directorObject.AddComponent<PlayableDirector>();
+
+                graph = PlayableGraph.Create("workflow-destroyed-runtime-before-evaluation-graph");
+                ScriptPlayable<MmdHumanoidAnimationRootMotionGuardBehaviour> guardPlayable =
+                    ScriptPlayable<MmdHumanoidAnimationRootMotionGuardBehaviour>.Create(graph);
+                MmdHumanoidAnimationRootMotionGuardBehaviour guardBehaviour = guardPlayable.GetBehaviour();
+                behaviour = guardBehaviour;
+                guardBehaviour.Initialize(animator, director);
+                ScriptPlayableOutput output = ScriptPlayableOutput.Create(
+                    graph,
+                    "workflow-destroyed-runtime-before-evaluation-output");
+                output.SetSourcePlayable(guardPlayable);
+
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.Zero,
+                    "initialization must not acquire a guard before the graph is evaluated");
+                Assert.That(animator.applyRootMotion, Is.True);
+
+                Object.DestroyImmediate(root);
+                graph.Destroy();
+
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.Zero,
+                    "graph destruction before first evaluation must remove the guard for a destroyed Animator");
+            }
+            finally
+            {
+                if (graph.IsValid())
+                {
+                    graph.Destroy();
+                }
+
+                behaviour?.OnPlayableDestroy(Playable.Null);
+                if (directorObject != null)
+                {
+                    Object.DestroyImmediate(directorObject);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
+        public void DisabledAndDestroyedHumanoidRuntimeTargetReleasesRootMotionGuardOnEvaluation()
+        {
+            GameObject? root = null;
+            GameObject? directorObject = null;
+            PlayableGraph graph = default;
+            MmdHumanoidAnimationRootMotionGuardBehaviour? behaviour = null;
+            try
+            {
+                root = new GameObject("workflow-destroyed-runtime-target");
+                Animator animator = root.AddComponent<Animator>();
+                animator.applyRootMotion = true;
+                directorObject = new GameObject("workflow-destroyed-runtime-director");
+                PlayableDirector director = directorObject.AddComponent<PlayableDirector>();
+
+                graph = PlayableGraph.Create("workflow-destroyed-runtime-target-graph");
+                ScriptPlayable<MmdHumanoidAnimationRootMotionGuardBehaviour> guardPlayable =
+                    ScriptPlayable<MmdHumanoidAnimationRootMotionGuardBehaviour>.Create(graph);
+                MmdHumanoidAnimationRootMotionGuardBehaviour guardBehaviour = guardPlayable.GetBehaviour();
+                behaviour = guardBehaviour;
+                guardBehaviour.Initialize(animator, director);
+                ScriptPlayableOutput output = ScriptPlayableOutput.Create(graph, "workflow-destroyed-runtime-target-output");
+                output.SetSourcePlayable(guardPlayable);
+
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.Zero,
+                    "initialization must defer guard acquisition until playback is evaluated");
+                Assert.That(animator.applyRootMotion, Is.True);
+
+                graph.Play();
+                graph.Evaluate();
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.EqualTo(1));
+                Assert.That(animator.applyRootMotion, Is.False);
+                root.SetActive(false);
+                graph.Evaluate();
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.Zero,
+                    "the next graph evaluation must release the guard for a disabled target");
+
+                root.SetActive(true);
+                graph.Evaluate();
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.EqualTo(1),
+                    "reenabling the target while the graph is active must reacquire the guard");
+
+                Object.DestroyImmediate(root);
+                graph.Evaluate();
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.Zero,
+                    "the next graph evaluation must release the guard for a destroyed target");
+                graph.Stop();
+                graph.Evaluate();
+                graph.Destroy();
+                Assert.That(MmdHumanoidAnimationRootMotionGuardBehaviour.GuardStateCount, Is.Zero,
+                    "graph destruction must remove the guard even when its Animator is Unity-destroyed fake-null");
+            }
+            finally
+            {
+                if (graph.IsValid())
+                {
+                    graph.Destroy();
+                }
+
+                behaviour?.OnPlayableDestroy(Playable.Null);
+                if (directorObject != null)
+                {
+                    Object.DestroyImmediate(directorObject);
+                }
+
+                if (root != null)
+                {
+                    Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        private static string ResolveSpineMuscleName()
+        {
+            for (int dof = 0; dof < 3; dof++)
+            {
+                int muscle = HumanTrait.MuscleFromBone((int)HumanBodyBones.Spine, dof);
+                if (muscle >= 0)
+                {
+                    return HumanTrait.MuscleName[muscle];
+                }
+            }
+
+            return string.Empty;
+        }
+    }
+}

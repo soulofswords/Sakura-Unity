@@ -1,6 +1,6 @@
 {
   "name": "Sakura.Runtime",
   "rootNamespace": "Sakura.Unity",
-  "references": ["VRM10", "UniGLTF", "UniGLTF.Utils"],
+  "references": ["VRM10", "UniGLTF", "UniGLTF.Utils", "Mmd.Runtime", "Live2D.Cubism", "Unity.RenderPipelines.Universal.Runtime"],
   "autoReferenced": true
 }

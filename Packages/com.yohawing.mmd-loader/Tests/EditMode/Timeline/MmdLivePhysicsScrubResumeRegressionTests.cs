@@ -1,0 +1,776 @@
+#nullable enable
+
+using System;
+using System.IO;
+using System.Linq;
+using NUnit.Framework;
+using UnityEngine;
+using Mmd.Parser;
+using Mmd.Physics;
+using Mmd.Timeline;
+using Mmd.UnityIntegration;
+using Object = UnityEngine.Object;
+
+namespace Mmd.Tests
+{
+    /// <summary>
+    /// Regression coverage for the reported "after a scrub/seek, only the physics-pinned
+    /// (揺れもの) bones stay frozen at the bind pose while the rest of the body keeps
+    /// animating" bug. The existing Timeline hair test only seeds at frame 0 and never
+    /// re-seeds, so it cannot catch a simulation that dies after a backward seek or after
+    /// the controller's own forward Tick fights the Timeline clock.
+    ///
+    /// The movement-sensitive cases use a checked-in two-bone mode-1 fixture where the body
+    /// translation is deliberately observable. After a reset+reseed the hair must follow again;
+    /// if it stays pinned at the seeded (bind-relative) pose, the simulation has frozen.
+    /// </summary>
+    public sealed class MmdLivePhysicsScrubResumeRegressionTests
+    {
+        private const string Mode1ChainPmxId = "GeneratedPmx/bdef2-two-bone-strip.pmx";
+
+        [Test]
+        public void TimelineScrubSeekResumeKeepsHairPhysicsLive()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                // A moving mode-1 chain: the hair body's position is physics-driven, so if the live
+                // simulation freezes after a scrub the hair stays at the post-seek (bind) pose while the
+                // body animates away. test_hair_physics.pmx cannot be used here because its hair bind pose
+                // already equals the gravity equilibrium, so it shows no measurable movement.
+                MmdModelDefinition model = CreateMode1ChainModel(out string pmxPath);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(model, RootBoneName(model), frames: 30, endTranslationX: 40.0f);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(model, motion, Mode1ChainPmxId, "translate-root", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                // Forward play: the body translates and the hair follows.
+                for (int frame = 0; frame <= 20; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+
+                // Scrub/seek BACKWARD toward the start (model near the origin). In Play Mode this is a
+                // runLivePhysics:true evaluation; it must place the rig at the bone-driven pose without
+                // stepping physics.
+                behaviour.EvaluateAtLocalTime(controller, 2 / 30.0, runLivePhysics: true);
+                Vector3 anchorAtScrub = binding.Instance.BoneTransforms[0].position;
+                Vector3 hairAtScrub = binding.Instance.BoneTransforms[1].position;
+
+                // Resume forward: the body translates back out and the hair must follow it (re-seeded and
+                // simulating), not stay frozen at the scrub/bind pose.
+                for (int frame = 3; frame <= 22; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+
+                float anchorMove = (binding.Instance.BoneTransforms[0].position - anchorAtScrub).magnitude;
+                float hairMove = (binding.Instance.BoneTransforms[1].position - hairAtScrub).magnitude;
+                Assert.That(anchorMove, Is.GreaterThan(5.0f),
+                    "Sanity: the body must translate during the resume window.");
+                Assert.That(
+                    hairMove,
+                    Is.GreaterThanOrEqualTo(anchorMove * 0.5f),
+                    $"After a scrub/seek the hair physics froze: the body moved {anchorMove} on resume but the " +
+                    $"hair moved only {hairMove}. The 揺れもの bone is pinned at the bind pose instead of following.");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void TimelineAnimationOnlyPreviewRetainsLivePhysicsBackendForResume()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = CreateMode1ChainModel(out string pmxPath);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(
+                    model,
+                    RootBoneName(model),
+                    frames: 30,
+                    endTranslationX: 40.0f);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model,
+                    motion,
+                    Mode1ChainPmxId,
+                    "translate-root",
+                    pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                Assert.That(binding.PrewarmLivePhysicsBackend(), Is.True);
+                Assert.That(binding.HasLivePhysicsBackend, Is.True, "Timeline lead-in must prewarm the backend.");
+
+                behaviour.EvaluateAtLocalTime(controller, 10.0 / 30.0, runLivePhysics: false);
+                Assert.That(binding.HasLivePhysicsBackend, Is.True,
+                    "Animation-only Timeline preview must retain the warmed Bullet world.");
+                Assert.That(controller.PhysicsMode, Is.EqualTo(MmdPhysicsMode.Live));
+
+                behaviour.EvaluateAtLocalTime(controller, 11.0 / 30.0, runLivePhysics: true);
+                Assert.That(binding.HasLivePhysicsBackend, Is.True);
+                Assert.That(binding.LastLivePhysicsDiagnostics, Is.Not.Null,
+                    "Forward playback must resume from the retained backend.");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void TimelineScrubBackwardReSeedsPhysicsAsSettleNotForwardStep()
+        {
+            // A backward scrub must not FORWARD-integrate physics (which explodes the chain). Instead it
+            // resets and re-seeds the simulation, easing the 揺れもの into the scrubbed pose (saba
+            // SyncPhysics) — a settle with deltaTime 0, not a forward step. This shows a physics-plausible
+            // pose during the scrub (no snap to the straight bind pose) and re-seeds for resume.
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadHairPhysicsModel(out string pmxPath);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model, CreateRestPoseMotion(model), "test_hair_physics.pmx", "rest-pose", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                // Forward play forward-steps physics (deltaTime > 0).
+                for (int frame = 0; frame <= 10; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+                Assert.That(binding.LastLivePhysicsDiagnostics, Is.Not.Null, "Forward play must run live physics.");
+                Assert.That(binding.LastLivePhysicsDiagnostics!.deltaTime, Is.GreaterThan(0.0f),
+                    "Steady forward play must forward-integrate physics (deltaTime > 0).");
+
+                // Backward scrub re-seeds as a settle: physics is evaluated (diagnostics present) but with
+                // deltaTime 0 (no forward integration).
+                behaviour.EvaluateAtLocalTime(controller, 3 / 30.0, runLivePhysics: true);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(3));
+                Assert.That(binding.LastLivePhysicsDiagnostics, Is.Not.Null,
+                    "A backward scrub must re-seed the simulation (settle), not leave it cleared.");
+                Assert.That(binding.LastLivePhysicsDiagnostics!.deltaTime, Is.EqualTo(0.0f),
+                    "A backward scrub must settle (deltaTime 0), never forward-integrate physics.");
+
+                // Resuming forward continues forward stepping from the scrub-settled state (deltaTime > 0).
+                behaviour.EvaluateAtLocalTime(controller, 4 / 30.0, runLivePhysics: true);
+                Assert.That(binding.LastLivePhysicsDiagnostics!.deltaTime, Is.GreaterThan(0.0f),
+                    "Resuming forward after a scrub must forward-step from the settled state.");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void TimelineLoopWrapToStartResetsPhysicsToInitialPlayState()
+        {
+            // When looping playback wraps from the end back to the start, the live simulation must restart
+            // from the same clean state as the very first play (zero carried inertia / contacts), not carry
+            // the disturbed end-of-loop pose into the next loop. A loop wrap is a backward time jump, so it
+            // routes through the same backward-scrub reset path: soft reset (zero velocity, clean contact
+            // pairs) + ease-in re-seed at frame 0 (saba SyncPhysics). This pins that loop restart == first play.
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = CreateMode1ChainModel(out string pmxPath);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(model, RootBoneName(model), frames: 30, endTranslationX: 40.0f);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(model, motion, Mode1ChainPmxId, "translate-root", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                // First play, frame 0: seed the simulation from the initial pose.
+                behaviour.EvaluateAtLocalTime(controller, 0.0, runLivePhysics: true);
+                Vector3 hairAtFirstStart = binding.Instance.BoneTransforms[1].position;
+
+                // Play forward to the end of the loop; the body translates and the hair is disturbed.
+                for (int frame = 1; frame <= 30; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+                Vector3 hairAtLoopEnd = binding.Instance.BoneTransforms[1].position;
+                Assert.That((hairAtLoopEnd - hairAtFirstStart).magnitude, Is.GreaterThan(5.0f),
+                    "Sanity: the hair must be displaced by the end of the loop (motion + physics).");
+
+                // Loop wrap: time jumps back to the start. This must reset the simulation (settle, deltaTime 0)
+                // and place the hair back at the initial-play position, not leave it at the disturbed end pose.
+                behaviour.EvaluateAtLocalTime(controller, 0.0, runLivePhysics: true);
+                Assert.That(controller.CurrentFrame, Is.EqualTo(0));
+                Assert.That(binding.LastLivePhysicsDiagnostics, Is.Not.Null,
+                    "Loop wrap must re-seed the simulation, not leave it cleared.");
+                Assert.That(binding.LastLivePhysicsDiagnostics!.deltaTime, Is.EqualTo(0.0f),
+                    "Loop wrap must reset+settle (deltaTime 0), never forward-integrate physics across the wrap.");
+
+                Vector3 hairAtLoopRestart = binding.Instance.BoneTransforms[1].position;
+                Assert.That(
+                    (hairAtLoopRestart - hairAtFirstStart).magnitude,
+                    Is.LessThan(0.5f),
+                    $"Loop wrap did not reset the hair to the initial play state: first start {hairAtFirstStart}, " +
+                    $"loop restart {hairAtLoopRestart}. The physics carried inertia/pose across the loop instead of resetting.");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void PhysicsResetWhileModelTranslatedPlacesDynamicBodyAtCurrentPoseNotOriginBind()
+        {
+            // Root-cause regression. On a reset (backward scrub / loop wrap / first seeded frame) the live
+            // physics returned EVERY body to its origin-space descriptor (bind) transform instead of the
+            // CURRENT animated bone pose, so a pure-dynamic (mode-1) 揺れ body snapped back toward the
+            // origin-space bind while the model had translated away — the reported "揺れ骨が BindPose の場所に
+            // 戻る" bug. saba PMXModel::ResetPhysics instead re-syncs every body to its current node pose.
+            //
+            // This MUST be checked with the reset happening while the model is translated FAR from the origin:
+            // at the origin, origin-bind == current-pose and the bug is invisible (that is why the loop/scrub
+            // tests that reset near the origin cannot catch it).
+            //
+            // The joint's linear DOFs are FREE (lower > upper => unlimited in btGeneric6DofSpring2Constraint),
+            // so the joint does NOT drag the body toward the anchor — a rigid (linear-locked) joint would mask
+            // the bug by hauling the origin-bind body home over the settle. With free linear DOFs gravity acts
+            // only vertically, so the body's HORIZONTAL position is exactly where the RESET placed it: at the
+            // origin-bind (pre-fix) or under the translated anchor (post-fix).
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = CreateMode1ChainModelWithFreeLinearJoint(out string pmxPath);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(model, RootBoneName(model), frames: 30, endTranslationX: 40.0f);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(model, motion, Mode1ChainPmxId, "translate-root", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                // Forward play out to where the model is translated far from the origin.
+                for (int frame = 0; frame <= 20; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+
+                // Backward scrub: triggers the reset + re-seed while the model is still translated away.
+                behaviour.EvaluateAtLocalTime(controller, 18 / 30.0, runLivePhysics: true);
+
+                Vector3 anchor = binding.Instance.BoneTransforms[0].position; // bone-follow (static) anchor, at current pose
+                Vector3 hair = binding.Instance.BoneTransforms[1].position;   // mode-1 dynamic body bone
+                var anchorHoriz = new Vector2(anchor.x, anchor.z);
+                var hairHoriz = new Vector2(hair.x, hair.z);
+                Vector2 originHoriz = Vector2.zero;
+
+                // Sanity: the model really did translate away from the origin (the chain is vertical, so the
+                // anchor's horizontal separation from the origin is purely the root translation).
+                Assert.That(Vector2.Distance(anchorHoriz, originHoriz), Is.GreaterThan(2.0f),
+                    "Sanity: the anchor must be translated away from the origin at the scrubbed frame.");
+
+                // The reset must place the dynamic body at the CURRENT pose (under the translated anchor), NOT
+                // back at the origin-space bind. Horizontal position is immune to the vertical gravity settle,
+                // so this isolates the reset placement. Pre-fix the body snaps to the origin-bind (hair
+                // horizontal ~ origin, far from the translated anchor) and this fails.
+                Assert.That(
+                    Vector2.Distance(hairHoriz, anchorHoriz),
+                    Is.LessThan(Vector2.Distance(hairHoriz, originHoriz)),
+                    $"After a reset with the model translated away, the mode-1 hair body snapped back toward the " +
+                    $"origin-space bind instead of staying at the current pose: anchor {anchorHoriz}, hair {hairHoriz}. " +
+                    "Reset must re-sync bodies to the current bone pose (saba PMXModel::ResetPhysics).");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void SeededWhileTranslatedFirstForwardStepDoesNotExplodeMode1Body()
+        {
+            // Root-cause regression for the FAST/active live-physics seed path. When the simulation is
+            // (re-)seeded while the model is translated FAR from the origin, the seed teleports every body
+            // to the current pose via SetRigidbodyTransform — which sets the world + motion-state transform
+            // but NOT the interpolation transform. The prior native Reset() had left the interpolation
+            // transform at the ORIGIN-bind. So on the FIRST forward Step, Bullet's saveKinematicState computes
+            // the kinematic (bone-following) anchor body's velocity as (currentPose - originBind)/dt — a huge
+            // spurious velocity that is imparted through the 6-DoF joint into the pure-dynamic (mode-1) hair
+            // body and flings it apart (the "揺れ骨が BindPose に残って崩れる" explosion).
+            //
+            // The fix re-aligns the native interpolation transform with the current pose and zeroes velocity
+            // at seed time (saba PMXModel::ResetPhysics -> MMDRigidBody::Reset), so the first forward step
+            // computes no spurious kinematic velocity. This test seeds while translated, then takes a SINGLE
+            // forward step and asserts the mode-1 body does not jump far beyond the anchor's own per-frame
+            // motion. Pre-fix the spurious kinematic velocity flings the hair body far and this FAILS; post-fix
+            // the hair tracks the anchor and it PASSES.
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = CreateMode1ChainModel(out string pmxPath);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(model, RootBoneName(model), frames: 30, endTranslationX: 40.0f);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(model, motion, Mode1ChainPmxId, "translate-root", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                // Forward play out to where the model is translated far from the origin.
+                for (int frame = 0; frame <= 20; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+
+                // Backward scrub to frame 18 (still translated): this soft-resets and RE-SEEDS the simulation
+                // while the model is far from the origin. The re-seed is a settle (deltaTime 0).
+                behaviour.EvaluateAtLocalTime(controller, 18 / 30.0, runLivePhysics: true);
+                Assert.That(binding.LastLivePhysicsDiagnostics, Is.Not.Null, "The backward scrub must re-seed the simulation.");
+                Assert.That(binding.LastLivePhysicsDiagnostics!.deltaTime, Is.EqualTo(0.0f),
+                    "The re-seed must be a settle (deltaTime 0), not a forward integration.");
+
+                Vector3 anchorAfterSeed = binding.Instance.BoneTransforms[0].position;
+                Vector3 hairAfterSeed = binding.Instance.BoneTransforms[1].position;
+
+                // Sanity: the model is genuinely translated away from the origin at the seed frame, so the
+                // origin-bind interpolation transform (pre-fix) is far from the current pose.
+                Assert.That(anchorAfterSeed.magnitude, Is.GreaterThan(10.0f),
+                    "Sanity: the anchor must be translated far from the origin at the re-seed frame.");
+
+                // ONE forward step (frame 18 -> 19). This is the first forward Step after the re-seed, where the
+                // spurious kinematic velocity (if any) is realized.
+                behaviour.EvaluateAtLocalTime(controller, 19 / 30.0, runLivePhysics: true);
+                Assert.That(binding.LastLivePhysicsDiagnostics!.deltaTime, Is.GreaterThan(0.0f),
+                    "The frame after the re-seed must forward-step physics (deltaTime > 0).");
+
+                Vector3 anchorAfterStep = binding.Instance.BoneTransforms[0].position;
+                Vector3 hairAfterStep = binding.Instance.BoneTransforms[1].position;
+                float anchorStepMove = (anchorAfterStep - anchorAfterSeed).magnitude;
+                float hairStepMove = (hairAfterStep - hairAfterSeed).magnitude;
+
+                // The anchor (bone-driven) moves by exactly its per-frame motion translation (~40/30 ≈ 1.33).
+                // A non-exploding mode-1 body tracks that plus a little gravity sag — bounded to a few units.
+                // The spurious (currentPose - originBind)/dt velocity (pre-fix) is on the order of the whole
+                // translation distance per second and flings the hair body many times farther in one step.
+                Assert.That(anchorStepMove, Is.GreaterThan(0.5f).And.LessThan(5.0f),
+                    "Sanity: the anchor must advance by roughly its per-frame motion translation on the forward step.");
+                Assert.That(
+                    hairStepMove,
+                    Is.LessThan(anchorStepMove + 3.0f),
+                    $"The first forward Step after a translated re-seed flung the mode-1 hair body: anchor moved " +
+                    $"{anchorStepMove} but the hair jumped {hairStepMove}. The seed left the native interpolation " +
+                    $"transform at the origin-bind, so saveKinematicState computed a spurious kinematic velocity " +
+                    $"(currentPose - originBind)/dt that exploded the chain. The seed must re-sync interpolation " +
+                    $"and zero velocity (saba PMXModel::ResetPhysics).");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void TimelineDriveSuppressesControllerSelfTickToAvoidDoubleDriving()
+        {
+            // Guard logic: Update() runs before the PlayableDirector's ProcessFrame, so a Timeline-
+            // driven controller sees the previous frame's drive (delta == 1) and must skip self-Tick.
+            const int driven = 1000;
+            Assert.That(MmdUnityPlaybackController.ShouldSuppressSelfTick(driven, driven), Is.True);
+            Assert.That(MmdUnityPlaybackController.ShouldSuppressSelfTick(driven, driven + 1), Is.True);
+            Assert.That(MmdUnityPlaybackController.ShouldSuppressSelfTick(driven, driven + 2), Is.False,
+                "Once the Timeline stops driving, the controller resumes self-Tick (standalone playback).");
+            Assert.That(MmdUnityPlaybackController.ShouldSuppressSelfTick(int.MinValue / 2, driven), Is.False,
+                "A controller never driven by a Timeline must self-Tick (standalone playback).");
+
+            // A Timeline evaluation records the current Unity frame so Update() can suppress its Tick.
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = LoadHairPhysicsModel(out string pmxPath);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(
+                    model, CreateRestPoseMotion(model), "test_hair_physics.pmx", "rest-pose", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                behaviour.EvaluateAtLocalTime(controller, 5 / 30.0, runLivePhysics: true);
+                Assert.That(controller.LastTimelineDriveFrameCount, Is.EqualTo(Time.frameCount),
+                    "Forward Timeline evaluation must record the drive frame so Update() suppresses self-Tick.");
+
+                behaviour.EvaluateAtLocalTime(controller, 6 / 30.0, runLivePhysics: false);
+                Assert.That(controller.LastTimelineDriveFrameCount, Is.EqualTo(Time.frameCount),
+                    "Animation-only (scrub) Timeline evaluation must also record the drive frame.");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void ForwardPlaybackMode1ChainFollowsMovingModelInsteadOfStayingAtBindPose()
+        {
+            // The core reported bug: while the body animates, the 揺れもの (physics) bones stay frozen
+            // at the bind pose instead of following the moving body, which then tears the mesh apart.
+            // A synthetic PMX mode-1 (pure dynamic) hair chain is used because the position of a mode-1
+            // body comes entirely from the Bullet simulation in model space — if it is not dragged along
+            // with the model, its bone stays at the world-space bind position while the body moves away.
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = CreateMode1ChainModel(out string pmxPath);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(model, RootBoneName(model), frames: 30, endTranslationX: 40.0f);
+                binding = MmdUnityPlaybackBinding.CreateSkinned(model, motion, Mode1ChainPmxId, "translate-root", pmxPath);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+                var behaviour = new MmdVmdTimelineBehaviour { FrameRate = 30.0f };
+
+                behaviour.EvaluateAtLocalTime(controller, 0.0, runLivePhysics: true);
+                Vector3 anchorStart = binding.Instance.BoneTransforms[0].position;
+                Vector3 hairStart = binding.Instance.BoneTransforms[1].position;
+
+                for (int frame = 1; frame <= 30; frame++)
+                {
+                    behaviour.EvaluateAtLocalTime(controller, frame / 30.0, runLivePhysics: true);
+                }
+
+                float anchorDisplacement = (binding.Instance.BoneTransforms[0].position - anchorStart).magnitude;
+                float hairDisplacement = (binding.Instance.BoneTransforms[1].position - hairStart).magnitude;
+
+                Assert.That(anchorDisplacement, Is.GreaterThan(5.0f),
+                    "Sanity: the bone-follow anchor must move with the translating model.");
+                Assert.That(
+                    hairDisplacement,
+                    Is.GreaterThanOrEqualTo(anchorDisplacement * 0.5f),
+                    $"The mode-1 hair bone stayed near the bind pose while the body moved: anchor moved " +
+                    $"{anchorDisplacement} but hair moved only {hairDisplacement}. Live physics is not following " +
+                    "the model (the reported '揺れ骨がBindPoseに残る' bug).");
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        [Test]
+        public void ForwardPlaybackImportScaleZeroDotOneKeepsNativeReadbackInMmdSpaceAndScalesUnityBones()
+        {
+            MmdPhysicsBackendAvailability availability = MmdAnimPhysicsBackend.ProbeAvailability();
+            if (!availability.backendAvailable)
+            {
+                Assert.Ignore("Bullet physics backend is not available: " + availability.unsupportedReason);
+            }
+
+            Mode1ChainScaleSample scaleOne = RunMode1ChainForwardPlayback(importScale: 1.0f);
+            Mode1ChainScaleSample scalePointOne = RunMode1ChainForwardPlayback(importScale: 0.1f);
+
+            Assert.That(scalePointOne.importScale, Is.EqualTo(0.1f).Within(0.0001f));
+            Assert.That(scalePointOne.nativeHairBodyPosition.x, Is.EqualTo(scaleOne.nativeHairBodyPosition.x).Within(0.001f));
+            Assert.That(scalePointOne.nativeHairBodyPosition.y, Is.EqualTo(scaleOne.nativeHairBodyPosition.y).Within(0.001f));
+            Assert.That(scalePointOne.nativeHairBodyPosition.z, Is.EqualTo(scaleOne.nativeHairBodyPosition.z).Within(0.001f));
+            Assert.That(scalePointOne.hairBoneLocalPosition.x, Is.EqualTo(scaleOne.hairBoneLocalPosition.x * 0.1f).Within(0.001f));
+            Assert.That(scalePointOne.hairBoneLocalPosition.y, Is.EqualTo(scaleOne.hairBoneLocalPosition.y * 0.1f).Within(0.001f));
+            Assert.That(scalePointOne.hairBoneLocalPosition.z, Is.EqualTo(scaleOne.hairBoneLocalPosition.z * 0.1f).Within(0.001f));
+        }
+
+        private static MmdMotionDefinition CreateBoneTranslationMotion(
+            MmdModelDefinition model, string boneName, int frames, float endTranslationX)
+        {
+            return MmdTestFixtures.ParseGeneratedBoneTranslationMotion(
+                model.name,
+                boneName,
+                frames,
+                endTranslationX);
+        }
+
+        // Minimal two-bone model with a bone-follow (static) anchor on the root bone and a PMX mode-1
+        // (pure dynamic) hair body on a child bone, joined by a ball joint. Used to verify that the
+        // mode-1 hair (whose position is entirely physics-driven) follows the body when the root bone
+        // animates, instead of staying at the bind pose.
+        private static MmdModelDefinition CreateMode1ChainModel(out string pmxPath)
+        {
+            pmxPath = ResolvePackageFixture(Mode1ChainPmxId);
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+            Assert.That(model.bones, Has.Count.GreaterThanOrEqualTo(2),
+                Mode1ChainPmxId + " must provide a two-bone chain for live physics tests.");
+            int rootIndex = RootBoneIndex(model);
+            int hairIndex = HairBoneIndex(model);
+            string rootName = RootBoneName(model);
+            string hairName = HairBoneName(model);
+            Vector3 rootOrigin = ToVector3(model.bones[rootIndex].origin);
+            Vector3 hairOrigin = ToVector3(model.bones[hairIndex].origin);
+            Vector3 jointOrigin = (rootOrigin + hairOrigin) * 0.5f;
+            model.physics.rigidbodies.Clear();
+            model.physics.joints.Clear();
+
+            model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+            {
+                index = 0,
+                name = "anchor",
+                boneIndex = rootIndex,
+                boneName = rootName,
+                shapeType = "sphere",
+                size = new[] { 0.3f, 0.3f, 0.3f },
+                position = ToArray(rootOrigin),
+                rotation = new[] { 0.0f, 0.0f, 0.0f },
+                mass = 0.0f,
+                linearDamping = 0.0f,
+                angularDamping = 0.0f,
+                friction = 0.5f,
+                restitution = 0.0f,
+                group = 0,
+                mask = 0xffff,
+                physicsKind = "static"
+            });
+            model.physics.rigidbodies.Add(new MmdRigidbodyDefinition
+            {
+                index = 1,
+                name = "hairBody",
+                boneIndex = hairIndex,
+                boneName = hairName,
+                shapeType = "sphere",
+                size = new[] { 0.3f, 0.3f, 0.3f },
+                position = ToArray(hairOrigin),
+                rotation = new[] { 0.0f, 0.0f, 0.0f },
+                mass = 1.0f,
+                linearDamping = 0.0f,
+                angularDamping = 0.0f,
+                friction = 0.5f,
+                restitution = 0.0f,
+                group = 0,
+                mask = 0xffff,
+                physicsKind = "dynamic"
+            });
+            model.physics.joints.Add(new MmdJointDefinition
+            {
+                index = 0,
+                name = "anchor-hair",
+                rigidbodyAIndex = 0,
+                rigidbodyBIndex = 1,
+                position = ToArray(jointOrigin),
+                rotation = new[] { 0.0f, 0.0f, 0.0f },
+                linearLowerLimit = new[] { 0.0f, 0.0f, 0.0f },
+                linearUpperLimit = new[] { 0.0f, 0.0f, 0.0f },
+                angularLowerLimit = new[] { -3.1415927f, -3.1415927f, -3.1415927f },
+                angularUpperLimit = new[] { 3.1415927f, 3.1415927f, 3.1415927f },
+                linearSpring = new[] { 0.0f, 0.0f, 0.0f },
+                angularSpring = new[] { 0.0f, 0.0f, 0.0f }
+            });
+            return model;
+        }
+
+        private static MmdModelDefinition CreateMode1ChainModel(float importScale)
+        {
+            Assert.That(float.IsFinite(importScale) && importScale > 0.0f, Is.True);
+            return CreateMode1ChainModel(out _);
+        }
+
+        private static Mode1ChainScaleSample RunMode1ChainForwardPlayback(float importScale)
+        {
+            MmdUnityPlaybackBinding? binding = null;
+            try
+            {
+                MmdModelDefinition model = CreateMode1ChainModel(importScale);
+                MmdMotionDefinition motion = CreateBoneTranslationMotion(model, RootBoneName(model), frames: 30, endTranslationX: 40.0f);
+                binding = CreateMode1ChainBinding(model, motion, importScale);
+                MmdUnityPlaybackController controller = binding.Instance.Root.AddComponent<MmdUnityPlaybackController>();
+                controller.Configure(binding, 30.0f, playOnStart: false);
+                controller.LivePhysicsBodyDiagnosticsSampleInterval = 1;
+                controller.SetPhysicsMode(MmdPhysicsMode.Live);
+
+                for (int frame = 0; frame <= 5; frame++)
+                {
+                    controller.ApplyFrame(frame);
+                }
+
+                MmdUnityPhysicsBody hairBody = binding.Instance.PhysicsBodies.Single(body => body.BodyIndex == 1);
+                Assert.That(hairBody.HasNativeTransform, Is.True, "The mode-1 hair body must record Bullet readback.");
+                return new Mode1ChainScaleSample(
+                    binding.Instance.ImportScale,
+                    hairBody.NativePosition,
+                    binding.Instance.BoneTransforms[1].localPosition);
+            }
+            finally
+            {
+                DestroyBinding(binding);
+            }
+        }
+
+        private static MmdUnityPlaybackBinding CreateMode1ChainBinding(
+            MmdModelDefinition model,
+            MmdMotionDefinition motion,
+            float importScale)
+        {
+            return MmdUnityPlaybackBinding.CreateSkinned(
+                model,
+                motion,
+                Mode1ChainPmxId,
+                "translate-root",
+                ResolvePackageFixture(Mode1ChainPmxId),
+                importScale);
+        }
+
+        // CreateMode1ChainModel with the joint's linear DOFs FREED (lower > upper => unlimited in
+        // btGeneric6DofSpring2Constraint). The pure-dynamic hair body is then NOT linearly dragged toward
+        // the anchor by the joint, so its horizontal position reflects only where the reset PLACED it —
+        // exposing the origin-bind vs current-pose reset target that a rigid (linear-locked) joint masks.
+        private static MmdModelDefinition CreateMode1ChainModelWithFreeLinearJoint(out string pmxPath)
+        {
+            MmdModelDefinition model = CreateMode1ChainModel(out pmxPath);
+            MmdJointDefinition joint = model.physics.joints[0];
+            joint.linearLowerLimit = new[] { 1.0f, 1.0f, 1.0f };
+            joint.linearUpperLimit = new[] { -1.0f, -1.0f, -1.0f };
+            return model;
+        }
+
+        private static MmdVertexDefinition CreateVertex(int index, float x, float y, float z, float u, float v, int bone)
+        {
+            return new MmdVertexDefinition
+            {
+                index = index,
+                position = new[] { x, y, z },
+                normal = new[] { 0.0f, 0.0f, 1.0f },
+                uv = new[] { u, v },
+                boneIndices = new[] { bone },
+                boneWeights = new[] { 1.0f }
+            };
+        }
+
+        private static MmdModelDefinition LoadHairPhysicsModel(out string pmxPath)
+        {
+            pmxPath = ResolvePackageFixture("test_hair_physics.pmx");
+            var parser = new NativeMmdParser();
+            MmdModelDefinition model = parser.LoadModel(File.ReadAllBytes(pmxPath));
+            Assert.That(model.physics.rigidbodies.Count, Is.GreaterThan(0),
+                "test_hair_physics.pmx must contain rigidbody definitions");
+            // Pure world-anchor joints (both endpoints -1) are rejected by the descriptor validator.
+            model.physics.joints.RemoveAll(j => j.rigidbodyAIndex < 0 && j.rigidbodyBIndex < 0);
+            return model;
+        }
+
+        private static MmdMotionDefinition CreateRestPoseMotion(MmdModelDefinition model)
+        {
+            return MmdTestFixtures.ParseGeneratedRestPoseMotion(model.name);
+        }
+
+        private static int RootBoneIndex(MmdModelDefinition model)
+        {
+            Assert.That(model.bones, Is.Not.Null.And.Not.Empty);
+            return model.bones[0].index;
+        }
+
+        private static int HairBoneIndex(MmdModelDefinition model)
+        {
+            Assert.That(model.bones, Has.Count.GreaterThanOrEqualTo(2));
+            return model.bones[1].index;
+        }
+
+        private static string RootBoneName(MmdModelDefinition model)
+        {
+            Assert.That(model.bones, Is.Not.Null.And.Not.Empty);
+            Assert.That(model.bones[0].name, Is.Not.Null.And.Not.Empty);
+            return model.bones[0].name;
+        }
+
+        private static string HairBoneName(MmdModelDefinition model)
+        {
+            Assert.That(model.bones, Has.Count.GreaterThanOrEqualTo(2));
+            Assert.That(model.bones[1].name, Is.Not.Null.And.Not.Empty);
+            return model.bones[1].name;
+        }
+
+        private static Vector3 ToVector3(float[] value)
+        {
+            Assert.That(value, Has.Length.EqualTo(3));
+            return new Vector3(value[0], value[1], value[2]);
+        }
+
+        private static float[] ToArray(Vector3 value)
+        {
+            return new[] { value.x, value.y, value.z };
+        }
+
+        private static void DestroyBinding(MmdUnityPlaybackBinding? binding)
+        {
+            if (binding?.Instance?.Root != null)
+            {
+                Object.DestroyImmediate(binding.Instance.Root);
+            }
+
+            binding?.Dispose();
+        }
+
+        private static string ResolvePackageFixture(string fileName)
+        {
+            string projectRoot = Path.GetDirectoryName(Application.dataPath);
+            string packageRoot = Path.GetFullPath(Path.Combine(projectRoot, "..", "packages", "com.yohawing.mmd-loader"));
+            return Path.Combine(packageRoot, "Tests", "Fixtures", "Assets", fileName);
+        }
+
+        private readonly struct Mode1ChainScaleSample
+        {
+            public readonly float importScale;
+            public readonly Vector3 nativeHairBodyPosition;
+            public readonly Vector3 hairBoneLocalPosition;
+
+            public Mode1ChainScaleSample(
+                float importScale,
+                Vector3 nativeHairBodyPosition,
+                Vector3 hairBoneLocalPosition)
+            {
+                this.importScale = importScale;
+                this.nativeHairBodyPosition = nativeHairBodyPosition;
+                this.hairBoneLocalPosition = hairBoneLocalPosition;
+            }
+        }
+    }
+}

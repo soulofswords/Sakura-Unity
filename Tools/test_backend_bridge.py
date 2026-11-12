@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import types
+from unittest.mock import patch
 from contextlib import asynccontextmanager
 
 
@@ -59,6 +60,57 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(calls, ['start', 'stop'])
 
         asyncio.run(run())
+
+    def test_package_files_retain_hierarchy_and_reject_links(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'textures').mkdir()
+            (root / 'model.pmx').write_bytes(b'PMX ')
+            (root / 'textures/body.png').write_bytes(b'image')
+            records = list(self.bridge.package_files(root, 100, 10))
+            self.assertEqual({name for name, _ in records}, {'model.pmx', 'textures/body.png'})
+            self.assertEqual(list(self.bridge.package_files(root / 'model.pmx', 100, 10)), [('model.pmx', b'PMX ')])
+
+    def test_package_size_and_count_are_bounded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'model.pmx').write_bytes(b'PMX ')
+            (root / 'image.png').write_bytes(b'image')
+            with self.assertRaises(ValueError):
+                list(self.bridge.package_files(root, 3, 10))
+            with self.assertRaises(ValueError):
+                list(self.bridge.package_files(root, 100, 1))
+
+    def test_pmx_tool_validates_model_before_opening_editor(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)
+            (source / 'settings.json').write_text('{"pmx_editor_path":"installed-editor"}')
+            checked = []
+            opened = []
+            def model_file(model):
+                checked.append(model)
+                if model != 'pmx/example.pmx':
+                    raise ValueError('Outside model root')
+            def open_model(model, executable):
+                opened.append((model, executable))
+                return {'opened': True, 'model': model}
+            module = types.SimpleNamespace(model_file=model_file, open_model=open_model)
+            with patch.dict('sys.modules', {'pmx_editor': module}):
+                with self.assertRaises(ValueError):
+                    self.bridge.pmx_tool(source, 'editor', {'model': '../outside.pmx'})
+                self.assertEqual(opened, [])
+                result = self.bridge.pmx_tool(source, 'editor', {'model': 'pmx/example.pmx'})
+            self.assertTrue(result['opened'])
+            self.assertEqual(opened, [('pmx/example.pmx', 'installed-editor')])
+
+    def test_pmx_tools_reject_unknown_action(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)
+            (source / 'settings.json').write_text('{}')
+            module = types.SimpleNamespace(model_file=lambda model: None, open_model=lambda *args: self.fail('Should not launch'))
+            with patch.dict('sys.modules', {'pmx_editor': module}):
+                with self.assertRaisesRegex(ValueError, 'Unsupported PMX tool'):
+                    self.bridge.pmx_tool(source, 'shell', {'model': 'pmx/example.pmx'})
 
 
 if __name__ == '__main__':
