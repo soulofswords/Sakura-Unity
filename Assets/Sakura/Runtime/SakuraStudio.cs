@@ -339,11 +339,14 @@ namespace Sakura.Unity
             var breadcrumb = Element("row", window);
             var scroll = new ScrollView(); window.Add(scroll); scroll.AddToClassList("picker-results");
             var grid = Element("picker-grid", scroll.contentContainer);
-            string folder = "";
+            string preference = "sakura-model-folder:" + kind;
+            string folder = PlayerPrefs.GetString(preference, "");
+            if (!catalog.Any(entry => entry.format == kind && entry.path.Substring(entry.path.IndexOf('/') + 1).StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase))) folder = "";
             Action render = null;
             render = () =>
             {
                 grid.Clear(); breadcrumb.Clear();
+                if (PlayerPrefs.GetString(preference, "") != folder) { PlayerPrefs.SetString(preference, folder); PlayerPrefs.Save(); }
                 Button(kind, () => { folder = ""; render(); }, breadcrumb);
                 string prefix = string.IsNullOrEmpty(folder) ? "" : folder + "/";
                 if (!string.IsNullOrEmpty(folder)) Button(folder + " / ←", () => { int slash = folder.LastIndexOf('/'); folder = slash < 0 ? "" : folder.Substring(0, slash); render(); }, breadcrumb);
@@ -362,6 +365,8 @@ namespace Sakura.Unity
                     }
                     var button = Button(entry.name, () =>
                     {
+                        int slash = path.LastIndexOf('/');
+                        PlayerPrefs.SetString(preference, slash < 0 ? "" : path.Substring(0, slash)); PlayerPrefs.Save();
                         _ = viewport.LoadModel(backend.SourceFolder, entry.path);
                         overlay.RemoveFromHierarchy();
                     }, grid); button.AddToClassList("picker-item");

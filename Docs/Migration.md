@@ -40,6 +40,7 @@ The Unity client owns the interface, avatar rendering, animation and eventually 
 | PMX editing | Native independent colour/transparency, diffuse replacement, texture diagnostics/confirmed path repair, indexed bone freezing and eight appearance controls implemented. Editor reference matching tested. Pick-on-model, automatic rig diagnosis, material-expression presets and migration of old browser overrides remain pending. Existing package textures.json overrides are read at import |
 | Tracking, expressions and physics | Tracking, expression UI/hotkeys and physics parity pending |
 | Voice and microphone | Pending |
+| Backend mode gating | Native mode navigation is present; source service pausing/edition packaging still needs native integration verification |
 | Agent and browser | Pending |
 | Cloud library and mobile | Native library sign-in, registration, recovery and download controls wired to existing routes. Live account/download verification and mobile integration pending |
 | Double-click clean stage | Unity event tests verify Companion chat remains visible, VTuber hides controls, repeated double-click restores the previous panel state |
@@ -88,3 +89,5 @@ Verification artifacts are in C:/AI/Unity-Verification. pmx-tools-check.json cov
 No installer, APK or published update is produced by this checkpoint. Full native feature/UI parity is still incomplete. The original application remains intact.
 
 The eight native appearance sliders use the same ranges as the reference app. Automatic matching searches the original .3/.12/.05 steps, retains directional shading and checks whole-model plus up to six measurable material references. After snapshots wait for a fresh frame, so they cannot accidentally show the final isolated reference material.
+
+The native local model picker remembers its last folder separately for PMX, VRM and Live2D, including across reopening. A live Ringo-folder reopen check passed. SDK example scenes remain local owner-imported files and are excluded from this code checkpoint; SDK runtime, editor support, renderer assets and licenses are committed. The owner’s Unity cloud-connect preference is not changed or committed.
