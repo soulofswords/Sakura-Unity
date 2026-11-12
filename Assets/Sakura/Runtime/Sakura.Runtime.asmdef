@@ -1,0 +1,6 @@
+{
+  "name": "Sakura.Runtime",
+  "rootNamespace": "Sakura.Unity",
+  "references": ["VRM10", "UniGLTF", "UniGLTF.Utils"],
+  "autoReferenced": true
+}
