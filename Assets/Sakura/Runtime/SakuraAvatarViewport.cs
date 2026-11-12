@@ -110,6 +110,7 @@ namespace Sakura.Unity
 
         public void Rotate(float degrees) { if (avatar == null) return; yaw += degrees; avatar.transform.localRotation = Quaternion.Euler(0, yaw, 0); }
         public void Zoom(float factor) { zoom = Mathf.Clamp(zoom * factor, .5f, 3); if (avatar != null) FrameAvatar(); }
+        public void ResetFraming() { zoom = 1; if (avatar != null) FrameAvatar(); }
 
         private void OnDestroy()
         {

@@ -14,6 +14,7 @@ namespace Sakura.Unity
     [Serializable] internal class BridgeIdentity { public int port; public string token; }
     [Serializable] internal class ChatRequest { public string text; }
     [Serializable] internal class ChatResponse { public string reply; public string error; }
+    [Serializable] public class ApiReply { public bool ok; public bool configured; public bool confirmation_required; public string error; public string message; public string url; }
 
     public sealed class SakuraBackend : MonoBehaviour
     {
@@ -69,7 +70,7 @@ namespace Sakura.Unity
                             var catalog = JsonUtility.FromJson<CharacterCatalog>(json);
                             if (!string.IsNullOrEmpty(catalog.error)) throw new IOException(catalog.error);
                             CatalogReceived?.Invoke(catalog.items ?? Array.Empty<CharacterEntry>());
-                            StatusChanged?.Invoke("Local model library loaded. Unity avatar rendering is the next migration step.");
+                            StatusChanged?.Invoke("Talk to Sakura…");
                         }
                         catch (Exception error) { StatusChanged?.Invoke(error.Message); }
                     });
@@ -132,11 +133,52 @@ namespace Sakura.Unity
             }
         }
 
+        public void Api(string route, string body, Action<string, string> completed)
+        {
+            if (!route.StartsWith("/api/", StringComparison.Ordinal) || route.Contains("..") || route.Contains("\\"))
+            { completed(null, "Invalid API route."); return; }
+            StartCoroutine(CallApi(route, body, completed));
+        }
+
+        private IEnumerator CallApi(string route, string body, Action<string, string> completed)
+        {
+            if (!Connected)
+            {
+                Connect();
+                float deadline = Time.realtimeSinceStartup + 120;
+                while (!Connected && server != null && Time.realtimeSinceStartup < deadline) yield return null;
+            }
+            if (!Connected) { completed(null, "The existing Sakura backend could not start. Check its environment in Settings."); yield break; }
+            using (var request = Request(route))
+            {
+                if (route.EndsWith("/install", StringComparison.Ordinal)) request.timeout = 1800;
+                if (body != null)
+                {
+                    request.method = "POST";
+                    request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
+                    request.SetRequestHeader("Content-Type", "application/json");
+                }
+                yield return request.SendWebRequest();
+                string json = request.downloadHandler.text;
+                if (request.result == UnityWebRequest.Result.Success) { completed(json, null); yield break; }
+                string error = "Sakura could not complete this request. " + request.error;
+                try { var reply = JsonUtility.FromJson<ApiReply>(json); if (!string.IsNullOrEmpty(reply.error)) error = reply.error; }
+                catch (ArgumentException) { }
+                completed(null, error);
+            }
+        }
+
         public void SendChat(string text)
         {
             if (Busy || string.IsNullOrWhiteSpace(text)) return;
             if (!Connected) { StatusChanged?.Invoke("Use Connect backend before sending a message."); return; }
-            StartCoroutine(Chat(text));
+            Busy = true;
+            Api("/api/unity/start-services", "{}", (json, error) =>
+            {
+                Busy = false;
+                if (error != null) { StatusChanged?.Invoke(error); return; }
+                StartCoroutine(Chat(text));
+            });
         }
 
         private IEnumerator Chat(string text)

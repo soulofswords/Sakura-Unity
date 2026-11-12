@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import types
+from contextlib import asynccontextmanager
 
 
 class BridgeTests(unittest.TestCase):
@@ -30,6 +32,33 @@ class BridgeTests(unittest.TestCase):
             items = self.bridge.read_catalog(root)
             self.assertEqual({item['format'] for item in items}, {'PMX', 'Live2D'})
             self.assertTrue(all('\\' not in item['path'] for item in items))
+
+    def test_services_are_lazy_and_started_once(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        calls = []
+
+        @asynccontextmanager
+        async def service_lifetime(app):
+            calls.append('start')
+            yield
+            calls.append('stop')
+
+        module = types.SimpleNamespace(app=FastAPI(), lifespan=service_lifetime)
+        self.bridge.install_unity_lifecycle(module)
+        self.assertEqual(calls, [])
+
+        async def run():
+            async with module.app.router.lifespan_context(module.app):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=module.app), base_url='http://localhost') as client:
+                    for _ in range(2):
+                        response = await client.post('/api/unity/start-services')
+                        self.assertEqual(response.status_code, 200)
+                    self.assertEqual(calls, ['start'])
+            self.assertEqual(calls, ['start', 'stop'])
+
+        asyncio.run(run())
 
 
 if __name__ == '__main__':

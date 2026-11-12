@@ -33,13 +33,14 @@ The Unity client owns the interface, avatar rendering, animation and eventually 
 |---|---|
 | Existing app checkpoint | Committed locally |
 | Native Unity shell | Running in Editor Play mode, navigation and theme switching verified |
-| Local catalog | 544 real references discovered, three bridge unit tests passing |
-| Authenticated backend | Existing API authorization probe passing, Unity chat transport remains unverified |
+| Local catalog | 544 real references discovered, four bridge unit tests passing |
+| Authenticated backend | Loopback bridge and authorization probe verified. AI services start lazily. Chat generation remains unverified |
 | Avatar rendering | VRM runtime import and rendering verified with ArisuMaid, PMX and Live2D pending |
 | Tracking, expressions and physics | Pending |
 | Voice and microphone | Pending |
 | Agent and browser | Pending |
-| Cloud library and mobile | Pending |
+| Cloud library and mobile | Native library sign-in, registration, recovery and download controls wired to existing routes. Live account/download verification and mobile integration pending |
+| Double-click clean stage | Unity event tests verify Companion chat remains visible, VTuber hides controls, repeated double-click restores the previous panel state |
 | Streaming outputs | Pending |
 | Install/update preservation | Pending |
 | Full feature and visual parity | Pending |
@@ -63,3 +64,11 @@ Each capability needs a callable backend or native implementation and an actual 
 Open Assets/Scenes/SakuraStudio.unity and press Play. Sakura/Open Studio opens the scene. Sakura/Verify Studio writes the current smoke-test result and screenshot while Play mode is running.
 
 Settings can launch the existing Python backend using its development virtual environment. This is development-only packaging. Full chat, voice and backend shutdown behavior still need live integration tests before release. The installer will eventually bundle and launch the backend without requiring a source checkout.
+
+## Current UI parity checks
+
+The native shell now uses the original app's DM Sans and Bricolage Grotesque fonts, toolbar icon artwork, theme colors and measured title bar, dock, panel and chat geometry. Font licenses accompany the assets. The right panel supports resizing from each edge.
+
+Double-click the background or avatar to hide controls. Companion retains its chat window. VTuber retains its avatar stage. Double-click again restores controls, including the prior closed-panel state. Agent mode ignores this gesture. These checks use dispatched Unity UI events and resolved display styles, with screenshots in C:/AI/Unity-Verification.
+
+The native Settings tabs reuse the existing settings API. Camera, microphone, renderer-specific physics and other partially migrated preferences still require their corresponding native integrations. Visible controls and saved preferences do not establish full feature parity.

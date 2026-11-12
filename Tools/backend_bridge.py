@@ -6,6 +6,8 @@ from pathlib import Path
 import socket
 import sys
 import threading
+from contextlib import asynccontextmanager
+import asyncio
 
 
 def validate_source(value):
@@ -38,6 +40,37 @@ def read_catalog(source):
     return entries
 
 
+def install_unity_lifecycle(module):
+    """Account/model UI starts without loading AI, audio, camera or automations."""
+    service_context = None
+    service_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def lifetime(app):
+        try:
+            yield
+        finally:
+            async with service_lock:
+                if service_context is not None:
+                    await service_context.__aexit__(None, None, None)
+
+    @module.app.get('/api/unity/status')
+    async def service_status():
+        return {'services_started': service_context is not None}
+
+    @module.app.post('/api/unity/start-services')
+    async def start_services():
+        nonlocal service_context
+        async with service_lock:
+            if service_context is None:
+                candidate = module.lifespan(module.app)
+                await candidate.__aenter__()
+                service_context = candidate
+        return {'ok': True}
+
+    module.app.router.lifespan_context = lifetime
+
+
 def serve(source):
     os.environ['SAKURA_DESKTOP'] = '1'
     sys.path.insert(0, str(source))
@@ -52,6 +85,7 @@ def serve(source):
     import local_api_security
     import uvicorn
     gui_server.port = sock.getsockname()[1]
+    install_unity_lifecycle(app)
     print('SAKURA_BRIDGE ' + json.dumps({'port': gui_server.port,
           'token': local_api_security.DESKTOP_TOKEN}), flush=True)
     server = uvicorn.Server(uvicorn.Config(app.app, log_level='warning', access_log=False))
