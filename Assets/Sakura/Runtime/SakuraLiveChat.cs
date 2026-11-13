@@ -31,9 +31,19 @@ namespace Sakura.Unity
         private bool pointsPolling;
         private int pointsGeneration;
         private readonly HashSet<string> pointsSeen = new HashSet<string>();
+        private bool twitchPending;
+        private float nextTwitchPoll;
+        private int twitchGeneration;
+        private string twitchStatus = "Not signed in";
         public bool EmoteDrops => emoteDrops;
         public bool PointsEnabled => pointsEnabled;
         public string PointsStatus => pointsStatus;
+        public string TwitchStatus => twitchStatus;
+        public string TwitchClientId
+        {
+            get => PlayerPrefs.GetString("sakura_twitch_client_id", "");
+            set { PlayerPrefs.SetString("sakura_twitch_client_id", (value ?? "").Trim()); PlayerPrefs.Save(); }
+        }
 
         private void Awake() { backend = GetComponent<SakuraBackend>(); voice = GetComponent<SakuraVoice>(); }
         private void Notify(string value) { Status = value; Changed?.Invoke(); }
@@ -67,6 +77,7 @@ namespace Sakura.Unity
         {
             EnsureEffects();
             PollPoints();
+            PollTwitch();
             if (!Active) return;
             if (backend.Mode != mode) { Disconnect(); return; }
             int revision = generation;
@@ -189,6 +200,60 @@ namespace Sakura.Unity
                 catch (Exception) { pointsStatus = "The points service returned an unreadable response."; }
             });
         }
+        public void StartTwitchSignIn(string clientId)
+        {
+            if (backend == null || !backend.Connected) { twitchStatus = "Connect the backend first."; return; }
+            TwitchClientId = clientId; twitchGeneration++; twitchPending = false;
+            twitchStatus = "Starting Twitch sign-in…";
+            backend.Api("/api/twitch/auth/start", new JObject { ["client_id"] = TwitchClientId }.ToString(), (json, error) =>
+            {
+                if (error != null) { twitchStatus = error; return; }
+                try
+                {
+                    var result = JObject.Parse(json);
+                    string verification = (string)result["verification_uri"];
+                    string code = (string)result["user_code"];
+                    if (!Uri.TryCreate(verification ?? "", UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != "www.twitch.tv" || uri.AbsolutePath != "/activate") throw new InvalidOperationException("Twitch returned an invalid authorization address.");
+                    int interval = Mathf.Clamp(result.Value<int?>("interval") ?? 5, 1, 60);
+                    Application.OpenURL(uri.AbsoluteUri);
+                    twitchPending = true; nextTwitchPoll = Time.unscaledTime + interval; twitchStatus = "Authorize on Twitch · " + code;
+                }
+                catch (Exception exception) { twitchStatus = exception.Message; }
+            });
+        }
+        public void SignOutTwitch()
+        {
+            if (backend == null || !backend.Connected) { twitchStatus = "Connect the backend first."; return; }
+            twitchGeneration++; twitchPending = false;
+            backend.Api("/api/twitch/auth/disconnect", "{}", (json, error) =>
+            {
+                if (error != null) { twitchStatus = error; return; }
+                try
+                {
+                    var result = JObject.Parse(json);
+                    twitchStatus = result.Value<bool?>("connected") == true ? "Signed in as " + (string)result["username"] : "Signed out";
+                }
+                catch (Exception) { twitchStatus = "Signed out"; }
+            });
+        }
+        void PollTwitch()
+        {
+            if (!twitchPending || backend == null || !backend.Connected || Time.unscaledTime < nextTwitchPoll) return;
+            int revision = twitchGeneration;
+            backend.Api("/api/twitch/auth/poll", "{}", (json, error) =>
+            {
+                if (revision != twitchGeneration) return;
+                if (error != null) { twitchPending = false; twitchStatus = error; return; }
+                try
+                {
+                    var result = JObject.Parse(json);
+                    if (result.Value<bool?>("pending") == true) { nextTwitchPoll = Time.unscaledTime + 5; return; }
+                    twitchPending = false;
+                    twitchStatus = result.Value<bool?>("connected") == true ? "Signed in as " + (string)result["username"] : "Signed out";
+                }
+                catch (Exception) { twitchPending = false; twitchStatus = "Twitch returned an unreadable response."; }
+            });
+        }
         void TriggerReward(JObject reward)
         {
             string id = (string)reward["reward_id"] ?? "";
@@ -230,6 +295,12 @@ namespace Sakura.Unity
             parent.Add(new Button(() => chat.Connect(new[] { "youtube","twitch","both" }[service.index],youtube.value,twitch.value)) { text = "Connect" });
             parent.Add(new Button(chat.Disconnect) { text = "Disconnect" });
             var status = new Label(chat.Status); status.style.whiteSpace = WhiteSpace.Normal; parent.Add(status);
+            var authCard = new VisualElement(); authCard.AddToClassList("card"); parent.Add(authCard);
+            var authTitle = new Label("Twitch sign-in"); authTitle.AddToClassList("card-title"); authCard.Add(authTitle);
+            var client = new TextField("Twitch client ID") { value = chat.TwitchClientId, maxLength = 64 }; authCard.Add(client);
+            authCard.Add(new Button(() => chat.StartTwitchSignIn(client.value)) { text = "Sign in with Twitch" });
+            authCard.Add(new Button(chat.SignOutTwitch) { text = "Sign out" });
+            var authStatus = new Label(chat.TwitchStatus); authStatus.style.whiteSpace = WhiteSpace.Normal; authCard.Add(authStatus);
             var effectsCard = new VisualElement(); effectsCard.AddToClassList("card"); parent.Add(effectsCard);
             var effectsTitle = new Label("Twitch effects"); effectsTitle.AddToClassList("card-title"); effectsCard.Add(effectsTitle);
             var emoteToggle = new Toggle("Drop emotes onto the stage") { value = chat.EmoteDrops }; effectsCard.Add(emoteToggle);
@@ -245,7 +316,7 @@ namespace Sakura.Unity
                 try { chat.SaveReward(rewardId.value, new[] { "none", "wave", "dance", "emotes" }[rewardAction.index]); rewardStatus.text = "Saved reward action."; }
                 catch (Exception error) { rewardStatus.text = error.Message; }
             }) { text = "Save reward action" });
-            void Refresh() { status.text = chat.Status; points.text = chat.PointsStatus; pointsToggle.SetValueWithoutNotify(chat.PointsEnabled); emoteToggle.SetValueWithoutNotify(chat.EmoteDrops); }
+            void Refresh() { status.text = chat.Status; points.text = chat.PointsStatus; authStatus.text = chat.TwitchStatus; pointsToggle.SetValueWithoutNotify(chat.PointsEnabled); emoteToggle.SetValueWithoutNotify(chat.EmoteDrops); }
             chat.Changed += Refresh; parent.RegisterCallback<DetachFromPanelEvent>(_ => chat.Changed -= Refresh); Refresh();
         }
     }
