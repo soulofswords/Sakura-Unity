@@ -36,7 +36,9 @@ namespace Sakura.Unity
         private string activeDevice;
         private int readFrame, generation, playbackGeneration;
         private bool pushToTalk, recognizing, starting, loadingSettings, settingsReady, wakeEnabled;
+        private bool enrolling, resumeAfterEnrolment;
         private string wakePhrase = "hey sakura";
+        private string playbackMode;
         private float resumeAt, microphoneStartedAt, wakeDeadline;
 
         private bool Companion => Backend != null && Backend.Mode == "Companion";
@@ -74,9 +76,29 @@ namespace Sakura.Unity
         public void StartListening() { StartInput(false); }
         public void BeginPushToTalk() { StartInput(true); }
 
+        public bool TryPauseForEnrolment()
+        {
+            if (!Companion || !isActiveAndEnabled || enrolling || recognizing || Speaking || Backend.Busy) return false;
+            bool wasListening = Listening;
+            StopListening();
+            enrolling = true; resumeAfterEnrolment = wasListening;
+            SetStatus("Voice enrolment · conversation microphone paused");
+            return true;
+        }
+
+        public void ResumeAfterEnrolment()
+        {
+            if (!enrolling) return;
+            bool resume = resumeAfterEnrolment;
+            enrolling = false; resumeAfterEnrolment = false;
+            if (resume && Companion && isActiveAndEnabled) StartListening();
+            else SetStatus("Microphone OFF");
+        }
+
         private void StartInput(bool held)
         {
             if (!isActiveAndEnabled) return;
+            if (enrolling) { SetStatus("Finish voice enrolment before starting conversation listening."); return; }
             if (!Companion) { SetStatus("Microphone OFF · available in Companion mode"); return; }
             StopListening(); StopSpeaking();
             pushToTalk = held; Listening = true;
@@ -121,10 +143,11 @@ namespace Sakura.Unity
 
         private void Update()
         {
+            if (enrolling) return;
             if (!Companion)
             {
                 if (Listening || recognizing) StopListening();
-                if (Speaking) StopSpeaking();
+                if (Speaking && Backend.Mode != playbackMode) StopSpeaking();
                 return;
             }
             if (!Listening) return;
@@ -210,12 +233,27 @@ namespace Sakura.Unity
         private void PlayReply(string relativeAudio)
         {
             if (!Companion || !isActiveAndEnabled || string.IsNullOrEmpty(relativeAudio)) return;
+            PlayAudio(relativeAudio);
+        }
+
+        public void PlayReadout(string relativeAudio)
+        {
+            if (!isActiveAndEnabled || Backend == null || Backend.Mode != "VTuber") return;
+            PlayAudio(relativeAudio);
+        }
+
+        public void PlayCohost(string relativeAudio) => PlayReply(relativeAudio);
+
+        private void PlayAudio(string relativeAudio)
+        {
             StopSpeaking(); CloseMicrophone();
             int playback = playbackGeneration;
+            string mode = Backend.Mode;
+            playbackMode = mode;
             SetStatus("Loading Sakura’s voice…");
             Backend.DownloadAudio(relativeAudio, (clip, error) =>
             {
-                if (this == null || !isActiveAndEnabled || playback != playbackGeneration || !Companion)
+                if (this == null || !isActiveAndEnabled || playback != playbackGeneration || Backend.Mode != mode)
                 { if (clip != null) Destroy(clip); return; }
                 if (error != null || clip == null) { SetStatus("Voice playback failed: " + (error ?? "empty audio")); resumeAt = Time.realtimeSinceStartup + .65f; return; }
                 speaker.clip = clip; speaker.Play();
@@ -246,6 +284,7 @@ namespace Sakura.Unity
 
         public void StopListening()
         {
+            if (enrolling) resumeAfterEnrolment = false;
             generation++; recognizing = false; wakeDeadline = 0;
             bool wasListening = Listening; Listening = false; CloseMicrophone(); heldSpeech.Clear();
             if (wasListening) ListeningChanged?.Invoke(false);
@@ -268,6 +307,7 @@ namespace Sakura.Unity
             if (boundBackend != null) boundBackend.AudioReplyReceived -= PlayReply;
             StopAllCoroutines(); starting = false; loadingSettings = false;
             StopListening(); StopSpeaking();
+            enrolling = false; resumeAfterEnrolment = false;
             if (speaker != null) { Destroy(speaker); speaker = null; }
             if (ownedListener != null) { Destroy(ownedListener); ownedListener = null; }
         }

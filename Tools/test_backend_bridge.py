@@ -19,6 +19,38 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.bridge.validate_source(folder)
 
+    def test_texture_picker_accepts_each_imported_format_and_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            models = root / 'models'
+            models.mkdir()
+            for name in ('avatar.pmx', 'avatar.vrm', 'avatar.model3.json'):
+                target = models / name
+                target.write_bytes(b'fixture')
+                self.assertEqual(self.bridge.texture_model(root, name), target.resolve())
+            (root / 'external.pmx').write_bytes(b'fixture')
+            for value in ('../external.pmx', 'missing.vrm', 'settings.json', None, ''):
+                with self.assertRaises(ValueError):
+                    self.bridge.texture_model(root, value)
+
+    def test_cancelled_visual_picker_returns_without_reading_a_file(self):
+        window = types.SimpleNamespace(withdraw=lambda: None, attributes=lambda *args: None, destroy=lambda: None)
+        dialog = types.SimpleNamespace(askopenfilename=lambda **kwargs: '')
+        tk = types.SimpleNamespace(Tk=lambda: window, filedialog=dialog)
+        with patch.dict('sys.modules', {'tkinter': tk, 'tkinter.filedialog': dialog}):
+            self.assertEqual(self.bridge.pick_visual_asset(), {'cancelled': True})
+
+    def test_video_picker_rejects_other_file_extensions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            selected = Path(folder) / 'script.exe'
+            selected.write_bytes(b'fixture')
+            window = types.SimpleNamespace(withdraw=lambda: None, attributes=lambda *args: None, destroy=lambda: None)
+            dialog = types.SimpleNamespace(askopenfilename=lambda **kwargs: str(selected))
+            tk = types.SimpleNamespace(Tk=lambda: window, filedialog=dialog)
+            with patch.dict('sys.modules', {'tkinter': tk, 'tkinter.filedialog': dialog}):
+                with self.assertRaises(ValueError):
+                    self.bridge.pick_visual_asset(video=True)
+
     def test_real_source_resolves(self):
         source = self.bridge.validate_source(r'F:\AI\assistant\Sakura')
         self.assertTrue((source / 'app.py').is_file())
@@ -60,6 +92,24 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual(calls, ['start'])
             self.assertEqual(calls, ['start', 'stop'])
 
+        asyncio.run(run())
+
+    def test_cold_vtuber_shutdown_stops_started_output_without_starting_ai(self):
+        import asyncio
+        from fastapi import FastAPI
+        calls = []
+        app = FastAPI()
+        @asynccontextmanager
+        async def ai_lifetime(app):
+            self.fail('Cold output shutdown must not start AI')
+            yield
+        app.router.lifespan_context = ai_lifetime
+        self.bridge.install_unity_lifecycle(types.SimpleNamespace(app=app))
+        async def run():
+            with patch.dict('sys.modules', {'spout_output': types.SimpleNamespace(output=types.SimpleNamespace(stop=lambda: calls.append('stop'))) }):
+                async with app.router.lifespan_context(app):
+                    self.assertEqual(calls, [])
+                self.assertEqual(calls, ['stop'])
         asyncio.run(run())
 
     def test_lazy_start_keeps_included_router_lifespans(self):

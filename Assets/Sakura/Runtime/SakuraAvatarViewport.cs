@@ -7,12 +7,14 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using UniVRM10;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.Rendering;
 
 namespace Sakura.Unity
 {
     public sealed class SakuraAvatarViewport : MonoBehaviour
     {
         public event Action<string> StatusChanged;
+        public event Action ModelChanged;
         public bool Loading { get; private set; }
         public bool HasAvatar => avatar != null;
         public string LoadedFormat { get; private set; }
@@ -27,8 +29,15 @@ namespace Sakura.Unity
         private RenderTexture target;
         private CancellationTokenSource lifetime;
         private Image image;
-        private float yaw, zoom = 1;
+        private float yaw, zoom = 1, targetZoom = 1;
+        private Vector3 framingOffset;
+        public bool PositionLocked { get; set; }
         private Bounds? modelBounds;
+        private Action<int> pickedPart;
+        private bool pickBone;
+
+        public void BeginPartPick(bool bone, Action<int> completed) { pickBone = bone; pickedPart = completed; }
+        public void CancelPartPick() { pickedPart = null; }
 
         public void Attach(VisualElement stage)
         {
@@ -46,6 +55,58 @@ namespace Sakura.Unity
             image.style.position = Position.Absolute;
             image.style.left = 0; image.style.right = 0; image.style.top = 0; image.style.bottom = 0;
             stage.Insert(0, image);
+            RenderPipelineManager.endCameraRendering -= ApplyModelEffects;
+            RenderPipelineManager.endCameraRendering += ApplyModelEffects;
+            stage.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (evt.button != 0 || pickedPart == null || avatar == null) return;
+                var point = stage.WorldToLocal(evt.position);
+                int result = PickPart(new Vector2(point.x / Mathf.Max(1,stage.layout.width),1 - point.y / Mathf.Max(1,stage.layout.height)),pickBone);
+                if (result >= 0) { var callback = pickedPart; pickedPart = null; callback(result); }
+                else StatusChanged?.Invoke("Click a visible part of the model to select it.");
+                evt.StopImmediatePropagation();
+            });
+            Vector2 dragStart = default; Vector3 offsetStart = default; float yawStart = 0; int dragButton = -1;
+            Vector2 Normalized(Vector2 point) => new Vector2(point.x / Mathf.Max(1,stage.layout.width),1 - point.y / Mathf.Max(1,stage.layout.height));
+            bool Hit(Vector2 local)
+            {
+                if (avatar == null) return false;
+                var normalized = Normalized(local);
+                if (LoadedFormat != "Live2D") return PickPart(normalized,false) >= 0;
+                var previous = RenderTexture.active; var pixel = new Texture2D(1,1,TextureFormat.RGBA32,false);
+                try
+                {
+                    RenderTexture.active = target;
+                    pixel.ReadPixels(new Rect(Mathf.Clamp((int)(normalized.x * target.width),0,target.width - 1),Mathf.Clamp((int)(normalized.y * target.height),0,target.height - 1),1,1),0,0);
+                    pixel.Apply(); return pixel.GetPixel(0,0).a > .1f;
+                }
+                finally { RenderTexture.active = previous; Destroy(pixel); }
+            }
+            stage.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (pickedPart != null || PositionLocked || evt.button > 1 || !Hit(stage.WorldToLocal(evt.position))) return;
+                dragStart = stage.WorldToLocal(evt.position); offsetStart = framingOffset; yawStart = yaw; dragButton = evt.button;
+                stage.CapturePointer(evt.pointerId); evt.StopPropagation();
+            });
+            stage.RegisterCallback<PointerMoveEvent>(evt =>
+            {
+                if (dragButton < 0 || !stage.HasPointerCapture(evt.pointerId)) return;
+                Vector2 delta = stage.WorldToLocal(evt.position) - dragStart;
+                if (dragButton == 1)
+                {
+                    yaw = yawStart + delta.x * .35f; avatar.transform.localRotation = Quaternion.Euler(0,yaw,0);
+                }
+                else
+                {
+                    float units = 2 * (avatarCamera.transform.position - (modelBounds?.center ?? avatar.transform.position) - framingOffset).magnitude * Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f) / Mathf.Max(1,stage.layout.height);
+                    framingOffset = offsetStart - avatarCamera.transform.right * delta.x * units + avatarCamera.transform.up * delta.y * units;
+                    FrameAvatar();
+                }
+                evt.StopPropagation();
+            });
+            stage.RegisterCallback<PointerUpEvent>(evt => { if (stage.HasPointerCapture(evt.pointerId)) { stage.ReleasePointer(evt.pointerId); dragButton = -1; evt.StopPropagation(); } });
+            stage.RegisterCallback<PointerCaptureOutEvent>(_ => dragButton = -1);
+            stage.RegisterCallback<WheelEvent>(evt => { if (!PositionLocked && Hit(stage.WorldToLocal(evt.mousePosition))) { Zoom(Mathf.Exp(-evt.delta.y * .035f)); evt.StopPropagation(); } });
             stage.RegisterCallback<GeometryChangedEvent>(args => Resize((int)args.newRect.width, (int)args.newRect.height));
             Resize(1024, 1024);
             var lightObject = new GameObject("Avatar key light");
@@ -77,6 +138,74 @@ namespace Sakura.Unity
 
         public Task LoadVrm(string source, string relative) => LoadModel(source, relative);
 
+        public GameObject AvatarRoot => avatar;
+        public RenderTexture OutputTexture => target;
+        public float ZoomPercent => targetZoom * 100;
+
+        public int PickPart(Vector2 normalized, bool bone)
+        {
+            if (avatar == null || avatarCamera == null) return -1;
+            var ray = avatarCamera.ViewportPointToRay(new Vector3(normalized.x,normalized.y,0));
+            float closest = float.MaxValue; int selected = -1;
+            foreach (var renderer in avatar.GetComponentsInChildren<SkinnedMeshRenderer>())
+            {
+                if (!renderer.enabled || renderer.sharedMesh == null) continue;
+                var baked = new Mesh();
+                var temporary = new GameObject("Temporary model picking surface") { hideFlags = HideFlags.HideAndDontSave };
+                try
+                {
+                    renderer.BakeMesh(baked);
+                    temporary.transform.SetParent(renderer.transform,false);
+                    var collider = temporary.AddComponent<MeshCollider>(); collider.sharedMesh = baked;
+                    if (!collider.Raycast(ray,out var hit,avatarCamera.farClipPlane) || hit.distance >= closest) continue;
+                    if (bone)
+                    {
+                        int offset = hit.triangleIndex * 3;
+                        var triangles = baked.triangles; var weights = renderer.sharedMesh.boneWeights;
+                        if (offset + 2 >= triangles.Length || weights.Length == 0) continue;
+                        int vertex = triangles[offset];
+                        if (hit.barycentricCoordinate.y > hit.barycentricCoordinate.x) vertex = triangles[offset + 1];
+                        if (hit.barycentricCoordinate.z > Mathf.Max(hit.barycentricCoordinate.x,hit.barycentricCoordinate.y)) vertex = triangles[offset + 2];
+                        if (vertex >= weights.Length) continue;
+                        var weight = weights[vertex]; int index = weight.boneIndex0; float strength = weight.weight0;
+                        if (weight.weight1 > strength) { strength = weight.weight1; index = weight.boneIndex1; }
+                        if (weight.weight2 > strength) { strength = weight.weight2; index = weight.boneIndex2; }
+                        if (weight.weight3 > strength) index = weight.boneIndex3;
+                        if (index >= renderer.bones.Length) continue;
+                        selected = Pmx == null ? avatar.GetComponent<SakuraModelTools>()?.GetBoneIndex(renderer.bones[index]) ?? -1 : Array.IndexOf(Pmx.Instance.BoneTransforms,renderer.bones[index]);
+                    }
+                    else
+                    {
+                        int triangle = hit.triangleIndex * 3, first = 0;
+                        for (int part = 0; part < baked.subMeshCount; part++)
+                        {
+                            int count = (int)baked.GetIndexCount(part);
+                            if (triangle >= first && triangle < first + count) { selected = Pmx == null ? avatar.GetComponent<SakuraModelTools>()?.GetMaterialIndex(renderer,part) ?? -1 : part; break; }
+                            first += count;
+                        }
+                    }
+                    closest = hit.distance;
+                }
+                finally { Destroy(temporary); Destroy(baked); }
+            }
+            return selected;
+        }
+
+        public void SetZoomPercent(float percent)
+        {
+            targetZoom = Mathf.Clamp(percent / 100, .4f, 5);
+        }
+
+        public void UnloadModel()
+        {
+            if (Loading) throw new InvalidOperationException("Wait for the current model import to finish.");
+            if (avatar != null) Destroy(avatar);
+            avatar = null;
+            LoadedModelPath = null;
+            LoadedFormat = null;
+            modelBounds = null;
+        }
+
         public async Task LoadModel(string source, string relative)
         {
             if (Loading) { StatusChanged?.Invoke("A character is already loading. Please wait."); return; }
@@ -102,6 +231,7 @@ namespace Sakura.Unity
                 {
                     var motion = loaded.AddComponent<SakuraIdleMotion>(); motion.Initialize(path);
                     loaded.AddComponent<SakuraAvatarExpressions>().Initialize(path, motion);
+                    if (format != "PMX") SakuraModelTools.GetOrCreate(loaded, path);
                     var studio = GetComponent<SakuraStudio>(); motion.Companion = studio == null || studio.CurrentMode == "Companion";
                 }
                 catch { Destroy(loaded); throw; }
@@ -113,7 +243,7 @@ namespace Sakura.Unity
                 avatarCamera.GetUniversalAdditionalCameraData().SetRenderer(format == "Live2D" ? 1 : -1);
                 avatar.transform.SetParent(transform, false);
                 avatar.transform.localPosition = Vector3.zero;
-                yaw = format == "Live2D" ? 180 : 0; zoom = 1;
+                yaw = format == "Live2D" ? 180 : 0; zoom = targetZoom = 1; framingOffset = Vector3.zero;
                 avatar.transform.localRotation = Quaternion.Euler(0, yaw, 0);
                 foreach (var child in avatar.GetComponentsInChildren<Transform>(true)) child.gameObject.layer = 30;
                 modelBounds = null;
@@ -131,6 +261,7 @@ namespace Sakura.Unity
                 if (previous != null) Destroy(previous);
                 await Task.Yield();
                 FrameAvatar();
+                ModelChanged?.Invoke();
                 if (format != "PMX") ImportDetails = format + " loaded in the Unity renderer.";
                 StatusChanged?.Invoke(ImportDetails);
             }
@@ -148,13 +279,18 @@ namespace Sakura.Unity
             if (modelBounds.HasValue) bounds = modelBounds.Value;
             float halfHeight = Mathf.Max(bounds.extents.y, bounds.extents.x / Mathf.Max(.1f, avatarCamera.aspect));
             float distance = halfHeight / Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f) * 1.12f / zoom;
-            avatarCamera.transform.position = bounds.center + Vector3.forward * distance;
-            avatarCamera.transform.LookAt(bounds.center);
+            avatarCamera.transform.position = bounds.center + framingOffset + Vector3.forward * distance;
+            avatarCamera.transform.LookAt(bounds.center + framingOffset);
         }
 
         public void Rotate(float degrees) { if (avatar == null) return; yaw += degrees; avatar.transform.localRotation = Quaternion.Euler(0, yaw, 0); }
-        public void Zoom(float factor) { zoom = Mathf.Clamp(zoom * factor, .5f, 3); if (avatar != null) FrameAvatar(); }
-        public void ResetFraming() { zoom = 1; if (avatar != null) FrameAvatar(); }
+        public void Zoom(float factor) => SetZoomPercent(targetZoom * factor * 100);
+        public void ResetFraming() { zoom = targetZoom = 1; framingOffset = Vector3.zero; if (avatar != null) FrameAvatar(); }
+        private void Update()
+        {
+            if (avatar == null || Mathf.Abs(zoom - targetZoom) < .0001f) return;
+            zoom = Mathf.Lerp(zoom,targetZoom,1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime,.1f) / .075f)); FrameAvatar();
+        }
 
         public string SaveSnapshot(string purpose)
         {
@@ -212,9 +348,17 @@ namespace Sakura.Unity
 
         private void OnDestroy()
         {
+            RenderPipelineManager.endCameraRendering -= ApplyModelEffects;
             lifetime?.Cancel(); lifetime?.Dispose();
             if (avatar != null) Destroy(avatar);
             if (target != null) { if (avatarCamera != null) avatarCamera.targetTexture = null; target.Release(); Destroy(target); }
+        }
+
+        private void ApplyModelEffects(ScriptableRenderContext context, Camera camera)
+        {
+            if (camera != avatarCamera || target == null || avatar == null) return;
+            var tools = avatar.GetComponent<SakuraModelTools>();
+            if (tools != null && tools.HasEffects) tools.ApplyEffects(target, target);
         }
     }
 }

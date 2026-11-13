@@ -105,6 +105,19 @@ namespace Sakura.Unity
                 bones["leftWrist"] = Find("左手首", "leftWrist"); bones["rightWrist"] = Find("右手首", "rightWrist");
             }
             bones["head"] = head; bones["neck"] = neck; bones["chest"] = chest;
+            // Match the reference app's rig-derived relaxed pose, rather than assuming arm axes.
+            foreach (string side in new[] { "left","right" })
+            {
+                if (!bones.TryGetValue(side + "Arm",out var arm) || arm == null || !bones.TryGetValue(side + "Elbow",out var elbow) || elbow == null) continue;
+                var direction = elbow.position - arm.position;
+                if (direction.sqrMagnitude < .000001f) continue;
+                float sign = Mathf.Sign(transform.InverseTransformPoint(arm.position).x);
+                if (sign == 0) sign = side == "left" ? 1 : -1;
+                var lowered = transform.TransformDirection(new Vector3(sign * .18f,-1,.06f).normalized);
+                arm.rotation = Quaternion.FromToRotation(direction.normalized,lowered) * arm.rotation;
+                elbow.localRotation *= Quaternion.Euler(.1f * Mathf.Rad2Deg,0,0);
+                if (bones.TryGetValue(side + "Wrist",out var wrist) && wrist != null) wrist.localRotation *= Quaternion.Euler(.04f * Mathf.Rad2Deg,0,0);
+            }
             foreach (var mesh in GetComponentsInChildren<SkinnedMeshRenderer>())
             {
                 for (int index = 0; index < mesh.sharedMesh.blendShapeCount; index++)

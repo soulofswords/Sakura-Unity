@@ -81,7 +81,12 @@ namespace Sakura.Unity.Editor
             if (Mathf.Abs(idle.BreathValue - before) < .0001f) throw new Exception("Idle breathing is not advancing.");
             var studio = UnityEngine.Object.FindFirstObjectByType<SakuraStudio>(); studio.ShowPanel("Model Settings");
             var ui = studio.GetComponent<UIDocument>().rootVisualElement;
-            if (ui.Query<Button>().ToList().Count(button => button.text == "Bones" || button.text == "Appearance" || button.text == "Texture remapping") != 3) throw new Exception("PMX tabs are unreachable.");
+            var tabs = ui.Query<Button>(className: "model-tab").ToList();
+            if (!tabs.Select(button => button.text).SequenceEqual(new[] { "Texture remapping", "Texture coloring", "Expressions & hotkeys", "Bones", "Mouth" }))
+                throw new Exception("PMX tabs differ from the reference app.");
+            using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = tabs[1]; tabs[1].SendEvent(submit); }
+            if (ui.Query<Slider>().ToList().Count(slider => new[] { "Brightness", "Ambient fill", "Authored material tint", "Toon shading", "Directional shading", "Sphere / shine maps", "Specular highlights", "Colour saturation" }.Contains(slider.label)) != 8)
+                throw new Exception("PMX appearance controls are unreachable from Texture coloring.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pmx-native-tools.png");
             File.WriteAllText(@"C:\AI\Unity-Verification\pmx-tools-check.json", "{\"transparencyIndependentOfColour\":true,\"colourTexturePixels\":true,\"appearanceShader\":true,\"boneFreeze\":true,\"persistenceReload\":true,\"snapshot\":true,\"breathingAdvances\":true,\"nativeTabs\":true}");
         }

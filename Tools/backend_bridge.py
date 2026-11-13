@@ -105,6 +105,26 @@ def install_unity_lifecycle(module):
             async with service_lock:
                 if service_context is not None:
                     await service_context.__aexit__(None, None, None)
+                else:
+                    # Cold VTuber sessions may start outputs without ever starting AI services.
+                    for name, member, action in (
+                        ('live_chat', 'chat', 'stop'), ('spout_output', 'output', 'stop'),
+                        ('ndi_output', 'output', 'stop'), ('virtual_camera', 'output', 'stop'),
+                        ('nvidia_ar_tracker', 'tracker', 'stop'), ('nvidia_expressionapp_tracker', 'tracker', 'stop'),
+                        ('vmc_sender', 'sender', 'stop'), ('cubism_editor', 'cubism_editor', 'disconnect'),
+                        ('screen_audio', 'listener', 'stop'),
+                    ):
+                        loaded = sys.modules.get(name)
+                        target = getattr(loaded, member, None)
+                        method = getattr(target, action, None)
+                        if callable(method):
+                            try:
+                                await asyncio.to_thread(method)
+                            except Exception:
+                                print(f'Could not stop owned {name} service cleanly.', file=sys.stderr)
+                    rvc = sys.modules.get('rvc_manager')
+                    if rvc is not None:
+                        await asyncio.to_thread(rvc.stop_rvc_service)
 
     @module.app.get('/api/unity/status')
     async def service_status():
@@ -152,13 +172,39 @@ def install_unity_lifecycle(module):
                 service_context = candidate
         return {'ok': True}
 
+    @module.app.post('/api/unity/start-voice')
+    async def start_voice():
+        async with service_lock:
+            if mode != 'VTuber':
+                return JSONResponse({'error': 'Use normal conversation voice controls in Companion mode.'}, 409)
+            if getattr(module, 'tts', None) is None:
+                from tts import TextToSpeech
+                cfg = module.get_settings()
+                voice = TextToSpeech()
+                voice.set_voice_preset(cfg.get('selected_voice', 'kokoro_af_heart'), cfg.get('tts_pitch'), cfg.get('tts_rate'))
+                if cfg.get('selected_voice', '').startswith('rvc_') and cfg.get('rvc_model'):
+                    voice.set_rvc_model(str(module.BASE_DIR / cfg['rvc_model']),
+                                        str(module.BASE_DIR / cfg['rvc_index']) if cfg.get('rvc_index') else None,
+                                        pitch=cfg.get('rvc_pitch', 0), index_rate=cfg.get('rvc_index_rate', .75))
+                module.tts = voice
+            if getattr(module, 'stt_loader', None) is None:
+                def load_stt():
+                    from stt import SpeechToText
+                    module.stt = SpeechToText()
+                module.stt_loader = load_stt
+            return {'ok': True}
+
     module.app.router.lifespan_context = lifetime
 
 
-def serve(source):
+def serve(source, edition='companion'):
     os.environ['SAKURA_DESKTOP'] = '1'
     sys.path.insert(0, str(source))
     os.chdir(source)
+    if edition == 'vtuber':
+        import product
+        product.EDITION = 'vtuber'
+        product.DISPLAY_NAME = 'Sakura VTuber'
     # Bind before publishing the address so another process cannot take this port.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(('127.0.0.1', 0))
@@ -170,6 +216,8 @@ def serve(source):
     import uvicorn
     gui_server.port = sock.getsockname()[1]
     install_unity_lifecycle(app)
+    from unity_tracking_api import install as install_tracking
+    install_tracking(app.app, source)
     print('SAKURA_BRIDGE ' + json.dumps({'port': gui_server.port,
           'token': local_api_security.DESKTOP_TOKEN}), flush=True)
     server = uvicorn.Server(uvicorn.Config(app.app, log_level='warning', access_log=False))
@@ -180,9 +228,59 @@ def serve(source):
     server.run(sockets=[sock])
 
 
+def texture_model(source, relative):
+    if not isinstance(relative, str) or not relative or len(relative) > 2048:
+        raise ValueError('Choose an imported character first.')
+    root = (source / 'models').resolve()
+    model = (root / relative).resolve()
+    if not model.is_relative_to(root) or not model.is_file() or not (
+        model.suffix.lower() in ('.pmx', '.vrm') or model.name.lower().endswith('.model3.json')
+    ):
+        raise ValueError('Choose an existing character inside the models folder.')
+    return model
+
+
+def pick_visual_asset(video=False):
+    import tkinter
+    from tkinter import filedialog
+    window = tkinter.Tk()
+    window.withdraw()
+    window.attributes('-topmost', True)
+    try:
+        selected = filedialog.askopenfilename(title='Choose stage video' if video else 'Choose image', parent=window,
+            filetypes=[('Video', '*.mp4 *.webm *.mov')] if video else [('Images', '*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds *.sph *.spa')])
+    finally:
+        window.destroy()
+    if not selected:
+        return {'cancelled': True}
+    file = Path(selected).resolve()
+    if not file.is_file() or str(file).startswith('\\\\'):
+        raise ValueError('Choose a file stored on this PC.')
+    if video:
+        if file.suffix.lower() not in ('.mp4', '.webm', '.mov') or file.stat().st_size > 2 * 1024**3:
+            raise ValueError('Choose an MP4, WebM or MOV video under 2 GB.')
+        return {'path': str(file), 'name': file.name}
+    from PIL import Image
+    import base64
+    import io
+    if file.stat().st_size > 64 * 1024 * 1024:
+        raise ValueError('Image exceeds 64 MB.')
+    with Image.open(file) as image:
+        if image.width * image.height > 16777216:
+            raise ValueError('Image exceeds 16 megapixels.')
+        encoded = io.BytesIO()
+        image.convert('RGBA').save(encoded, format='PNG')
+    return {'image': base64.b64encode(encoded.getvalue()).decode('ascii'), 'name': file.name}
+
+
 def pmx_tool(source, tool, payload):
     """Explicit native UI actions; never run a shell or load AI services."""
     sys.path.insert(0, str(source))
+    if tool in ('backdrop-image', 'backdrop-video'):
+        return pick_visual_asset(tool == 'backdrop-video')
+    if tool == 'texture':
+        texture_model(source, payload.get('model'))
+        return pick_visual_asset()
     from pmx_editor import model_file, open_model
     relative = payload.get('model')
     model_file(relative)
@@ -195,31 +293,6 @@ def pmx_tool(source, tool, payload):
     if tool == 'reference':
         from pmx_appearance_reference import capture_reference
         return capture_reference(relative, payload.get('direction', [0, 0, 1]), settings.get('pmx_editor_path'))
-    if tool == 'texture':
-        import tkinter
-        from tkinter import filedialog
-        from PIL import Image
-        import base64
-        import io
-        window = tkinter.Tk()
-        window.withdraw()
-        window.attributes('-topmost', True)
-        try:
-            selected = filedialog.askopenfilename(title='Replace selected PMX texture', parent=window,
-                filetypes=[('Images', '*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds *.sph *.spa')])
-        finally:
-            window.destroy()
-        if not selected:
-            return {'cancelled': True}
-        file = Path(selected)
-        if file.stat().st_size > 64 * 1024 * 1024:
-            raise ValueError('Texture exceeds 64 MB.')
-        with Image.open(file) as image:
-            if image.width * image.height > 16777216:
-                raise ValueError('Texture exceeds 16 megapixels.')
-            encoded = io.BytesIO()
-            image.convert('RGBA').save(encoded, format='PNG')
-        return {'image': base64.b64encode(encoded.getvalue()).decode('ascii')}
     raise ValueError('Unsupported PMX tool.')
 
 
@@ -227,9 +300,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--source', required=True)
     parser.add_argument('--serve', action='store_true')
+    parser.add_argument('--edition', choices=('companion', 'vtuber'), default='companion')
     parser.add_argument('--import-format', choices=('pmx', 'vrm', 'live2d'))
     parser.add_argument('--package')
-    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture'))
+    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture', 'backdrop-image', 'backdrop-video'))
     args = parser.parse_args()
     try:
         source = validate_source(args.source)
@@ -241,7 +315,7 @@ def main():
         elif args.import_format:
             print(json.dumps(import_selected(source, args.import_format, args.package), ensure_ascii=True), flush=True)
         elif args.serve:
-            serve(source)
+            serve(source, args.edition)
         else:
             print(json.dumps({'items': read_catalog(source)}, ensure_ascii=True), flush=True)
     except (OSError, ValueError, RuntimeError) as error:

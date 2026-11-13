@@ -16,10 +16,11 @@ namespace Sakura.Unity
         private readonly Action<string> applyTheme;
         private JObject values = new JObject(), changes = new JObject();
         private readonly List<TextField> secretInputs = new List<TextField>();
+        private SakuraSpeakerProfiles speakerProfiles;
         private string selected = "General";
-        private bool saving, alive = true;
+        private bool saving, previewing, alive = true;
 
-        public SakuraSettingsPanel(SakuraBackend backend, VisualElement host, Action<string> applyTheme, string initialTab = "General")
+        public SakuraSettingsPanel(SakuraBackend backend, VisualElement host, Action<string> applyTheme, string initialTab = "General", bool showTabs = true)
         {
             selected = initialTab;
             this.backend = backend; this.applyTheme = applyTheme;
@@ -27,11 +28,15 @@ namespace Sakura.Unity
             this.host.AddToClassList("settings-content");
             host.Add(this.host);
             host = this.host;
-            host.RegisterCallback<DetachFromPanelEvent>(evt => { alive = false; ClearSecrets(); });
+            host.RegisterCallback<DetachFromPanelEvent>(evt => { alive = false; speakerProfiles?.Dispose(); ClearSecrets(); });
             var tabs = new ScrollView(ScrollViewMode.Horizontal); tabs.AddToClassList("settings-tabs"); host.Add(tabs);
+            tabs.style.display = showTabs ? DisplayStyle.Flex : DisplayStyle.None;
             tabs.contentContainer.style.flexDirection = FlexDirection.Row;
-            foreach (string title in new[] { "Voice", "General", "Models", "Theme", "AI & LLM", "Camera & Audio", "Assistant" })
-            { string tab = title; AddButton(title, () => { selected = tab; Render(); }, tabs.contentContainer); }
+            string[] pages = backend.Mode == "VTuber"
+                ? new[] { "Voice", "General", "Models", "Theme", "Camera & Audio" }
+                : new[] { "Voice", "General", "Models", "Theme", "AI & LLM", "Camera & Audio", "Assistant" };
+            foreach (string title in pages)
+            { string tab = title; AddButton(title, () => { selected = tab; Render(); }, tabs.contentContainer).AddToClassList("settings-tab"); }
             body = new VisualElement(); host.Add(body);
             status = Text("Loading your saved settings…", "description", host);
             backend.Api("/api/settings", null, (json, error) =>
@@ -44,6 +49,7 @@ namespace Sakura.Unity
 
         private void Render()
         {
+            speakerProfiles?.Dispose(); speakerProfiles = null;
             ClearSecrets(); body.Clear();
             foreach (var button in host.Q(className: "settings-tabs").Query<Button>().ToList())
                 button.EnableInClassList("tab-selected", button.text == selected);
@@ -79,21 +85,120 @@ namespace Sakura.Unity
             else if (selected == "AI & LLM")
             {
                 var card = Card("AI provider");
-                Select(card, "Provider", "llm_provider", new[] { "ollama", "gemini", "openai", "anthropic", "groq", "openrouter" }, new[] { "Local AI", "Google Gemini", "OpenAI", "Anthropic", "Groq", "OpenRouter" });
+                Select(card, "Provider", "llm_provider", new[] { "ollama", "auto", "gemini", "openai", "anthropic", "groq", "openrouter", "xai", "deepseek", "compatible" }, new[] { "Local AI", "Auto-detect API key", "Google Gemini", "OpenAI", "Anthropic", "Groq", "OpenRouter", "xAI", "DeepSeek", "Custom OpenAI-compatible API" });
                 Field(card, "Cloud API key", "api_key", true); Text("Blank keeps your saved key. Keys are stored by the existing encrypted backend.", "description", card);
                 Field(card, "Gemini model", "gemini_model"); Field(card, "Cloud model", "cloud_model"); Field(card, "Cloud endpoint", "cloud_endpoint");
+                AddCloudModelDiscovery(card);
+                AddAiConnectionTest(card);
                 card = Card("Local AI");
                 Field(card, "Universal local model", "ollama_model"); Field(card, "Game local model", "game_ollama_model"); Field(card, "Local model folder", "ollama_models_folder");
+                AddLocalModelDiscovery(card);
                 Number(card, "Context tokens", "ollama_context", 1024, 8192); Number(card, "Wait for local reply (seconds)", "local_timeout", 5, 120);
                 Check(card, "Allow cloud fallback", "gemini_fallback_enabled"); Check(card, "Automatically use cloud under game VRAM pressure", "game_cloud_auto_enabled");
                 card = Card("Web search"); Check(card, "Allow web search", "web_search_enabled"); Field(card, "Brave Search API key", "brave_key", true);
             }
             else if (selected == "Voice")
             {
-                var card = Card("Voice & speech"); Field(card, "Selected voice ID", "selected_voice");
-                Field(card, "Pitch", "tts_pitch"); Field(card, "Rate", "tts_rate");
+                var card = Card("Voice & speech");
+                if (backend.Mode != "VTuber")
+                {
+                Text("Conversation mode", "section-title",card);
+                var modes = new VisualElement(); modes.AddToClassList("row"); card.Add(modes);
+                foreach (string choice in new[] { "friend","teacher" })
+                {
+                    string mode = choice;
+                    bool active = ((string)Value("conversation_mode") ?? "friend") == mode;
+                    var toggle = AddButton("",() =>
+                    {
+                        backend.Api("/api/settings",new JObject { ["conversation_mode"] = mode }.ToString(),(_,error) =>
+                        {
+                            if (!alive) return;
+                            if (error != null) { status.text = error; return; }
+                            values["conversation_mode"] = mode; changes.Remove("conversation_mode");
+                            if (selected == "Voice") Render();
+                        });
+                    },modes);
+                    toggle.AddToClassList("conversation-switch");
+                    toggle.name = "conversation-" + mode;
+                    toggle.tooltip = char.ToUpperInvariant(mode[0]) + mode.Substring(1) + (active ? " On" : " Off");
+                    toggle.Add(new Label(char.ToUpperInvariant(mode[0]) + mode.Substring(1)));
+                    var track = new VisualElement(); track.AddToClassList("switch-track"); toggle.Add(track);
+                    var thumb = new VisualElement(); thumb.AddToClassList("switch-thumb"); track.Add(thumb);
+                    toggle.Add(new Label(active ? "On" : "Off"));
+                    toggle.EnableInClassList("mode-active",active);
+                }
+                Text(((string)Value("conversation_mode") ?? "friend") == "friend" ? "Friend · warm, casual conversation." : "Teacher · patient explanations and step-by-step guidance.","description",card);
+                Select(card,"Reply emotions","avatar_emotion",new[] { "auto","off","happy","concerned","amused","surprised","focused" },new[] { "Automatic · match the reply","Off · neutral","Happy","Concerned","Amused","Surprised","Focused" });
+                }
+                var voices = new DropdownField("Voice",new List<string> { (string)Value("selected_voice") ?? "Loading voices…" },0); card.Add(voices);
+                voices.name = "voice-preset";
+                var library = new Foldout { text = "Voice library", value = false }; card.Add(library);
+                var libraryContents = new VisualElement(); library.Add(libraryContents);
+                backend.Api("/api/voices",null,(json,error) =>
+                {
+                    if (!alive || selected != "Voice" || voices.panel == null) return;
+                    if (error != null) { status.text = error; return; }
+                    var result = JObject.Parse(json);
+                    var options = (result["presets"] as JArray ?? new JArray()).Concat(result["rvc_models"] as JArray ?? new JArray()).ToArray();
+                    var ids = options.Select(row => (string)row["id"]).ToList();
+                    if (ids.Count == 0) return;
+                    voices.choices = options.Select(row =>
+                    {
+                        string title = (string)row["name"] ?? (string)row["id"];
+                        return row["backend"] == null ? title : string.Join(" · ",new[] { (string)row["backend"],(string)row["gender"],(string)row["language"],title }.Where(value => !string.IsNullOrEmpty(value)));
+                    }).ToList();
+                    voices.index = Math.Max(0,ids.IndexOf((string)Value("selected_voice")));
+                    voices.RegisterValueChangedCallback(_ =>
+                    {
+                        if (voices.index < 0 || voices.index >= ids.Count) return;
+                        changes["selected_voice"] = ids[voices.index];
+                        var chosen = options[voices.index];
+                        if (chosen["pth"] != null)
+                        {
+                            changes["rvc_model"] = (string)chosen["pth"];
+                            changes["rvc_index"] = (string)chosen["index"] ?? "";
+                        }
+                    });
+                    RenderVoiceLibrary(libraryContents, options, voices, ids);
+                });
+                AddButton("Preview voice", PreviewVoice, card);
+                AddButton("Stop speaking", () => backend.GetComponent<SakuraVoice>()?.StopSpeaking(), card);
+                var advanced = new Foldout { text = "Voice adjustment", value = false }; card.Add(advanced);
+                Field(advanced, "Pitch", "tts_pitch"); Field(advanced, "Rate", "tts_rate");
                 card = Card("RVC voice changer"); Field(card, "RVC model", "rvc_model"); Field(card, "RVC index", "rvc_index"); Number(card, "RVC pitch", "rvc_pitch", -24, 24);
-                Text("Voice settings and native playback use the original backend. Lip-sync is still being migrated.", "description", card);
+                var indexRate = new Slider("RVC index strength", 0, 1) { value = (float?)Value("rvc_index_rate") ?? .75f }; card.Add(indexRate);
+                indexRate.RegisterValueChangedCallback(evt => changes["rvc_index_rate"] = evt.newValue);
+                Text("Choose an installed RVC voice in the Voice library or enter model and index paths from the Sakura voices folder.", "description", card);
+                var import = new Foldout { text = "Import custom RVC voice", value = false }; card.Add(import);
+                var voiceName = new TextField("Voice name") { maxLength = 48 }; import.Add(voiceName);
+                var modelPath = new TextField(".pth file on this PC"); import.Add(modelPath);
+                var indexPath = new TextField(".index file (optional)"); import.Add(indexPath);
+                Text("Import copies these files into Sakura’s voice library and activates the voice.", "description", import);
+                Button importButton = null;
+                importButton = AddButton("Import and activate voice", () =>
+                {
+                    var nativeVoice = backend.GetComponent<SakuraVoice>();
+                    if (backend.Busy || (nativeVoice != null && nativeVoice.Speaking)) { status.text = "Wait for the current reply to finish before importing a voice."; return; }
+                    string importedName = voiceName.value;
+                    importButton.SetEnabled(false); status.text = "Importing RVC voice…";
+                    backend.UploadRvcVoice(importedName, modelPath.value, indexPath.value, (json, error) =>
+                    {
+                        if (!alive) return;
+                        importButton.SetEnabled(true);
+                        if (error != null) { status.text = error; return; }
+                        try
+                        {
+                            var result = JObject.Parse(json);
+                            values["selected_voice"] = "rvc_" + importedName.Trim().ToLowerInvariant().Replace(' ', '_');
+                            values["rvc_model"] = result["pth"]; values["rvc_index"] = result["index"] ?? "";
+                            changes.Remove("selected_voice"); changes.Remove("rvc_model"); changes.Remove("rvc_index");
+                            status.text = "Voice imported and activated.";
+                            if (selected == "Voice") Render();
+                        }
+                        catch (JsonException) { status.text = "The voice import returned an invalid response. Refresh the Voice page to check the library."; }
+                    });
+                }, import);
+                if (backend.Mode == "Companion") speakerProfiles = new SakuraSpeakerProfiles(backend, body);
             }
             else if (selected == "Models")
             {
@@ -119,6 +224,194 @@ namespace Sakura.Unity
         }
 
         private JToken Value(string key) => changes[key] ?? values[key];
+
+        private void SetModel(string key, string value)
+        {
+            changes[key] = value;
+            body.Q<TextField>(key)?.SetValueWithoutNotify(value);
+            status.text = "Selected " + value + ". Save settings to activate it.";
+        }
+
+        private void AddLocalModelDiscovery(VisualElement parent)
+        {
+            var choices = new VisualElement(); parent.Add(choices);
+            Button scan = null;
+            Action refresh = () =>
+            {
+                scan.SetEnabled(false); status.text = "Reading local models…";
+                backend.Api("/api/ollama/models", new JObject { ["folder"] = (string)Value("ollama_models_folder") ?? "" }.ToString(Formatting.None), (json, error) =>
+                {
+                    if (!alive || choices.panel == null) return;
+                    scan.SetEnabled(true);
+                    if (error != null) { status.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        choices.Clear();
+                        var ollama = (data["models"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                        var native = (data["native_models"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                        var localIds = ollama.Select(row => (string)row["name"]).Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList();
+                        var universalIds = localIds.Concat(native.Select(row => (string)row["name"])).Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList();
+                        var nativeLabels = native.Where(row => row["name"] != null).GroupBy(row => (string)row["name"]).ToDictionary(group => group.Key, group => (string)group.First()["label"] + " · " + (string)group.First()["engine"]);
+                        ModelChoices(choices, "Available universal models", "ollama_model", universalIds, nativeLabels);
+                        ModelChoices(choices, "Available game models", "game_ollama_model", localIds, null);
+                        var qwen = native.FirstOrDefault(row => (string)row["engine"] == "colibri" && System.Text.RegularExpressions.Regex.IsMatch((string)row["label"] ?? "", @"qwen.*3[.]6", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+                        if (qwen != null) AddButton("Use " + ((string)qwen["label"] ?? "Qwen3.6"), () => SetModel("ollama_model", (string)qwen["name"]), choices);
+                        Text("Universal models include installed native and GGUF engines. Game models require vision support for screen understanding.", "description", choices);
+                        status.text = (string)data["warning"] ?? (universalIds.Count + " local models available.");
+                    }
+                    catch (JsonException) { status.text = "Local model discovery returned an invalid response."; }
+                });
+            };
+            scan = AddButton("Find installed local models", refresh, parent);
+            // Only reads the existing catalog. Selecting and saving remain explicit actions.
+            parent.schedule.Execute(refresh).ExecuteLater(1);
+        }
+
+        private void ModelChoices(VisualElement parent, string label, string key, List<string> ids, Dictionary<string, string> labels)
+        {
+            string saved = (string)Value(key) ?? "";
+            ids = new List<string>(ids);
+            if (!ids.Contains(saved)) ids.Insert(0, saved);
+            var titles = ids.Select(id => id == "" ? "Use default" : labels != null && labels.TryGetValue(id, out string title) ? title : id).ToList();
+            var field = new DropdownField(label, titles, Math.Max(0, ids.IndexOf(saved))); parent.Add(field);
+            field.RegisterValueChangedCallback(_ => { if (field.index >= 0 && field.index < ids.Count) SetModel(key, ids[field.index]); });
+        }
+
+        private void AddCloudModelDiscovery(VisualElement parent)
+        {
+            var choices = new VisualElement(); parent.Add(choices);
+            parent.Q<DropdownField>("llm_provider")?.RegisterValueChangedCallback(_ => choices.Clear());
+            Button discover = null;
+            discover = AddButton("Find provider models", () =>
+            {
+                string provider = (string)Value("llm_provider") ?? "ollama";
+                if (provider == "ollama") { status.text = "Choose a cloud provider to find cloud models."; return; }
+                discover.SetEnabled(false); status.text = "Finding provider models…";
+                var payload = new JObject
+                {
+                    ["provider"] = provider, ["api_key"] = (string)changes["api_key"] ?? "",
+                    ["model"] = (string)Value(provider == "gemini" ? "gemini_model" : "cloud_model") ?? "",
+                    ["endpoint"] = (string)Value("cloud_endpoint") ?? ""
+                };
+                backend.Api("/api/llm/models", payload.ToString(Formatting.None), (json, error) =>
+                {
+                    if (!alive || choices.panel == null) return;
+                    discover.SetEnabled(true);
+                    if (error != null) { status.text = error; return; }
+                    if (provider != (string)Value("llm_provider")) { status.text = "Provider changed. Find models for the selected provider."; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        choices.Clear();
+                        string discoveredProvider = (string)data["provider"] ?? provider;
+                        var ids = (data["models"] as JArray ?? new JArray()).Values<string>().Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList();
+                        ModelChoices(choices, "Available provider models", discoveredProvider == "gemini" ? "gemini_model" : "cloud_model", ids, null);
+                        status.text = ids.Count + " models found. Save settings to use your selection.";
+                    }
+                    catch (JsonException) { status.text = "Provider model discovery returned an invalid response."; }
+                });
+            }, parent);
+        }
+
+        private void AddAiConnectionTest(VisualElement parent)
+        {
+            Text("Connection testing uses your saved AI settings. Save changes before testing a new provider, model or key.", "description", parent);
+            Button test = null;
+            test = AddButton("Test saved AI connection", () =>
+            {
+                if (backend.Busy || saving) { status.text = "Wait for the current reply or settings save to finish before testing."; return; }
+                string mode = backend.Mode;
+                test.SetEnabled(false); status.text = "Starting services to test your saved AI connection…";
+                backend.Api("/api/unity/start-services", "{}", (_, startupError) =>
+                {
+                    if (!alive || backend.Mode != mode || test.panel == null) return;
+                    if (startupError != null) { test.SetEnabled(true); status.text = startupError; return; }
+                    status.text = "Testing your saved AI connection…";
+                    backend.Api("/api/llm/test", "{}", (json, error) =>
+                    {
+                        if (!alive || backend.Mode != mode || test.panel == null) return;
+                        test.SetEnabled(true);
+                        if (error != null) { status.text = error; return; }
+                        try
+                        {
+                            var result = JObject.Parse(json);
+                            status.text = (string)result["message"] ?? (result.Value<bool?>("ok") == true ? "AI connection is ready." : "AI connection could not be verified.");
+                        }
+                        catch (JsonException) { status.text = "AI connection testing returned an invalid response."; }
+                    });
+                });
+            }, parent);
+        }
+
+        private void RenderVoiceLibrary(VisualElement parent, JToken[] options, DropdownField voices, List<string> ids)
+        {
+            parent.Clear();
+            foreach (var group in options.GroupBy(row => row["backend"] == null ? "Custom RVC" :
+                string.Join(" · ", new[] { (string)row["backend"], (string)row["gender"], (string)row["language"] }.Where(part => !string.IsNullOrEmpty(part)))))
+            {
+                Text(group.Key, "section-title", parent);
+                foreach (var row in group)
+                {
+                    string id = (string)row["id"];
+                    var entry = new VisualElement(); entry.AddToClassList("card"); parent.Add(entry);
+                    Text((string)row["name"] ?? id, "card-title", entry);
+                    string description = (string)row["desc"] ?? (string)row["character"];
+                    if (!string.IsNullOrEmpty(description)) Text(description, "description", entry);
+                    AddButton("Use voice", () =>
+                    {
+                        changes["selected_voice"] = id; voices.index = ids.IndexOf(id);
+                        if (row["pth"] != null)
+                        {
+                            changes["rvc_model"] = (string)row["pth"];
+                            changes["rvc_index"] = (string)row["index"] ?? "";
+                        }
+                        status.text = ((string)row["name"] ?? id) + " selected. Save settings to apply.";
+                    }, entry);
+                }
+            }
+        }
+
+        private void PreviewVoice()
+        {
+            var voice = backend.GetComponent<SakuraVoice>();
+            if (voice == null) { status.text = "Native voice playback is unavailable."; return; }
+            if (previewing || backend.Busy || voice.Speaking) { status.text = "Wait for the current reply or preview to finish before previewing a voice."; return; }
+            previewing = true;
+            status.text = "Preparing voice preview…";
+            string mode = backend.Mode;
+            backend.Api("/api/unity/start-services", "{}", (_, serviceError) =>
+            {
+                if (!alive || backend.Mode != mode) { previewing = false; return; }
+                if (serviceError != null) { previewing = false; status.text = serviceError; return; }
+                bool customVoice = ((string)Value("selected_voice") ?? "").StartsWith("rvc_", StringComparison.Ordinal);
+                var payload = new JObject
+                {
+                    ["voice"] = (string)Value("selected_voice") ?? "kokoro_af_heart",
+                    ["pitch"] = (string)Value("tts_pitch") ?? "+0Hz",
+                    ["rate"] = (string)Value("tts_rate") ?? "+0%",
+                    ["rvc_model"] = customVoice ? (string)Value("rvc_model") ?? "" : "",
+                    ["rvc_index"] = customVoice ? (string)Value("rvc_index") ?? "" : "",
+                    ["rvc_pitch"] = (int?)Value("rvc_pitch") ?? 0,
+                    ["rvc_index_rate"] = (float?)Value("rvc_index_rate") ?? .75f
+                };
+                backend.Api("/api/tts/test", payload.ToString(Formatting.None), (json, error) =>
+                {
+                    previewing = false;
+                    if (!alive || backend.Mode != mode) return;
+                    if (error != null) { status.text = error; return; }
+                    try
+                    {
+                        var reply = JObject.Parse(json);
+                        string audio = (string)reply["audio"];
+                        if (!SakuraBackend.ValidAudioPath(audio)) { status.text = "The preview returned an invalid audio path."; return; }
+                        if (mode == "VTuber") voice.PlayReadout(audio); else voice.PlayCohost(audio);
+                        status.text = (string)reply["voice_notice"] ?? "Playing voice preview.";
+                    }
+                    catch (JsonException) { status.text = "The preview returned an invalid response."; }
+                });
+            });
+        }
         private void Field(VisualElement card, string label, string key, bool secret = false)
         {
             var field = new TextField(label) { value = secret ? "" : (string)Value(key) ?? "", isPasswordField = secret };
@@ -149,6 +442,7 @@ namespace Sakura.Unity
             backend.Api("/api/settings", sent.ToString(Formatting.None), (json, error) =>
             {
                 saving = false; ClearSecrets();
+                if (error == null && (sent["wake_word"] != null || sent["wake_word_enabled"] != null)) backend.GetComponent<SakuraVoice>()?.RefreshSettings();
                 if (!alive) return;
                 if (error != null) { status.text = error; return; }
                 var reply = JObject.Parse(json); if (reply["settings"] is JObject settings) values = settings;

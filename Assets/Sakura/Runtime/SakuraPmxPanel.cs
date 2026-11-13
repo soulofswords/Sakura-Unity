@@ -20,16 +20,21 @@ namespace Sakura.Unity
         string tab = "Texture remapping";
         int part, bone;
         bool alive = true;
-        public SakuraPmxPanel(SakuraAvatarViewport viewport, SakuraBackend backend, VisualElement host)
+        byte[] selectedTexture;
+        public SakuraPmxPanel(SakuraAvatarViewport viewport, SakuraBackend backend, VisualElement host, string initialTab = "Texture remapping", bool showTabs = true)
         {
             var owner = new VisualElement(); host.Add(owner); host = owner;
             this.viewport = viewport; this.backend = backend; model = viewport.Pmx;
+            tab = initialTab;
+            if (showTabs)
+            {
             var tabs = new ScrollView(ScrollViewMode.Horizontal); tabs.contentContainer.style.flexDirection = FlexDirection.Row; host.Add(tabs);
             foreach (string title in new[] { "Texture remapping", "Texture coloring", "Bones", "Appearance" })
             { string choice = title; Button(title, () => { tab = choice; Render(); }, tabs.contentContainer); }
+            }
             body = new VisualElement(); host.Add(body); status = new Label(); status.AddToClassList("description"); host.Add(status);
             previews = new VisualElement(); previews.style.flexDirection = FlexDirection.Row; host.Add(previews);
-            host.RegisterCallback<DetachFromPanelEvent>(_ => { alive = false; foreach (var texture in previewTextures) if (texture != null) UnityEngine.Object.Destroy(texture); previewTextures.Clear(); });
+            host.RegisterCallback<DetachFromPanelEvent>(_ => { alive = false; viewport.CancelPartPick(); foreach (var texture in previewTextures) if (texture != null) UnityEngine.Object.Destroy(texture); previewTextures.Clear(); });
             Render();
         }
         void Preview(string file)
@@ -60,39 +65,66 @@ namespace Sakura.Unity
             if (tab == "Appearance") { Appearance(); return; }
             var choices = model.Definition.materials.Select((item, index) => index + " · " + item.name).ToList();
             var material = new DropdownField("Texture / material", choices, Math.Min(part, choices.Count - 1));
-            material.RegisterValueChangedCallback(evt => { part = material.index; Render(); }); body.Add(material);
+            material.RegisterValueChangedCallback(evt => { part = material.index; selectedTexture = null; Render(); }); body.Add(material);
             var edit = model.GetPart(part);
             if (tab == "Texture remapping")
             {
-                Text("Replace this material’s diffuse texture. Original artwork stays intact.");
-                Button("Choose replacement texture", () => Run(() =>
+                var snapshot = new Button(Diagnose) { text = "Take snapshot and check textures" };
+                body.Insert(0,snapshot);
+                Text("Replace the diffuse image for this material. Use a texture designed for this model’s UV layout.");
+                var fileRow = new VisualElement(); fileRow.AddToClassList("row"); body.Add(fileRow);
+                var filename = new Label("No file chosen");
+                var apply = new Button(() => Run(() =>
+                {
+                    if (selectedTexture == null) return;
+                    model.ReplaceTexture(part,selectedTexture); status.text = "Replacement saved for this model.";
+                })) { text = "Apply replacement" };
+                apply.SetEnabled(selectedTexture != null);
+                Button("Choose file", () => Run(() =>
                 {
                     int selected = part;
                     backend.RunPmxTool("texture", viewport.LoadedModelPath, (json, error) => Run(() =>
                     {
                         if (error != null) throw new InvalidOperationException(error);
                         var result = JObject.Parse(json); if (result.Value<bool>("cancelled")) { status.text = "Cancelled."; return; }
-                        model.ReplaceTexture(selected, Convert.FromBase64String(result.Value<string>("image"))); status.text = "Replacement saved for this model.";
+                        if (selected != part) { status.text = "Material changed. Choose the texture again for this material."; return; }
+                        selectedTexture = Convert.FromBase64String(result.Value<string>("image"));
+                        filename.text = result.Value<string>("name") ?? "Replacement selected";
+                        apply.SetEnabled(true); status.text = "Texture selected. Click Apply replacement to save it.";
                     }));
-                }), body);
+                }), fileRow);
+                fileRow.Add(filename); body.Add(apply);
                 Button("Restore original texture", () => Run(() => { model.RestoreTexture(part); status.text = "Original texture restored."; }), body);
-                Button("Take snapshot and check textures", Diagnose, body);
             }
             else
             {
-                Text("Colour and transparency are separate. Transparency keeps the existing artwork and colour.");
-                var enabled = new Toggle("Enable colour change") { value = edit.colored }; body.Add(enabled);
-                enabled.RegisterValueChangedCallback(evt => Run(() => { edit.colored = evt.newValue; model.Apply(); model.Save(); }));
-                var color = new TextField("Colour (hex)") { value = "#" + ColorUtility.ToHtmlStringRGB(edit.color) }; body.Add(color);
-                Button("Apply color", () => Run(() =>
+                var operation = new DropdownField("What would you like to change?",new List<string> { "Change color","Change transparency" },0); body.Add(operation);
+                Button("Pick part on model",() => Run(() =>
                 {
-                    if (!ColorUtility.TryParseHtmlString(color.value, out var parsed)) throw new ArgumentException("Enter a colour such as #FFFFFF.");
-                    edit.color = parsed; edit.colored = true; enabled.SetValueWithoutNotify(true); model.Apply(); model.Save(); status.text = "Colour saved.";
-                }), body);
-                Slider("Colour strength", edit.strength, 0, 1, value => edit.strength = value);
-                Button("Restore original color", () => Run(() => { edit.colored = false; model.Apply(); model.Save(); Render(); }), body);
-                Slider("Transparency %", edit.transparency * 100, -100, 100, value => edit.transparency = value / 100);
-                Text("Negative values strengthen material opacity; texture cutouts stay intact.");
+                    status.text = "Click the part you want to change on the model.";
+                    viewport.BeginPartPick(false,index => { if (!alive) return; part = index; selectedTexture = null; Render(); status.text = "Selected " + model.Definition.materials[index].name; });
+                }),body);
+                var area = new VisualElement(); body.Add(area);
+                void RenderOperation()
+                {
+                    area.Clear();
+                    if (operation.index == 0)
+                    {
+                        Color picked = edit.color;
+                        new SakuraColourPicker(area,edit.color,value => picked = value);
+                        var strength = new Slider("Color strength",0,100) { value = edit.strength * 100, showInputField = true }; area.Add(strength);
+                        Button("Apply color",() => Run(() => { edit.color = picked; edit.strength = strength.value / 100; edit.colored = true; model.Apply(); model.Save(); status.text = "Color saved for this model."; }),area);
+                        Button("Restore original color",() => Run(() => { edit.colored = false; model.Apply(); model.Save(); Render(); }),area);
+                    }
+                    else
+                    {
+                        var transparency = new Slider("Transparency %",-100,100) { value = edit.transparency * 100, showInputField = true }; area.Add(transparency);
+                        transparency.RegisterValueChangedCallback(change => Run(() => { edit.transparency = change.newValue / 100; model.Apply(); model.Save(); status.text = "Transparency saved. Existing color retained."; }));
+                        area.Add(new Label("Negative values strengthen opacity. Texture cutouts stay intact."));
+                    }
+                }
+                operation.RegisterValueChangedCallback(_ => RenderOperation()); RenderOperation();
+                Text("PMX appearance"); Appearance();
             }
         }
         void Bones()
@@ -112,6 +144,11 @@ namespace Sakura.Unity
                 freeze.RegisterValueChangedCallback(evt => Run(() => { model.Freeze(bone, evt.newValue); status.text = model.Settings.frozen.Count + " frozen bones saved."; }));
             }
             search.RegisterValueChangedCallback(_ => Populate()); Populate();
+            Button("Pick bone on model",() => Run(() =>
+            {
+                status.text = "Click the model to select the strongest bone at that point.";
+                viewport.BeginPartPick(true,index => { if (!alive) return; bone = index; search.SetValueWithoutNotify(""); Populate(); status.text = "Selected " + model.Instance.BoneTransforms[index].name; });
+            }),body);
             Button("Restore all bones", () => Run(() => { model.Settings.frozen.Clear(); model.Save(); Populate(); status.text = "All bones unfrozen."; }), body);
         }
         void Appearance()

@@ -33,3 +33,5 @@ __pycache__/
 *.moc3
 *.gguf
 *.safetensors
+
+/.utmp/

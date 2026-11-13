@@ -13,20 +13,22 @@ namespace Sakura.Unity
     [Serializable] public class CharacterEntry { public string name; public string path; public string format; }
     [Serializable] public class CharacterCatalog { public CharacterEntry[] items; public string error; }
     [Serializable] internal class BridgeIdentity { public int port; public string token; }
-    [Serializable] internal class ChatRequest { public string text; public bool defer_audio = true; public string surface; }
+    [Serializable] internal class ChatRequest { public string text; public bool defer_audio = true; public string surface; public string agent_task; }
     [Serializable] internal class ChatResponse { public string reply; public string speech_reply; public string error; }
     [Serializable] internal class ModelImportReply { public string[] models; public string error; public bool cancelled; }
     [Serializable] internal class ModeRequest { public string mode; public int revision; }
     [Serializable] public class ApiReply { public bool ok; public bool configured; public bool confirmation_required; public string error; public string message; public string url; }
 
-    public sealed class SakuraBackend : MonoBehaviour
+    public sealed partial class SakuraBackend : MonoBehaviour
     {
         public string SourceFolder = @"F:\AI\assistant\Sakura";
+        public bool VtuberEdition { get; set; }
         public event Action<CharacterEntry[]> CatalogReceived;
         public event Action<string> StatusChanged;
         public event Action<string> ReplyReceived;
         public event Action<string> ModelImported;
         public event Action<string> AudioReplyReceived;
+        public event Action<Newtonsoft.Json.Linq.JObject> ReplyDataReceived;
         public bool Connected { get; private set; }
         public bool Busy { get; private set; }
         public string Mode { get; private set; } = "Companion";
@@ -52,7 +54,7 @@ namespace Sakura.Unity
             string bridge = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Tools", "backend_bridge.py"));
             if (!File.Exists(bridge)) throw new FileNotFoundException("Development backend bridge is missing.");
             if (SourceFolder.Contains("\"") || bridge.Contains("\"")) throw new ArgumentException("Invalid source path.");
-            return new ProcessStartInfo(python, "-u \"" + bridge + "\" --source \"" + SourceFolder + "\"" + (serve ? " --serve" : ""))
+            return new ProcessStartInfo(python, "-u \"" + bridge + "\" --source \"" + SourceFolder + "\"" + (serve ? " --serve --edition " + (VtuberEdition ? "vtuber" : "companion") : ""))
             {
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
@@ -95,7 +97,7 @@ namespace Sakura.Unity
 
         public void RunPmxTool(string tool, string model, Action<string, string> completed, float[] direction = null)
         {
-            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture") throw new ArgumentException("Invalid PMX tool.");
+            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture" && tool != "backdrop-image" && tool != "backdrop-video") throw new ArgumentException("Invalid model tool.");
             if (modelToolProcess != null) { completed(null, "Finish the open PMX tool first."); return; }
             try
             {
@@ -189,7 +191,7 @@ namespace Sakura.Unity
                 server.ErrorDataReceived += (_, args) => { };
                 server.Exited += (_, args) => pending.Enqueue(() =>
                 {
-                    Connected = false; Busy = false; identity = null;
+                    Connected = false; Busy = false; identity = null; agentToken = null;
                     server?.Dispose(); server = null;
                     StatusChanged?.Invoke("Backend stopped. Connect again to retry.");
                 });
@@ -224,6 +226,7 @@ namespace Sakura.Unity
         public void SetMode(string mode)
         {
             if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Invalid mode.");
+            if (VtuberEdition && mode != "VTuber") throw new InvalidOperationException("This is the standalone VTuber edition.");
             if (Mode != mode) chatGeneration++;
             Mode = mode; modeRevision++;
             activeChat?.Abort();
@@ -265,7 +268,7 @@ namespace Sakura.Unity
             }
         }
 
-        public void SendChat(string text)
+        public void SendChat(string text, string task = null)
         {
             if (Busy || string.IsNullOrWhiteSpace(text)) return;
             if (Mode == "VTuber") { StatusChanged?.Invoke("AI conversation stays off in VTuber mode."); return; }
@@ -279,7 +282,7 @@ namespace Sakura.Unity
                 Api("/api/unity/start-services", "{}", (json, error) =>
                 {
                     if (error != null || mode != Mode || generation != chatGeneration) { Busy = false; if (error != null) ChatError(error); return; }
-                    StartCoroutine(Chat(text, mode, generation));
+                    StartCoroutine(Chat(text, mode, generation, task));
                 });
             });
         }
@@ -323,10 +326,11 @@ namespace Sakura.Unity
             {
                 try
                 {
-                    var reply = JsonUtility.FromJson<ApiReply>(json);
-                    if (!string.IsNullOrWhiteSpace(reply?.error)) return reply.error;
+                    var reply = Newtonsoft.Json.Linq.JObject.Parse(json);
+                    foreach (string key in new[] { "error", "detail" })
+                        if (reply[key]?.Type == Newtonsoft.Json.Linq.JTokenType.String && !string.IsNullOrWhiteSpace((string)reply[key])) return (string)reply[key];
                 }
-                catch (ArgumentException) { }
+                catch (Newtonsoft.Json.JsonException) { }
             }
             return string.IsNullOrWhiteSpace(fallback) ? "The backend returned no response. Check the selected model and retry." : fallback;
         }
@@ -351,7 +355,7 @@ namespace Sakura.Unity
             }
         }
 
-        private IEnumerator Chat(string text, string mode, int generation)
+        private IEnumerator Chat(string text, string mode, int generation, string task)
         {
             Busy = true;
             StatusChanged?.Invoke("Preparing reply…");
@@ -359,7 +363,21 @@ namespace Sakura.Unity
             {
                 activeChat = request;
                 request.method = "POST";
-                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(new ChatRequest { text = text, surface = mode == "Agent" ? "agent" : "companion" })));
+                var payload = Newtonsoft.Json.Linq.JObject.FromObject(new ChatRequest { text = text, surface = mode == "Agent" ? "agent" : "companion", agent_task = mode == "Agent" ? task : null });
+                var actions = GetComponent<SakuraAvatarActions>();
+                var viewport = GetComponent<SakuraAvatarViewport>();
+                if (mode == "Companion" && viewport != null)
+                {
+                    payload["avatar_model"] = viewport.LoadedModelPath;
+                    payload["avatar_format"] = viewport.LoadedFormat;
+                    payload["avatar_can_dance"] = viewport.HasAvatar && viewport.LoadedFormat != "Live2D";
+                    if (actions != null)
+                    {
+                        payload["room_context"] = actions.Context;
+                        payload["avatar_room"] = new Newtonsoft.Json.Linq.JArray(actions.Capabilities);
+                    }
+                }
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
                 request.SetRequestHeader("Content-Type", "application/json");
                 yield return request.SendWebRequest();
                 activeChat = null;
@@ -378,6 +396,8 @@ namespace Sakura.Unity
                 else
                 {
                     ReplyReceived?.Invoke(response.reply); StatusChanged?.Invoke("Ready");
+                    ReplyDataReceived?.Invoke(Newtonsoft.Json.Linq.JObject.Parse(request.downloadHandler.text));
+                    if (mode != "Companion") yield break;
                     Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = response.speech_reply ?? response.reply }), (json, error) =>
                     {
                         if (mode != Mode || generation != chatGeneration) return;
@@ -405,7 +425,7 @@ namespace Sakura.Unity
                 catch (InvalidOperationException) { }
                 process.Dispose();
             }
-            identity = null;
+            identity = null; agentToken = null;
         }
     }
 }
