@@ -139,6 +139,8 @@ namespace Sakura.Unity
             viewport.Attach(stage);
             var stageItems = GetComponent<SakuraStageItems>() ?? gameObject.AddComponent<SakuraStageItems>();
             stageItems.Initialize(backend, viewport); stageItems.AttachStage(stage);
+            var collab = GetComponent<SakuraNativeCollab>() ?? gameObject.AddComponent<SakuraNativeCollab>();
+            collab.Initialize(backend, viewport);
             (GetComponent<SakuraBackdrop>() ?? gameObject.AddComponent<SakuraBackdrop>()).Attach(stage);
             viewport.ModelChanged += ReceiveModelChanged;
             viewport.StatusChanged += text =>
@@ -398,6 +400,7 @@ namespace Sakura.Unity
                 if (CurrentMode == "VTuber") SakuraLiveChat.BuildPanel(liveChat, panelBody, true);
             }
             else if (name == "Background") new SakuraStagePanel(backend, viewport, panelBody, propsLibrary);
+            else if (name == "Collab") GetComponent<SakuraNativeCollab>().BuildPanel(panelBody);
             else if (name == "Memory & privacy") BuildMemoryPrivacy();
             else if (name == "Voice & speech")
             {

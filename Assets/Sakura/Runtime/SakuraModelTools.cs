@@ -254,6 +254,13 @@ namespace Sakura.Unity
             catch { part.Settings.color = previousColor; part.Settings.strength = previousStrength; ApplyPart(part); throw; }
         }
         public void RestoreColor(int index) => SetColor(index, Color.white, 0);
+        public int TintArtMeshes(IEnumerable<string> names, Color color)
+        {
+            CheckColor(color); var selected = new HashSet<string>(names ?? Array.Empty<string>(), StringComparer.Ordinal); int painted = 0;
+            foreach (var part in parts) if (part.ArtMesh != null && (selected.Count == 0 || selected.Contains(part.Name) || selected.Contains(part.Id)))
+                { var tint = part.originalColor * color; tint.a = part.originalColor.a; part.ArtMesh.Color = tint; painted++; }
+            return painted;
+        }
         public void SetTransparency(int index, float transparency)
         {
             Finite(transparency); var part = parts[index]; float previous = part.Settings.transparency;

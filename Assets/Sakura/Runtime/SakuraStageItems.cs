@@ -23,6 +23,8 @@ namespace Sakura.Unity
         public sealed class Item
         {
             public string id, kind, name, source;
+            public string pinKind, pinTarget, pinModel;
+            public float anchorAngle;
             public float x = .5f, y = .5f, width = .25f, rotation;
             public bool above = true, follow, locked;
             public float anchorX, anchorY, anchorWidth = .25f;
@@ -39,8 +41,27 @@ namespace Sakura.Unity
             [NonSerialized] internal AnimationClip clip;
             [NonSerialized] internal string loadedMotion;
             [NonSerialized] internal float animationTime;
+            [NonSerialized] internal bool pinResolved;
+            [NonSerialized] internal Vector2 lastPosition;
+            [NonSerialized] internal float lastWidth, lastRotation;
         }
         public struct ThrowState { public Vector2 Position, Velocity; }
+        public readonly struct PinChoice
+        {
+            public readonly string Kind, Target, Name;
+            public PinChoice(string kind, string target, string name) { Kind = kind; Target = target; Name = name; }
+        }
+        public readonly struct AttachmentFrame
+        {
+            public readonly Vector2 Position;
+            public readonly float Scale, Rotation;
+            public AttachmentFrame(Vector2 position, float scale, float rotation = 0) { Position = position; Scale = scale; Rotation = rotation; }
+        }
+        private sealed class PinNode { public PinChoice Choice; public Transform Bone; public CubismDrawable Drawable; }
+        private readonly List<PinNode> pinNodes = new List<PinNode>();
+        private GameObject pinAvatar;
+        private int pinSampleFrame = -1;
+        private readonly Dictionary<string, AttachmentFrame> pinFrames = new Dictionary<string, AttachmentFrame>();
         [Serializable] private sealed class Profile { public string selected; public bool throwEnabled = true; public List<Item> items = new List<Item>(); }
         public const int MaximumItems = 8;
         public const int Live2DLayer = 28;
@@ -72,7 +93,11 @@ namespace Sakura.Unity
                 && (item.kind == "image" || item.kind == "live2d") && !string.IsNullOrWhiteSpace(item.source)
                 && Finite(item.x) && Finite(item.y) && item.x >= -.5f && item.x <= 1.5f && item.y >= -.5f && item.y <= 1.5f
                 && Finite(item.width) && item.width >= .03f && item.width <= 1.5f && Finite(item.rotation) && Mathf.Abs(item.rotation) <= 180
-                && Finite(item.anchorX) && Finite(item.anchorY) && Finite(item.anchorWidth) && item.anchorWidth > 0 && item.anchorWidth <= 15;
+                && Finite(item.anchorX) && Finite(item.anchorY) && Finite(item.anchorWidth) && item.anchorWidth > 0 && item.anchorWidth <= 15
+                && Finite(item.anchorAngle) && Mathf.Abs(item.anchorAngle) <= 360
+                && (string.IsNullOrEmpty(item.pinKind) && string.IsNullOrEmpty(item.pinTarget) && string.IsNullOrEmpty(item.pinModel)
+                    || (item.pinKind == "bone" || item.pinKind == "artmesh") && !string.IsNullOrEmpty(item.pinTarget) && item.pinTarget.Length <= 2048
+                    && !string.IsNullOrEmpty(item.pinModel) && item.pinModel.Length <= 4096 && item.follow);
         }
         private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
         private static bool Finite(Vector2 value) => Finite(value.x) && Finite(value.y);
@@ -338,34 +363,150 @@ namespace Sakura.Unity
         }
 
         public void Select(string id) { if (profile.items.Any(item => item.id == id)) { profile.selected = id; Changed?.Invoke(); } }
-        private Vector2 AvatarAnchor()
+        public static Vector2 RotateOffset(Vector2 offset, float angle)
         {
-            var point = viewport.RenderCamera.WorldToViewportPoint(viewport.AvatarRoot.transform.position);
-            return new Vector2(point.x, 1 - point.y);
+            float radians = angle * Mathf.Deg2Rad;
+            return new Vector2(offset.x * Mathf.Cos(radians) - offset.y * Mathf.Sin(radians), offset.x * Mathf.Sin(radians) + offset.y * Mathf.Cos(radians));
         }
-        private Vector2 Position(Item item)
+        public static Vector2 ResolvePosition(AttachmentFrame frame, Vector2 offset) => frame.Position + RotateOffset(offset * frame.Scale, frame.Rotation);
+        public static Vector2 ResolveOffset(AttachmentFrame frame, Vector2 position) => RotateOffset(position - frame.Position, -frame.Rotation) / Mathf.Max(.0001f, frame.Scale);
+        private string ModelIdentity => (viewport?.LoadedModelPath ?? "").Replace('\\', '/').ToLowerInvariant();
+        private void RefreshPins()
         {
-            if (!item.follow || !viewport.HasAvatar) return new Vector2(item.x, item.y);
-            return AvatarAnchor() + new Vector2(item.anchorX, item.anchorY) * Mathf.Max(.1f, viewport.ZoomPercent / 100);
+            var avatar = viewport?.AvatarRoot;
+            if (pinAvatar == avatar) return;
+            pinAvatar = avatar; pinNodes.Clear(); pinFrames.Clear(); pinSampleFrame = -1;
+            if (avatar == null) return;
+            if (viewport.LoadedFormat == "Live2D")
+            {
+                var model = avatar.GetComponent<CubismModel>();
+                if (model != null) foreach (var drawable in model.Drawables.Take(2000))
+                    if (drawable != null && !string.IsNullOrEmpty(drawable.Id)) pinNodes.Add(new PinNode { Choice = new PinChoice("artmesh", drawable.Id, drawable.Id), Drawable = drawable });
+            }
+            else if (viewport.Pmx != null)
+            {
+                var pmx = viewport.Pmx;
+                for (int i = 0; i < Math.Min(4096, pmx.Instance.BoneTransforms.Length); i++)
+                {
+                    var bone = pmx.Instance.BoneTransforms[i]; if (bone == null) continue;
+                    pinNodes.Add(new PinNode { Choice = new PinChoice("bone", i + ":" + bone.name, i + " · " + bone.name), Bone = bone });
+                }
+            }
+            else
+            {
+                var tools = avatar.GetComponent<SakuraModelTools>();
+                if (tools != null) foreach (var bone in tools.Bones.Take(4096))
+                    if (bone.Transform != null) pinNodes.Add(new PinNode { Choice = new PinChoice("bone", bone.Id, bone.Name), Bone = bone.Transform });
+            }
+            // Ambiguous identifiers must never silently select a different rig part.
+            foreach (var group in pinNodes.GroupBy(node => node.Choice.Kind + ":" + node.Choice.Target).Where(group => group.Count() > 1).ToArray())
+                foreach (var node in group.ToArray()) pinNodes.Remove(node);
         }
+        public IReadOnlyList<PinChoice> PinChoices() { RefreshPins(); return pinNodes.Select(node => node.Choice).ToArray(); }
+        private bool TryFrame(Item item, out AttachmentFrame frame)
+        {
+            frame = default;
+            if (viewport?.RenderCamera == null || !viewport.HasAvatar) return false;
+            var camera = viewport.RenderCamera;
+            float zoom = Mathf.Max(.1f, viewport.ZoomPercent / 100);
+            if (string.IsNullOrEmpty(item.pinKind))
+            {
+                var rootPoint = camera.WorldToViewportPoint(viewport.AvatarRoot.transform.position);
+                frame = new AttachmentFrame(new Vector2(rootPoint.x, 1 - rootPoint.y), zoom); return rootPoint.z > 0;
+            }
+            if (item.pinModel != ModelIdentity) return false;
+            RefreshPins();
+            if (pinSampleFrame != Time.frameCount) { pinFrames.Clear(); pinSampleFrame = Time.frameCount; }
+            string key = item.pinKind + ":" + item.pinTarget;
+            if (pinFrames.TryGetValue(key, out frame)) return true;
+            var node = pinNodes.FirstOrDefault(value => value.Choice.Kind == item.pinKind && value.Choice.Target == item.pinTarget);
+            if (node == null) return false;
+            Vector3 world; float angle = 0;
+            if (node.Drawable != null)
+            {
+                var vertices = node.Drawable.VertexPositions;
+                if (vertices == null || vertices.Length == 0 || vertices.Length > 100000) return false;
+                Vector3 center = Vector3.zero;
+                foreach (var vertex in vertices) { if (!Finite(vertex.x) || !Finite(vertex.y) || !Finite(vertex.z)) return false; center += vertex; }
+                world = node.Drawable.transform.TransformPoint(center / vertices.Length);
+            }
+            else if (node.Bone != null)
+            {
+                world = node.Bone.position;
+                var origin = camera.WorldToViewportPoint(world);
+                var axis = camera.WorldToViewportPoint(world + node.Bone.right * .1f);
+                var delta = new Vector2(axis.x - origin.x, (origin.y - axis.y) / Mathf.Max(.01f, camera.aspect));
+                if (delta.sqrMagnitude > .00000001f) angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg;
+            }
+            else return false;
+            var point = camera.WorldToViewportPoint(world);
+            if (!Finite(point.x) || !Finite(point.y) || point.z <= camera.nearClipPlane) return false;
+            frame = new AttachmentFrame(new Vector2(point.x, 1 - point.y), zoom, angle); pinFrames[key] = frame; return true;
+        }
+        private bool Resolved(Item item, out Vector2 position, out float width, out float rotation)
+        {
+            position = new Vector2(item.x, item.y); width = item.width; rotation = item.rotation;
+            if (!item.follow) return true;
+            if (!TryFrame(item, out var frame))
+            {
+                if (item.pinResolved) { position = item.lastPosition; width = item.lastWidth; rotation = item.lastRotation; }
+                return string.IsNullOrEmpty(item.pinKind);
+            }
+            position = ResolvePosition(frame, new Vector2(item.anchorX, item.anchorY)); width = item.anchorWidth * frame.Scale;
+            if (!string.IsNullOrEmpty(item.pinKind)) rotation = Mathf.DeltaAngle(0, item.anchorAngle + frame.Rotation);
+            item.pinResolved = true; item.lastPosition = position; item.lastWidth = width; item.lastRotation = rotation; return true;
+        }
+        private Vector2 Position(Item item) { Resolved(item, out var position, out _, out _); return position; }
         private void Anchor(Item item)
         {
-            if (!item.follow || !viewport.HasAvatar) return;
-            float zoom = Mathf.Max(.1f, viewport.ZoomPercent / 100);
-            var offset = (new Vector2(item.x, item.y) - AvatarAnchor()) / zoom;
-            item.anchorX = offset.x; item.anchorY = offset.y; item.anchorWidth = item.width / zoom;
+            if (!item.follow || !TryFrame(item, out var frame)) return;
+            var offset = ResolveOffset(frame, new Vector2(item.x, item.y));
+            item.anchorX = offset.x; item.anchorY = offset.y; item.anchorWidth = item.width / frame.Scale; item.anchorAngle = Mathf.DeltaAngle(frame.Rotation, item.rotation);
+            item.pinResolved = true; item.lastPosition = new Vector2(item.x, item.y); item.lastWidth = item.width; item.lastRotation = item.rotation;
+        }
+        public void Pin(string id, string kind, string target)
+        {
+            var item = profile.items.FirstOrDefault(value => value.id == id) ?? throw new ArgumentException("Select a stage item first.");
+            Resolved(item, out var position, out var width, out var rotation);
+            if (!string.IsNullOrEmpty(kind))
+            {
+                RefreshPins();
+                if (pinNodes.Count(node => node.Choice.Kind == kind && node.Choice.Target == target) != 1) throw new ArgumentException("Choose an unambiguous part from the current model.");
+                // Validate the target before changing either the saved attachment or its position.
+                var candidate = new Item { pinKind = kind, pinTarget = target, pinModel = ModelIdentity };
+                if (!TryFrame(candidate, out _)) throw new InvalidOperationException("That model part cannot be projected into the current view.");
+            }
+            item.x = position.x; item.y = position.y; item.width = width; item.rotation = rotation;
+            item.pinKind = string.IsNullOrEmpty(kind) ? null : kind; item.pinTarget = string.IsNullOrEmpty(kind) ? null : target; item.pinModel = string.IsNullOrEmpty(kind) ? null : ModelIdentity;
+            if (!string.IsNullOrEmpty(kind)) item.follow = true;
+            item.velocity = Vector2.zero; Anchor(item); Save(); LayoutItems(); Changed?.Invoke();
+        }
+        public bool AttachmentAvailable(string id)
+        {
+            var item = profile.items.FirstOrDefault(value => value.id == id);
+            return item != null && (string.IsNullOrEmpty(item.pinKind) || item.pinModel == ModelIdentity && TryFrame(item, out _));
+        }
+        public void Sort(IList<(string id, bool? above)> order)
+        {
+            if (order == null) return;
+            var ranks = order.Where(entry => !string.IsNullOrEmpty(entry.id)).Select((entry, index) => (entry.id, index)).GroupBy(entry => entry.id).ToDictionary(group => group.Key, group => group.First().index);
+            var sorted = profile.items.Select((item, index) => (item, index)).OrderBy(pair => ranks.TryGetValue(pair.item.id, out int rank) ? rank : int.MaxValue - (profile.items.Count - pair.index)).Select(pair => pair.item).ToList();
+            foreach (var entry in order) { var item = profile.items.FirstOrDefault(value => value.id == entry.id); if (item != null && entry.above != null) item.above = entry.above.Value; }
+            profile.items.Clear(); profile.items.AddRange(sorted); Save(); LayoutItems(); Changed?.Invoke();
         }
         public void Configure(string id, float x, float y, float width, float rotation, bool above, bool follow, bool locked)
         {
             var item = profile.items.FirstOrDefault(value => value.id == id);
             if (item == null || !Finite(x) || !Finite(y) || !Finite(width) || !Finite(rotation)) return;
-            if (item.follow && viewport.HasAvatar)
+            if (item.follow)
             {
-                var position = Position(item);
+                Resolved(item, out var position, out var resolvedWidth, out var resolvedRotation);
                 if (x == item.x) x = position.x;
                 if (y == item.y) y = position.y;
-                if (width == item.width) width = item.anchorWidth * Mathf.Max(.1f, viewport.ZoomPercent / 100);
+                if (width == item.width) width = resolvedWidth;
+                if (rotation == item.rotation) rotation = resolvedRotation;
             }
+            if (!follow) { item.pinKind = null; item.pinTarget = null; item.pinModel = null; }
             item.x = Mathf.Clamp(x, -.5f, 1.5f); item.y = Mathf.Clamp(y, -.5f, 1.5f); item.width = Mathf.Clamp(width, .03f, 1.5f);
             item.rotation = Mathf.Clamp(rotation, -180, 180); item.above = above; item.follow = follow; item.locked = locked; item.velocity = Vector2.zero; Anchor(item); Save(); LayoutItems(); Changed?.Invoke();
         }
@@ -397,11 +538,11 @@ namespace Sakura.Unity
             foreach (var item in profile.items)
             {
                 if (item.quad == null) continue;
-                var position = Position(item);
-                float width = item.follow && viewport.HasAvatar ? item.anchorWidth * Mathf.Max(.1f, viewport.ZoomPercent / 100) : item.width;
+                bool visible = Resolved(item, out var position, out var width, out var rotation);
+                item.quad.SetActive(isActiveAndEnabled && visible); if (!visible) continue;
                 float aspect = item.image != null ? item.image.width / (float)item.image.height : 1;
                 item.quad.transform.position = camera.ViewportToWorldPoint(new Vector3(position.x, 1 - position.y, depth));
-                item.quad.transform.rotation = camera.transform.rotation * Quaternion.Euler(0, 0, -item.rotation);
+                item.quad.transform.rotation = camera.transform.rotation * Quaternion.Euler(0, 0, -rotation);
                 item.quad.transform.localScale = new Vector3(width * worldWidth, width * worldWidth / Mathf.Max(.01f, aspect), 1);
                 item.material.renderQueue = (item.above ? 4000 : 1900) + profile.items.IndexOf(item);
             }
@@ -482,9 +623,9 @@ namespace Sakura.Unity
             var hit = profile.items.OrderByDescending(item => item.above).ThenByDescending(item => profile.items.IndexOf(item)).FirstOrDefault(item =>
             {
                 if (item.quad == null) return false;
-                var center = Position(item); float width = item.follow && viewport.HasAvatar ? item.anchorWidth * Mathf.Max(.1f, viewport.ZoomPercent / 100) : item.width;
+                if (!Resolved(item, out var center, out var width, out var rotation)) return false;
                 float aspect = item.image != null ? item.image.width / (float)item.image.height : 1;
-                Vector2 delta = point - center; float radians = -item.rotation * Mathf.Deg2Rad;
+                Vector2 delta = point - center; float radians = -rotation * Mathf.Deg2Rad;
                 var local = new Vector2(delta.x * Mathf.Cos(radians) - delta.y / viewport.RenderCamera.aspect * Mathf.Sin(radians), delta.x * Mathf.Sin(radians) + delta.y / viewport.RenderCamera.aspect * Mathf.Cos(radians));
                 return Mathf.Abs(local.x) <= width / 2 && Mathf.Abs(local.y) <= width / Mathf.Max(.01f, aspect) / 2;
             });
@@ -500,7 +641,8 @@ namespace Sakura.Unity
             evt.StopImmediatePropagation();
             if (Selected == null || Selected.locked) return;
             var point = itemStart + Pointer(evt.position) - dragStart;
-            Selected.x = Mathf.Clamp(point.x, -.5f, 1.5f); Selected.y = Mathf.Clamp(point.y, -.5f, 1.5f); Anchor(Selected); LayoutItems();
+            Resolved(Selected, out _, out var width, out var rotation);
+            Selected.x = Mathf.Clamp(point.x, -.5f, 1.5f); Selected.y = Mathf.Clamp(point.y, -.5f, 1.5f); Selected.width = width; Selected.rotation = rotation; Anchor(Selected); LayoutItems();
             float elapsed = Time.unscaledTime - lastDragTime;
             var pointer = Pointer(evt.position);
             if (elapsed > .001f) dragVelocity = (pointer - lastDragPoint) / elapsed;
@@ -567,6 +709,12 @@ namespace Sakura.Unity
                 var size = new Slider("Size", 3, 150) { value = item.width * 100, showInputField = true }; body.Add(size);
                 var rotation = new Slider("Rotation", -180, 180) { value = item.rotation, showInputField = true }; body.Add(rotation);
                 var follow = new Toggle("Attach to model movement and size") { value = item.follow }; body.Add(follow);
+                var choices = PinChoices().ToList();
+                var pinLabels = new List<string> { "Whole model" }; pinLabels.AddRange(choices.Select(choice => (choice.Kind == "bone" ? "Bone · " : "ArtMesh · ") + choice.Name));
+                int pinIndex = choices.FindIndex(choice => choice.Kind == item.pinKind && choice.Target == item.pinTarget);
+                var pin = new DropdownField("Pin item to model part", pinLabels, pinIndex + 1); body.Add(pin);
+                var pinStatus = new Label(); pinStatus.AddToClassList("description"); body.Add(pinStatus);
+                pin.RegisterValueChangedCallback(_ => { try { if (pin.index <= 0) Pin(item.id, null, null); else { var choice = choices[pin.index - 1]; Pin(item.id, choice.Kind, choice.Target); } } catch (Exception error) { Notify(error.Message); } });
                 var locked = new Toggle("Lock item position") { value = item.locked }; body.Add(locked);
                 var order = new VisualElement(); order.AddToClassList("row"); body.Add(order);
                 var up = new Button(() => { try { Reorder(item.id, -1); } catch (Exception error) { Notify(error.Message); } }) { text = "Move up" }; order.Add(up);
@@ -584,6 +732,7 @@ namespace Sakura.Unity
                     layer.SetValueWithoutNotify(item.above ? "Above model" : "Below model"); x.SetValueWithoutNotify(item.x * 100); y.SetValueWithoutNotify(item.y * 100);
                     x.SetEnabled(!item.locked); y.SetEnabled(!item.locked); size.SetValueWithoutNotify(item.width * 100); rotation.SetValueWithoutNotify(item.rotation);
                     follow.SetValueWithoutNotify(item.follow); locked.SetValueWithoutNotify(item.locked);
+                    pin.SetEnabled(viewport.HasAvatar); pinStatus.text = string.IsNullOrEmpty(item.pinKind) ? "Choose a specific ArtMesh or bone, or use whole-model following." : AttachmentAvailable(item.id) ? "Pinned to " + item.pinKind + ". The attachment is limited to this character." : "Pinned character or part is unavailable. This item is hidden until it returns; select Whole model to detach it.";
                     up.SetEnabled(profile.items.IndexOf(item) > 0); down.SetEnabled(profile.items.IndexOf(item) < profile.items.Count - 1);
                     play.SetEnabled(motionNames.Count > 0 && item.model != null); stop.SetEnabled(item.animationPlaying); loop.SetValueWithoutNotify(item.loop);
                 };
@@ -594,7 +743,7 @@ namespace Sakura.Unity
                 body.Add(new Button(() => { try { Remove(item.id); } catch (Exception error) { Notify(error.Message); } }) { text = "Remove item" });
             }
             Changed += Refresh; card.RegisterCallback<DetachFromPanelEvent>(_ => Changed -= Refresh); Refresh();
-            Text("Images and Live2D items appear in the avatar output. Drag and release an unlocked, unattached item to throw it. Authored Live2D motions can play or loop. ArtMesh pinning is pending migration.", card, "description");
+            Text("Images and Live2D items appear in the avatar output. Drag and release an unlocked, unattached item to throw it. Authored Live2D motions can play or loop. Pinning follows the selected Live2D ArtMesh or 3D bone; a missing or different character hides its pinned items.", card, "description");
         }
         private void AddImagePicker()
         {

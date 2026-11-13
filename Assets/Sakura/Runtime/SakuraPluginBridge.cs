@@ -34,6 +34,7 @@ namespace Sakura.Unity
         readonly Dictionary<CubismParameter, float> injected = new Dictionary<CubismParameter, float>();
         readonly Dictionary<CubismParameter, (float before, float after)> writes = new Dictionary<CubismParameter, (float, float)>();
         readonly Dictionary<string, float> customValues = new Dictionary<string, float>();
+        readonly HashSet<string> selectedArtMeshes = new HashSet<string>();
         float injectedUntil;
         readonly SakuraPluginPhysics physics = new SakuraPluginPhysics();
         GameObject injectionModel;
@@ -169,6 +170,18 @@ namespace Sakura.Unity
                     var part = new JObject { ["active"] = false, ["colorR"] = 255, ["colorG"] = 255, ["colorB"] = 255 };
                     return Ok(new JObject { ["active"] = effects.overlayStrength > 0, ["itemsIncluded"] = false, ["isWindowCapture"] = false, ["baseBrightness"] = 0, ["colorBoost"] = 50, ["smoothing"] = 0,
                         ["colorOverlayR"] = Mathf.RoundToInt(rgb.r * 255), ["colorOverlayG"] = Mathf.RoundToInt(rgb.g * 255), ["colorOverlayB"] = Mathf.RoundToInt(rgb.b * 255), ["colorAvgR"] = Mathf.RoundToInt(rgb.r * 255), ["colorAvgG"] = Mathf.RoundToInt(rgb.g * 255), ["colorAvgB"] = Mathf.RoundToInt(rgb.b * 255), ["leftCapturePart"] = part.DeepClone(), ["middleCapturePart"] = part.DeepClone(), ["rightCapturePart"] = part.DeepClone(), ["sakuraOverlaySource"] = "configured-color" });
+                case "vts_items":
+                    var stageItems = StageItems();
+                    return Ok(new JObject { ["itemsInScene"] = new JArray(stageItems.Items.Select(ItemSnapshot)), ["itemCount"] = stageItems.Items.Count });
+                case "vts_item_load": return Ok(await LoadItem(args, cancellation));
+                case "vts_item_unload": return Ok(UnloadItem(args));
+                case "vts_item_move": return Ok(MoveItem(args));
+                case "vts_item_sort": return Ok(SortItems(args));
+                case "vts_item_anim": return Ok(AnimateItem(args));
+                case "vts_artmesh_select": return Ok(SelectArtMeshes(args));
+                case "vts_tint": return Ok(Tint(args));
+                case "vts_model_url": return Ok(await LoadModelFromUrl(args, cancellation));
+                case "vts_ndi": return Ok(ConfigureNdi(args));
                 default: throw new NotSupportedException("Unsupported native plugin command: " + command);
             }
         }
@@ -215,6 +228,154 @@ namespace Sakura.Unity
             var updates = injectionModel.GetComponent<CubismUpdateController>(); driver.HasUpdateController = updates != null; if (updates != null) updates.Refresh();
             foreach (var row in pending) { if (row.parameter != null) injected[row.parameter] = row.value; else customValues[row.custom] = row.value; }
             injectedUntil = Time.unscaledTime + 10; return new JObject { ["injectedParameterValues"] = pending.Count };
+        }
+        SakuraStageItems StageItems() => GetComponent<SakuraStageItems>() ?? throw new InvalidOperationException("Stage items are not available in this window.");
+        static JObject ItemSnapshot(SakuraStageItems.Item item) => new JObject
+        {
+            ["itemInstanceID"] = item.id, ["itemID"] = item.id, ["fileName"] = item.source ?? item.name, ["itemType"] = item.kind,
+            ["positionX"] = item.x, ["positionY"] = item.y, ["size"] = item.width, ["rotation"] = item.rotation,
+            ["layer"] = item.above ? "above" : "below", ["pinned"] = item.follow, ["locked"] = item.locked
+        };
+        async Task<JObject> LoadItem(JObject args, CancellationToken cancellation)
+        {
+            var stage = StageItems();
+            string name = args.Value<string>("fileName") ?? args.Value<string>("itemFile") ?? args.Value<string>("name") ?? "item";
+            string dataUrl = args.Value<string>("customDataBase64") ?? args.Value<string>("dataUrl") ?? "";
+            bool above = args.Value<string>("layer") != "below";
+            float x = args["positionX"] == null ? .5f : Number(args["positionX"], "positionX");
+            float y = args["positionY"] == null ? .5f : Number(args["positionY"], "positionY");
+            float size = args["size"] == null ? .25f : Mathf.Clamp(Number(args["size"], "size"), .01f, 3);
+            float rotation = args["rotation"] == null ? 0 : Mathf.Clamp(Number(args["rotation"], "rotation"), -180, 180);
+            bool follow = args.Value<bool?>("pinned") == true, locked = args.Value<bool?>("locked") == true;
+            string id;
+            if (dataUrl.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+            {
+                int comma = dataUrl.IndexOf(',');
+                if (comma < 0) throw new ArgumentException("Invalid image data URL.");
+                byte[] bytes;
+                try { bytes = Convert.FromBase64String(dataUrl.Substring(comma + 1)); }
+                catch (FormatException) { throw new ArgumentException("Invalid base64 image data."); }
+                if (bytes.Length > 20 * 1024 * 1024) throw new ArgumentException("Item image must be under 20 MB.");
+                id = await stage.AddImage(bytes, name);
+            }
+            else if (name.EndsWith(".model3.json", StringComparison.OrdinalIgnoreCase) || (args.Value<string>("modelPath") ?? "").EndsWith(".model3.json", StringComparison.OrdinalIgnoreCase))
+            {
+                string path = (args.Value<string>("modelPath") ?? name).Replace('\\', '/').TrimStart('/');
+                if (path.StartsWith("models/", StringComparison.OrdinalIgnoreCase)) path = path.Substring(7);
+                id = await stage.AddLive2D(path, name);
+            }
+            else throw new ArgumentException("Send a data:image item or a Live2D .model3.json item. File paths are not read by the API.");
+            cancellation.ThrowIfCancellationRequested();
+            stage.Configure(id, x, y, size, rotation, above, follow, locked);
+            return ItemSnapshot(stage.Items.First(item => item.id == id));
+        }
+        JObject UnloadItem(JObject args)
+        {
+            var stage = StageItems(); string id = args.Value<string>("itemInstanceID") ?? throw new ArgumentException("itemInstanceID is required.");
+            if (!stage.Items.Any(item => item.id == id)) throw new ArgumentException("Unknown itemInstanceID: " + id);
+            stage.Remove(id); return new JObject { ["itemInstanceID"] = id };
+        }
+        JObject MoveItem(JObject args)
+        {
+            var stage = StageItems(); string id = args.Value<string>("itemInstanceID") ?? throw new ArgumentException("itemInstanceID is required.");
+            var item = stage.Items.FirstOrDefault(value => value.id == id) ?? throw new ArgumentException("Unknown itemInstanceID: " + id);
+            if (args["pinToModelPart"] != null)
+            {
+                if (args.Value<bool>("pinToModelPart"))
+                {
+                    string part = args.Value<string>("modelPartName") ?? throw new ArgumentException("modelPartName is required when pinToModelPart is true.");
+                    var matches = stage.PinChoices().Where(value => value.Target == part || value.Name == part).ToArray();
+                    if (matches.Length != 1) throw new ArgumentException("Unknown or ambiguous model part: " + part);
+                    stage.Pin(id, matches[0].Kind, matches[0].Target);
+                }
+                else stage.Pin(id, null, null);
+                return ItemSnapshot(item);
+            }
+            float x = args["positionX"] == null ? item.x : Number(args["positionX"], "positionX");
+            float y = args["positionY"] == null ? item.y : Number(args["positionY"], "positionY");
+            float size = args["size"] == null ? item.width : Mathf.Clamp(Number(args["size"], "size"), .03f, 1.5f);
+            float rotation = args["rotation"] == null ? item.rotation : Mathf.Clamp(Number(args["rotation"], "rotation"), -180, 180);
+            bool above = item.above;
+            if (args["layer"]?.Type == JTokenType.String) above = args.Value<string>("layer") == "above";
+            if (args["onTop"]?.Type == JTokenType.Boolean) above = args.Value<bool>("onTop");
+            bool follow = args["pinned"] == null ? item.follow : args.Value<bool>("pinned");
+            bool locked = args["locked"] == null ? item.locked : args.Value<bool>("locked");
+            stage.Configure(id, x, y, size, rotation, above, follow, locked);
+            return ItemSnapshot(item);
+        }
+        JObject SortItems(JObject args)
+        {
+            var stage = StageItems(); var order = new List<(string id, bool? above)>();
+            foreach (var entry in (args["items"] as JArray ?? new JArray()).OfType<JObject>())
+            {
+                string id = entry.Value<string>("itemInstanceID") ?? entry.Value<string>("id"); if (string.IsNullOrEmpty(id)) continue;
+                bool? above = null;
+                if (entry["onTop"]?.Type == JTokenType.Boolean) above = entry.Value<bool>("onTop");
+                else if (entry["layer"]?.Type == JTokenType.String) above = entry.Value<string>("layer") == "above";
+                order.Add((id, above));
+            }
+            stage.Sort(order); return new JObject { ["items"] = new JArray(stage.Items.Select(ItemSnapshot)) };
+        }
+        JObject AnimateItem(JObject args)
+        {
+            var stage = StageItems(); string id = args.Value<string>("itemInstanceID") ?? throw new ArgumentException("itemInstanceID is required.");
+            if (!stage.Items.Any(item => item.id == id)) throw new ArgumentException("Unknown itemInstanceID: " + id);
+            if (args.Value<bool?>("play") == false || args.Value<bool?>("stop") == true) { stage.StopAnimation(id); return new JObject { ["playing"] = false }; }
+            var groups = stage.MotionNames(id);
+            string group = args.Value<string>("motionGroup") ?? args.Value<string>("animationName") ?? groups.FirstOrDefault();
+            if (string.IsNullOrEmpty(group) || !groups.Contains(group)) throw new ArgumentException("Unknown animation. This item has: " + (groups.Count == 0 ? "none" : string.Join(", ", groups)));
+            bool loop = args.Value<bool?>("loop") != false; stage.PlayAnimation(id, group, loop);
+            return new JObject { ["playing"] = true, ["motionGroup"] = group };
+        }
+        JObject SelectArtMeshes(JObject args)
+        {
+            var model = Cubism(); var ids = model.Drawables.Select(drawable => drawable.Id).Where(id => !string.IsNullOrEmpty(id)).ToArray();
+            var requested = (args["activeArtMeshes"] as JArray ?? new JArray()).Values<string>().Where(id => id != null && ids.Contains(id)).Distinct().ToList();
+            int limit = args["requestedArtMeshCount"] == null ? 0 : Mathf.Clamp((int)Number(args["requestedArtMeshCount"], "requestedArtMeshCount"), 0, ids.Length);
+            if (limit > 0) requested = requested.Take(limit).ToList();
+            selectedArtMeshes.Clear(); foreach (var id in requested) selectedArtMeshes.Add(id);
+            return new JObject { ["activeArtMeshes"] = new JArray(requested) };
+        }
+        JObject Tint(JObject args)
+        {
+            var model = Cubism(); var all = model.Drawables.Select(drawable => drawable.Id).Where(id => !string.IsNullOrEmpty(id)).ToList();
+            var chosen = selectedArtMeshes.Count > 0 ? selectedArtMeshes.Where(id => all.Contains(id)).ToList() : all;
+            float r = args["colorR"] == null ? 1 : Mathf.Clamp01(Number(args["colorR"], "colorR"));
+            float g = args["colorG"] == null ? 1 : Mathf.Clamp01(Number(args["colorG"], "colorG"));
+            float b = args["colorB"] == null ? 1 : Mathf.Clamp01(Number(args["colorB"], "colorB"));
+            float a = args["colorA"] == null ? 1 : Mathf.Clamp01(Number(args["colorA"], "colorA"));
+            var tools = viewport.AvatarRoot.GetComponent<SakuraModelTools>() ?? throw new InvalidOperationException("Color tint is unavailable for this model.");
+            int painted = tools.TintArtMeshes(chosen, new Color(r, g, b, a));
+            return new JObject { ["artMeshCount"] = painted, ["colorTint"] = new JObject { ["colorR"] = r, ["colorG"] = g, ["colorB"] = b, ["colorA"] = a } };
+        }
+        async Task<JObject> LoadModelFromUrl(JObject args, CancellationToken cancellation)
+        {
+            string url = args.Value<string>("url") ?? args.Value<string>("modelURL") ?? throw new ArgumentException("url is required.");
+            if (url.Length > 4096) throw new ArgumentException("Model URL is too long.");
+            string relative;
+            if (url.StartsWith("/models/", StringComparison.OrdinalIgnoreCase)) relative = Uri.UnescapeDataString(url.Substring(8));
+            else if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.IsFile) relative = Path.GetRelativePath(backend.SourceFolder, uri.LocalPath);
+            else throw new NotSupportedException("Only local /models paths or file:// URLs are supported by the native Sakura window.");
+            relative = relative.Replace('\\', '/').TrimStart('/');
+            string full = SakuraModelImport.ResolveFile(backend.SourceFolder, relative);
+            if (!File.Exists(full)) throw new FileNotFoundException("The model file does not exist.", full);
+            await viewport.LoadModel(backend.SourceFolder, relative, cancellation);
+            cancellation.ThrowIfCancellationRequested();
+            if (!viewport.HasAvatar || !string.IsNullOrEmpty(viewport.LastImportError)) throw new InvalidOperationException(viewport.LastImportError ?? "The model could not be loaded.");
+            return State();
+        }
+        JObject ConfigureNdi(JObject args)
+        {
+            var output = UnityEngine.Object.FindFirstObjectByType<SakuraOutput>() ?? throw new InvalidOperationException("The output service is unavailable.");
+            var channel = output.Channels.FirstOrDefault(value => value.Id == "ndi") ?? throw new InvalidOperationException("NDI output is unavailable.");
+            bool active = channel.Enabled;
+            if (args.Value<bool?>("setNewConfig") == true)
+            {
+                if (args.Value<bool?>("useNDI5") == false) throw new NotSupportedException("Switching NDI runtime versions is unavailable.");
+                if (args.Value<bool?>("useCustomResolution") == true) throw new NotSupportedException("Custom NDI resolutions are unavailable in this window.");
+                if (args["ndiActive"] != null) { bool want = args.Value<bool>("ndiActive"); if (want != channel.Enabled) { output.Configure("ndi", want); active = want; } }
+            }
+            return new JObject { ["ndiActive"] = active, ["useNDI5"] = true, ["useCustomResolution"] = false, ["customWidthNDI"] = 1920, ["customHeightNDI"] = 1080 };
         }
         void RestoreWrites()
         {

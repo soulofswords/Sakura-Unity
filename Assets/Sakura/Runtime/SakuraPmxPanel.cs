@@ -151,6 +151,25 @@ namespace Sakura.Unity
                 viewport.BeginPartPick(true,index => { if (!alive) return; bone = index; search.SetValueWithoutNotify(""); Populate(); status.text = "Selected " + model.Instance.BoneTransforms[index].name; });
             }),body);
             Button("Restore all bones", () => Run(() => { model.Settings.frozen.Clear(); model.Save(); Populate(); status.text = "All bones unfrozen."; }), body);
+            var diagnostic = new Label { style = { whiteSpace = WhiteSpace.Normal } }; body.Add(diagnostic);
+            Button("Diagnose bones", () => Run(() =>
+            {
+                var transforms = model.Instance.BoneTransforms;
+                var names = transforms.Select(bone => bone.name).ToArray();
+                string[] standard = { "センター", "上半身", "上半身2", "首", "頭", "左腕", "右腕", "左足", "右足", "左ひじ", "右ひじ", "左ひざ", "右ひざ" };
+                var missing = standard.Where(name => !names.Any(value => value.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)).ToArray();
+                var duplicates = names.GroupBy(name => name, StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1).Select(group => group.Key + " ×" + group.Count()).ToArray();
+                bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+                var broken = transforms.Select((bone, index) => (bone, index)).Where(pair =>
+                {
+                    var position = pair.bone.localPosition; var rotation = pair.bone.localRotation;
+                    return !Finite(position.x) || !Finite(position.y) || !Finite(position.z) || !Finite(rotation.x) || !Finite(rotation.y) || !Finite(rotation.z) || !Finite(rotation.w);
+                }).Select(pair => pair.index + " · " + pair.bone.name).ToArray();
+                diagnostic.text = (missing.Length == 0 ? "All standard humanoid bones found. " : "Missing standard bones: " + string.Join(", ", missing) + ". ")
+                    + (duplicates.Length == 0 ? "No duplicate names. " : "Duplicate names: " + string.Join(", ", duplicates) + ". ")
+                    + (broken.Length == 0 ? "All bone transforms are finite." : "Non-finite transforms: " + string.Join(", ", broken) + ".");
+                status.text = "Bone diagnosis complete.";
+            }), body);
         }
         void Appearance()
         {

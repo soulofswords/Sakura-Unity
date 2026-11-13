@@ -116,12 +116,12 @@ Native UI checks exercise tab ordering, clipping, material picking, RGB controls
 ### Outstanding parity work
 
 - Full Live2D outline/authored-glow equivalence and broader PMX shader/reference comparisons across real models.
-- Automatic bone diagnosis and migration of original browser-stored model overrides.
+- Migration of original browser-stored model overrides. Native bone diagnosis is implemented; automatic repair is not.
 - Authenticated live-account cloud-preview/download acceptance. Local rotating previews and published cloud sprite-sheet playback are implemented and checked without signing into a cloud account.
-- Remaining VTS protocol requests/events and native collab. Parameter injection, temporary physics overrides and a bounded native plugin bridge exist; full protocol parity is not claimed.
+- Native collab is implemented and checked locally; multi-machine WebRTC and remote media remain unverified. Remaining VTS events are not emitted by the native bridge.
 - External VMC/Cubism interoperability. Native VMC sending and the existing VBridger facial-input route exist. Export watching reloads changed Live2D exports; an Editor-to-Sakura parameter feed is absent from the backend.
 - Physical sustained gameplay, microphone/wake interaction, voice enrollment, voice-changing capture, lip sync, output receivers and emergency-close hardware verification. Session-only headphone interruption has no acoustic echo cancellation.
-- Exact ArtMesh/bone prop attachment and the remaining item/plugin actions. Image/Live2D items, ordering, avatar-follow, locking, throws and authored item motions are implemented.
+- Photo-real visual equivalence for every shader and model. Exact ArtMesh/bone prop attachment, item ordering, pinning, throws and authored item motions are implemented.
 - A fully interactive embedded Agent browser and independent installer/update packaging.
 - Phone and physical receiver verification. Further mobile migration is paused until PC parity is accepted.
 
@@ -181,3 +181,13 @@ The original backend suite passed 2,256 tests (two skipped, 295 subtests), and t
 Built Windows acceptance passed after the importer correction: both editions connected to the original backend, listed 544 local characters and imported Ringo with no native-library error. Companion retained DWM transparency, forced Agent opacity, restored its compact geometry/transparency on return and kept the microphone off. VTuber stayed isolated when asked to switch to Companion. A compact layout check now guards panel/footer, chat/footer and button/microphone overlap; the final previews include the corrected spacing.
 
 Bug Hunter was installed into the local Codex skills directory. Its preflight and deterministic runtime-file triage ran; a complete canonical Bug Hunter audit has not been claimed or completed by this checkpoint.
+
+## Native collab, pinning and plugin parity checkpoint — 2026-11-13
+
+VTuber Collab now has a native dock pane backed by `SakuraNativeCollab`, WebRTC data channels and the existing authenticated loopback backend. The pane shares the selected model package, exchanges bounded poses at 20 Hz, imports remote VRM/PMX/Live2D avatars into per-peer viewports, and keeps room codes, WSS relay validation, optional TURN credentials and shared chat. A three-file package validator rejects path traversal, duplicate entries, links and executable files. Signaling and pose messages are bounded and validated before use.
+
+Stage items now pin to a specific Live2D ArtMesh or 3D bone instead of only the whole avatar. Pin targets resolve once per frame, follow zoom/rotation, hide when the pinned character is unavailable, and persist per model. The VTS bridge now implements the item list/load/unload/move/sort/animation commands, ArtMesh selection, colour tint, local model URL loading and NDI configuration, using the same bounded native APIs as the UI.
+
+PMX bone diagnosis reports missing standard humanoid bones, duplicate names and non-finite transforms on demand. It does not repair a rig or migrate browser-stored overrides.
+
+`SakuraNativeCollabChecks` covers relay URL/room validation, package path rejection, pose bounds, pinned-attachment rotation/round-trip and pin-field validation. The Unity runtime compiles with the collab, stage-item, PMX and plugin changes. Existing stage-item, tracking and plugin bridge checks still pass. Physical multi-machine WebRTC, remote microphone/video, cloud-account previews and external receivers remain unverified; embedded Agent browsing and installer/update preservation remain open.
