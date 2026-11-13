@@ -75,7 +75,9 @@ namespace Sakura.Unity
                         if (part.repairedSphere) sphereReplacements[part.index] = Restore("-sphere");
                         if (part.repairedToon) toonReplacements[part.index] = Restore("-toon");
                         // Stored texture names are identifiers, not arbitrary file paths.
-                        if (part.replacement == "part-" + part.index + ".png")
+                        if (part.replacement == "part-" + part.index + ".png" ||
+                            (part.replacement != null && part.replacement.Length == 43 && part.replacement.StartsWith("import-", StringComparison.Ordinal) &&
+                             part.replacement.EndsWith(".png", StringComparison.Ordinal) && Guid.TryParseExact(part.replacement.Substring(7, 32), "N", out _)))
                         {
                             string image = Path.Combine(folder, part.replacement);
                             if (File.Exists(image) && new FileInfo(image).Length <= 64L * 1024 * 1024) replacements[part.index] = Decode(File.ReadAllBytes(image));
@@ -100,6 +102,53 @@ namespace Sakura.Unity
             string temporary = StorageFile + ".tmp";
             File.WriteAllText(temporary, JsonUtility.ToJson(Settings, true));
             if (File.Exists(StorageFile)) File.Replace(temporary, StorageFile, null); else File.Move(temporary, StorageFile);
+        }
+
+        public int ImportAppearance(IReadOnlyList<SakuraModelTools.AppearanceChange> changes)
+        {
+            if (changes == null || changes.Count == 0) return 0;
+            if (changes.Count > 512 || changes.Any(change => change == null || change.index < 0 || change.index >= originals.Length) || changes.Select(change => change.index).Distinct().Count() != changes.Count)
+                throw new InvalidDataException("Invalid or duplicate PMX appearance mappings.");
+            var staged = new List<(SakuraModelTools.AppearanceChange change, Texture2D texture, string name)>();
+            var previous = JsonUtility.ToJson(Settings);
+            var oldTextures = (Texture2D[])replacements.Clone();
+            try
+            {
+                foreach (var change in changes)
+                {
+                    if ((change.hasColor && (!float.IsFinite(change.strength) || change.strength < 0 || change.strength > 1 ||
+                        !float.IsFinite(change.color.r) || !float.IsFinite(change.color.g) || !float.IsFinite(change.color.b))) ||
+                        (change.hasOpacity && (!float.IsFinite(change.opacity) || change.opacity < 0 || change.opacity > 2)))
+                        throw new InvalidDataException("Invalid PMX appearance values.");
+                    Texture2D texture = change.textureBytes == null ? null : SakuraModelTools.DecodeImage(change.textureBytes);
+                    staged.Add((change, texture, texture == null ? null : "import-" + Guid.NewGuid().ToString("N") + ".png"));
+                }
+                foreach (var item in staged)
+                {
+                    var part = GetPart(item.change.index);
+                    if (item.change.hasColor) { part.colored = true; part.color = item.change.color; part.strength = item.change.strength; }
+                    if (item.change.hasOpacity) part.transparency = 1 - item.change.opacity;
+                    if (item.texture != null)
+                    {
+                        File.WriteAllBytes(Path.Combine(Path.GetDirectoryName(StorageFile), item.name), item.change.textureBytes);
+                        replacements[part.index] = item.texture; part.replacement = item.name;
+                    }
+                }
+                Apply(); Save();
+            }
+            catch
+            {
+                Settings = JsonUtility.FromJson<Edits>(previous); replacements = oldTextures;
+                try { Apply(); } catch { }
+                foreach (var item in staged)
+                {
+                    if (item.texture != null) Destroy(item.texture);
+                    if (item.name != null) { try { File.Delete(Path.Combine(Path.GetDirectoryName(StorageFile), item.name)); } catch (IOException) { } }
+                }
+                throw;
+            }
+            foreach (var texture in oldTextures.Distinct()) if (texture != null && !replacements.Contains(texture)) Destroy(texture);
+            return changes.Count;
         }
 
         public static Texture2D Decode(byte[] bytes)
@@ -149,10 +198,14 @@ namespace Sakura.Unity
         {
             if (index < 0 || index >= Instance.BoneTransforms.Length) throw new ArgumentOutOfRangeException(nameof(index));
             Settings.frozen.Remove(index); if (enabled) Settings.frozen.Add(index);
+            if (!enabled) GetComponent<SakuraRigMonitor>()?.Forget("pmx:" + index);
             LateUpdate(); Save();
         }
 
         private void LateUpdate()
+            => ApplyFrozenBones();
+
+        public void ApplyFrozenBones()
         {
             if (Instance == null) return;
             foreach (int index in Settings.frozen)

@@ -19,6 +19,26 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.bridge.validate_source(folder)
 
+    def test_offline_wake_route_is_bounded_and_mode_gated(self):
+        import asyncio
+        import httpx
+        import sys
+        from fastapi import FastAPI
+        pack = types.SimpleNamespace(state=lambda: {'installed': False}, close=lambda: None,
+                                     check=lambda *_: {'available': False, 'detected': False})
+        app = FastAPI()
+        module = types.SimpleNamespace(app=app, EDITION='companion', get_settings=lambda: {'wake_word': 'hey sakura'})
+        self.bridge.install_unity_lifecycle(module)
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                self.assertEqual((await client.post('/api/unity/wake/state', json={})).json(), {'installed': False})
+                self.assertEqual((await client.post('/api/unity/wake/check', json={'audio': '!bad!'})).status_code, 400)
+                self.assertEqual((await client.post('/api/unity/wake/check', json={'audio': 'x' * 2_000_001})).status_code, 400)
+                await client.post('/api/unity/mode', json={'mode': 'Agent', 'revision': 1})
+                self.assertEqual((await client.post('/api/unity/wake/install', json={})).status_code, 409)
+        with patch.dict(sys.modules, unity_wake=types.SimpleNamespace(UnityWake=lambda *_: pack)):
+            asyncio.run(run())
+
     def test_standalone_edition_cannot_enable_companion_capture_or_ai(self):
         import asyncio
         import httpx
@@ -33,6 +53,8 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual((await client.post('/api/unity/start-services', json={})).status_code, 409)
                 self.assertEqual((await client.post('/api/unity/screen', json={'enabled': True})).status_code, 409)
                 self.assertEqual((await client.get('/api/unity/screen/snapshot')).status_code, 409)
+                for action in ('state', 'install', 'check'):
+                    self.assertEqual((await client.post('/api/unity/wake/' + action, json={})).status_code, 409)
         asyncio.run(run())
 
     def test_texture_picker_accepts_each_imported_format_and_rejects_escape(self):

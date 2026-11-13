@@ -29,6 +29,9 @@ namespace Sakura.Unity.Editor
             string options = JsonUtility.ToJson(pmx.Settings);
             string replacementFile = Path.Combine(Path.GetDirectoryName(file), "part-0.png");
             byte[] previousReplacement = File.Exists(replacementFile) ? File.ReadAllBytes(replacementFile) : null;
+            string folder = Path.GetDirectoryName(file);
+            var originalImports = Directory.GetFiles(folder, "import-*.png").ToHashSet();
+            string packageFile = Path.Combine(folder, "appearance-check.json");
             var idle = viewport.Idle;
             idle.MotionOwned = true;
             try
@@ -57,6 +60,23 @@ namespace Sakura.Unity.Editor
                     var pixel = ((Texture2D)material.GetTexture("_BaseMap")).GetPixel(0, 0);
                     if (pixel.r < .99f || pixel.g > .01f || Mathf.Abs(pixel.a - .5f) > .01f) throw new Exception("Replacement texture lost colour or alpha.");
                     pmx.RestoreTexture(0);
+                    string hash;
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                        hash = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(pmx.SourcePath))).Replace("-", "").ToLowerInvariant();
+                    var package = new Newtonsoft.Json.Linq.JObject {
+                        ["format"] = "sakura-appearance-export", ["version"] = 1, ["modelType"] = "PMX", ["modelSha256"] = hash,
+                        ["parts"] = new Newtonsoft.Json.Linq.JArray(new Newtonsoft.Json.Linq.JObject {
+                            ["id"] = "mat:0", ["sourceIndex"] = 0, ["name"] = pmx.Definition.materials[0].name, ["kind"] = "material",
+                            ["color"] = "#ffffff", ["strength"] = 0, ["opacity"] = .5, ["textureBase64"] = Convert.ToBase64String(image.EncodeToPNG()) }) };
+                    File.WriteAllText(packageFile, package.ToString());
+                    string imported = SakuraAppearanceImport.Apply(packageFile, viewport, viewport.GetComponent<SakuraBackend>());
+                    if (!imported.StartsWith("Imported 1 ") || pmx.GetPart(0).transparency != .5f || !pmx.GetPart(0).replacement.StartsWith("import-"))
+                        throw new Exception("Legacy PMX appearance package did not reach the PMX profile.");
+                    package["modelSha256"] = new string('0', 64); File.WriteAllText(packageFile, package.ToString());
+                    bool mismatchRejected = false;
+                    try { SakuraAppearanceImport.Apply(packageFile, viewport, viewport.GetComponent<SakuraBackend>()); }
+                    catch (InvalidDataException) { mismatchRejected = true; }
+                    if (!mismatchRejected) throw new Exception("Appearance import accepted a mismatched model fingerprint.");
                 }
                 finally { UnityEngine.Object.Destroy(image); }
                 pmx.Freeze(0, true);
@@ -68,9 +88,13 @@ namespace Sakura.Unity.Editor
                 await viewport.LoadModel(@"F:\AI\assistant\Sakura", "pmx/Ringo/Ringo.pmx");
                 pmx = viewport.Pmx;
                 if (pmx.Settings.brightness != .5f || !pmx.Settings.frozen.Contains(0)) throw new Exception("PMX settings did not survive reload.");
+                if (pmx.GetPart(0).transparency != .5f || ((Texture2D)pmx.Instance.Materials[0].GetTexture("_BaseMap")).width != 16)
+                    throw new Exception("Imported PMX texture/transparency did not survive reload.");
             }
             finally
             {
+                if (File.Exists(packageFile)) File.Delete(packageFile);
+                foreach (string imported in Directory.GetFiles(folder, "import-*.png").Where(path => !originalImports.Contains(path))) File.Delete(imported);
                 if (saved == null) { if (File.Exists(file)) File.Delete(file); } else File.WriteAllText(file, saved);
                 if (previousReplacement == null) { if (File.Exists(replacementFile)) File.Delete(replacementFile); } else File.WriteAllBytes(replacementFile, previousReplacement);
                 await viewport.LoadModel(@"F:\AI\assistant\Sakura", "pmx/Ringo/Ringo.pmx");

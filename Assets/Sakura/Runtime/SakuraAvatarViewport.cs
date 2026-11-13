@@ -250,7 +250,9 @@ namespace Sakura.Unity
                     var motion = loaded.AddComponent<SakuraIdleMotion>(); motion.Initialize(path);
                     loaded.AddComponent<SakuraAvatarExpressions>().Initialize(path, motion);
                     if (format != "PMX") SakuraModelTools.GetOrCreate(loaded, path);
+                    else loaded.AddComponent<SakuraPmxPhysics>().Initialize(loaded.GetComponent<SakuraPmxModel>());
                     SakuraMaterialExpressions.GetOrCreate(loaded, path);
+                    if (format != "Live2D") loaded.AddComponent<SakuraRigMonitor>().Initialize(path);
                     var studio = GetComponent<SakuraStudio>(); motion.Companion = studio == null || studio.CurrentMode == "Companion";
                 }
                 catch { Destroy(loaded); throw; }

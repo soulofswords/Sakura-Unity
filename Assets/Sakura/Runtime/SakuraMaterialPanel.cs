@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -48,6 +51,8 @@ namespace Sakura.Unity
         }
         void Coloring()
         {
+            Button("Import appearance package from legacy Sakura", ImportAppearance);
+            Text("Import saved colors, transparency and replacement textures. Unity checks the exact model file before applying anything.");
             var picker = new DropdownField(viewport.LoadedFormat == "Live2D" ? "ArtMesh" : "Texture / material", tools.Parts.Select((part, index) => index + " · " + part.Name).ToList(), selected); body.Add(picker);
             picker.RegisterValueChangedCallback(_ => { selected = picker.index; Render(); });
             Text(viewport.LoadedFormat == "Live2D" ? "Choose a Live2D ArtMesh to tint. Names come from the imported rig. Tint preserves its masks and transparency." : "Choose a material for hair, clothing or another part. Coloring preserves texture detail and transparency.");
@@ -81,6 +86,7 @@ namespace Sakura.Unity
         }
         void Remapping()
         {
+            Button("Import appearance package from legacy Sakura", ImportAppearance);
             bool live = viewport.LoadedFormat == "Live2D";
             var groups = live
                 ? tools.Parts.Select((part, index) => new { part, index }).GroupBy(entry => entry.part.OriginalTexture).Select(group => group.Select(entry => entry.index).ToArray()).ToList()
@@ -114,6 +120,18 @@ namespace Sakura.Unity
             body.Add(apply);
             Button("Restore original texture", () => { tools.RestoreTextureGroup(groups[groupIndex]); status.text = "Original texture restored."; });
         }
+        void ImportAppearance()
+        {
+            status.text = "Choose an appearance package exported by legacy Sakura.";
+            backend.RunPmxTool("appearance-import", viewport.LoadedModelPath, (json, error) => Run(() =>
+            {
+                if (error != null) throw new InvalidDataException(error);
+                var selection = JObject.Parse(json);
+                if (selection.Value<bool>("cancelled")) { status.text = "Import cancelled."; return; }
+                status.text = SakuraAppearanceImport.Apply(selection.Value<string>("path"), viewport, backend);
+                Render();
+            }));
+        }
         void Bones()
         {
             if (viewport.LoadedFormat == "Live2D") { Text("Bone controls are available for PMX and VRM models. Live2D uses authored parameters."); Button("Parameters", () => { body.Clear(); Parameters(); }); return; }
@@ -134,6 +152,7 @@ namespace Sakura.Unity
             search.RegisterValueChangedCallback(_ => Populate()); Populate();
             Button("Pick bone on model", () => { status.text = "Click the model to select the strongest bone at that point."; viewport.BeginPartPick(true, index => Run(() => { if (index < 0 || index >= tools.Bones.Count) return; selected = index; search.SetValueWithoutNotify(""); Populate(); })); });
             Button("Restore all bones", () => { tools.RestoreBones(); Populate(); status.text = "All bones unfrozen."; });
+            SakuraRigMonitor.BuildPanel(viewport.AvatarRoot, body);
         }
         void Parameters()
         {
@@ -230,14 +249,15 @@ namespace Sakura.Unity
             var picker = new VisualElement(); body.Add(picker);
             var strength = new Slider("Overlay strength", 0, 100) { value = settings.overlayStrength * 100, showInputField = true }; body.Add(strength);
             var outline = new Toggle("Model outline (3D)") { value = settings.outline }; outline.SetEnabled(viewport.LoadedFormat != "Live2D"); body.Add(outline);
+            var authoredGlow = new Toggle("Model glow layers") { value = settings.authoredGlow }; authoredGlow.SetEnabled(viewport.LoadedFormat == "Live2D"); body.Add(authoredGlow);
             void Save()
             {
-                tools.SetEffects(new SakuraModelTools.EffectSettings { glow = glow.value / 100, saturation = saturation.value / 100, contrast = contrast.value / 100, overlayColor = overlay, overlayStrength = strength.value / 100, outline = outline.value });
+                tools.SetEffects(new SakuraModelTools.EffectSettings { glow = glow.value / 100, saturation = saturation.value / 100, contrast = contrast.value / 100, overlayColor = overlay, overlayStrength = strength.value / 100, outline = outline.value, authoredGlow = authoredGlow.value });
                 status.text = "Effects applied to this model and saved.";
             }
             new SakuraColourPicker(picker, overlay, value => Run(() => { overlay = value; Save(); }));
             glow.RegisterValueChangedCallback(_ => Run(Save)); saturation.RegisterValueChangedCallback(_ => Run(Save));
-            contrast.RegisterValueChangedCallback(_ => Run(Save)); strength.RegisterValueChangedCallback(_ => Run(Save)); outline.RegisterValueChangedCallback(_ => Run(Save));
+            contrast.RegisterValueChangedCallback(_ => Run(Save)); strength.RegisterValueChangedCallback(_ => Run(Save)); outline.RegisterValueChangedCallback(_ => Run(Save)); authoredGlow.RegisterValueChangedCallback(_ => Run(Save));
             Button("Reset effects", () => { tools.SetEffects(new SakuraModelTools.EffectSettings()); body.Clear(); Effects(); status.text = "Original effects restored."; });
         }
     }

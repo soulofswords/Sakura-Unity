@@ -9,7 +9,9 @@
     "Live2D.Cubism",
     "Unity.RenderPipelines.Universal.Runtime",
     "Unity.InputSystem",
-    "Unity.WebRTC"
+    "Unity.WebRTC",
+    "WebViewToolkit.Runtime",
+    "WebViewToolkit.UIToolkit"
   ],
   "autoReferenced": true
 }

@@ -63,6 +63,17 @@ namespace Sakura.Unity
             body.Clear(); if (model == null) { Text("Select a PMX model first."); return; }
             if (tab == "Bones") { Bones(); return; }
             if (tab == "Appearance") { Appearance(); return; }
+            Button("Import appearance package from legacy Sakura", () => Run(() =>
+            {
+                status.text = "Choose an appearance package exported by legacy Sakura.";
+                backend.RunPmxTool("appearance-import", viewport.LoadedModelPath, (json, error) => Run(() => {
+                    if (error != null) throw new InvalidDataException(error);
+                    var result = JObject.Parse(json);
+                    if (result.Value<bool>("cancelled")) { status.text = "Import cancelled."; return; }
+                    status.text = SakuraAppearanceImport.Apply(result.Value<string>("path"), viewport, backend);
+                    Render();
+                }));
+            }), body);
             var choices = model.Definition.materials.Select((item, index) => index + " · " + item.name).ToList();
             var material = new DropdownField("Texture / material", choices, Math.Min(part, choices.Count - 1));
             material.RegisterValueChangedCallback(evt => { part = material.index; selectedTexture = null; Render(); }); body.Add(material);
@@ -150,7 +161,8 @@ namespace Sakura.Unity
                 status.text = "Click the model to select the strongest bone at that point.";
                 viewport.BeginPartPick(true,index => { if (!alive) return; bone = index; search.SetValueWithoutNotify(""); Populate(); status.text = "Selected " + model.Instance.BoneTransforms[index].name; });
             }),body);
-            Button("Restore all bones", () => Run(() => { model.Settings.frozen.Clear(); model.Save(); Populate(); status.text = "All bones unfrozen."; }), body);
+            Button("Restore all bones", () => Run(() => { model.Settings.frozen.Clear(); model.GetComponent<SakuraRigMonitor>()?.Forget(); model.Save(); Populate(); status.text = "All bones unfrozen."; }), body);
+            SakuraRigMonitor.BuildPanel(model.gameObject, body);
             var diagnostic = new Label { style = { whiteSpace = WhiteSpace.Normal } }; body.Add(diagnostic);
             Button("Diagnose bones", () => Run(() =>
             {

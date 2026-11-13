@@ -53,6 +53,7 @@ namespace Sakura.Unity
         SakuraTrackingRig rig;
         int generation;
         bool pending, uploadPending;
+        bool phoneTrackingEnabled;
         float nextPoll, lastFrame = -100, nextCamera;
         WebCamTexture camera;
         Texture2D cameraPixels;
@@ -84,10 +85,18 @@ namespace Sakura.Unity
         public void Initialize(SakuraBackend service, SakuraAvatarViewport avatars) { backend = service; viewport = avatars; }
         void Notify(string message) { Status = message; Changed?.Invoke(); }
         string Route(InputSource value) => value == InputSource.Webcam ? "/api/unity/tracking" : value == InputSource.NvidiaAR ? "/api/tracking/nvidia-ar" : value == InputSource.NvidiaExpressionApp ? "/api/tracking/nvidia-expressionapp" : "/api/tracking/vbridger";
+        public static bool? PhoneTrackingStateForCommand(string kind)
+        {
+            if (kind == "tracking-start" || kind == "companion-tracking-start") return true;
+            if (kind == "tracking-stop" || kind == "companion-tracking-stop" || kind == "camera-start") return false;
+            return null;
+        }
         public void SetSource(InputSource value)
         {
             if (value != InputSource.Off) selectedSource = value;
             var old = Source; int revision = ++generation; Source = value; pending = false; sample = null; lastFrame = -100;
+            if (old == InputSource.Phone && value != InputSource.Phone) PhoneControl("stop", true);
+            phoneTrackingEnabled = value != InputSource.Phone && value != InputSource.Off;
             rig?.ResetTracking(); StopCamera();
             if (backend != null && (old == InputSource.Webcam || old == InputSource.NvidiaAR || old == InputSource.NvidiaExpressionApp)) backend.Api(Route(old) + "/stop", "{}", (_, error) => { });
             Notify(value == InputSource.Off ? "Tracking off" : "Waiting for " + value);
@@ -104,6 +113,13 @@ namespace Sakura.Unity
             }
         }
         public void Calibrate() { rig?.Calibrate(sample); Notify("Neutral calibrated from the latest valid frame."); }
+        public void SetHandsTracking(bool enabled)
+        {
+            if (Hands == enabled) return;
+            Hands = enabled;
+            if (Source == InputSource.Phone) PhoneControl("hands", enabled);
+            Notify(enabled ? "Hand tracking on." : "Hand tracking off; face and body tracking remain active.");
+        }
         public void PhoneLink(string body = null)
         {
             backend.Api("/api/mobile/link", body, (json, error) =>
@@ -129,7 +145,40 @@ namespace Sakura.Unity
         }
         public void PhoneControl(string action, bool enabled)
         {
+            if (backend == null) { Notify("PC backend is unavailable."); return; }
             backend.Api("/api/mobile/tracking-control", new JObject { ["action"] = action, ["enabled"] = enabled }.ToString(), (_, error) => { if (error != null) Notify(error); });
+        }
+        bool RequestPhoneTracking(string action)
+        {
+            if (backend == null)
+            {
+                if (action == "start") { phoneTrackingEnabled = false; sample = null; rig?.Accept(null); }
+                Notify("PC backend is unavailable.");
+                return false;
+            }
+            backend.Api("/api/mobile/tracking-control", new JObject { ["action"] = action }.ToString(), (_, error) =>
+            {
+                if (error == null) return;
+                if (action == "start")
+                {
+                    phoneTrackingEnabled = false;
+                    sample = null;
+                    rig?.Accept(null);
+                }
+                Notify(error);
+            });
+            return true;
+        }
+        public void StartSelectedTracking(string cameraDevice)
+        {
+            if (cameraDevice == "Sakura Mobile")
+            {
+                if (Source != InputSource.Phone) SetSource(InputSource.Phone);
+                StartTracking();
+                return;
+            }
+            if (Source == InputSource.Off || Source == InputSource.Phone) SetSource(InputSource.Webcam);
+            StartCamera(cameraDevice);
         }
         public void StartCamera(string device)
         {
@@ -143,9 +192,25 @@ namespace Sakura.Unity
         public void StartTracking()
         {
             if (Source == InputSource.Off) SetSource(selectedSource);
+            if (Source == InputSource.Phone)
+            {
+                phoneTrackingEnabled = true;
+                if (RequestPhoneTracking("start")) Notify("Phone tracking requested · waiting for Sakura Mobile");
+                return;
+            }
             if (Source != InputSource.Webcam && Source != InputSource.NvidiaAR) return;
             string device = WebCamTexture.devices.Any(item => item.name == selectedCamera) ? selectedCamera : WebCamTexture.devices.FirstOrDefault().name;
             StartCamera(device);
+        }
+        public void StopTracking()
+        {
+            if (Source == InputSource.Phone)
+            {
+                phoneTrackingEnabled = false; sample = null; rig?.Accept(null);
+                if (RequestPhoneTracking("stop")) Notify("Phone tracking stopped · connection kept ready");
+                return;
+            }
+            SetSource(InputSource.Off);
         }
         void Update()
         {
@@ -159,7 +224,7 @@ namespace Sakura.Unity
             }
             if (rig != null)
             {
-                rig.Active = Source != InputSource.Off;
+                rig.Active = Source != InputSource.Off && (Source != InputSource.Phone || phoneTrackingEnabled);
                 if (viewport.Idle != null) viewport.Idle.MotionOwned = rig.Active || GetComponent<SakuraAvatarActions>()?.Active == true;
             }
             if (Source == InputSource.Off) return;
@@ -169,7 +234,12 @@ namespace Sakura.Unity
                 rig?.Cursor(viewport.CursorDirection(position, rig.CursorOrigin));
                 return;
             }
-            if (Time.unscaledTime - lastFrame > .6f) rig?.Accept(null);
+            if (Time.unscaledTime - lastFrame > .6f)
+            {
+                rig?.Accept(null);
+                if (Source == InputSource.Phone && phoneTrackingEnabled && Status != "Waiting for tracking frames from Sakura Mobile · tap Start camera tracking on the phone or allow PC camera control")
+                    Notify("Waiting for tracking frames from Sakura Mobile · tap Start camera tracking on the phone or allow PC camera control");
+            }
             if (Source == InputSource.Webcam) return;
             if (backend == null || pending || Time.unscaledTime < nextPoll) return;
             pending = true; nextPoll = Time.unscaledTime + (Source == InputSource.Phone ? .016f : .1f); int revision = generation;
@@ -184,7 +254,7 @@ namespace Sakura.Unity
                     if (Source == InputSource.Phone)
                     {
                         foreach (var command in (data["commands"] as JArray ?? new JArray()).OfType<JObject>()) PhoneCommand(command);
-                        if (data["frame"] is JObject frame) Receive(frame);
+                        if (phoneTrackingEnabled && data["frame"] is JObject frame) Receive(frame);
                     }
                     else if (data.Value<bool?>("connected") == true && data.Value<bool?>("face_detected") != false)
                         Receive(new JObject { ["face"] = new JObject { ["blendshapes"] = data["blendshapes"]?.DeepClone() ?? new JObject() } });
@@ -193,10 +263,17 @@ namespace Sakura.Unity
                 catch (Exception exception) { Notify("Invalid tracking response: " + exception.Message); }
             });
         }
-        JObject PhoneState() => new JObject { ["edition"] = backend.Mode == "VTuber" ? "vtuber" : "companion", ["tracking"] = true, ["model"] = viewport.LoadedModelPath ?? "", ["expressions"] = new JArray(viewport.Expressions?.Entries.Select(entry => entry.Name) ?? Enumerable.Empty<string>()), ["active_expressions"] = new JArray(viewport.Expressions?.Entries.Where(entry => entry.Active).Select(entry => entry.Name) ?? Enumerable.Empty<string>()) };
+        JObject PhoneState() => new JObject { ["edition"] = backend.Mode == "VTuber" ? "vtuber" : "companion", ["tracking"] = phoneTrackingEnabled, ["model"] = viewport.LoadedModelPath ?? "", ["expressions"] = new JArray(viewport.Expressions?.Entries.Select(entry => entry.Name) ?? Enumerable.Empty<string>()), ["active_expressions"] = new JArray(viewport.Expressions?.Entries.Where(entry => entry.Active).Select(entry => entry.Name) ?? Enumerable.Empty<string>()) };
         void PhoneCommand(JObject command)
         {
             string kind = command.Value<string>("type");
+            bool? trackingState = PhoneTrackingStateForCommand(kind);
+            if (trackingState.HasValue)
+            {
+                phoneTrackingEnabled = trackingState.Value;
+                if (!phoneTrackingEnabled) { sample = null; rig?.Accept(null); }
+                Notify(phoneTrackingEnabled ? "Phone tracking started" : "Phone tracking stopped");
+            }
             if (kind == "calibrate") Calibrate();
             else if (kind == "tracking-stop" || kind == "companion-tracking-stop") { sample = null; rig?.Accept(null); }
             else if (kind == "clear-expressions") viewport.Expressions?.Clear();
@@ -205,7 +282,7 @@ namespace Sakura.Unity
                 var entry = viewport.Expressions.Entries.FirstOrDefault(item => item.Name == command.Value<string>("name"));
                 if (entry != null) { if (command.Value<bool?>("enabled") != false) viewport.Expressions.Clear(); viewport.Expressions.SetActive(entry.Id, command.Value<bool?>("enabled") != false); }
             }
-            else if (kind != "tracking-start" && kind != "companion-tracking-start") Notify("Phone command not yet migrated: " + kind);
+            else if (kind != "tracking-start" && kind != "companion-tracking-start" && kind != "tracking-stop" && kind != "companion-tracking-stop" && kind != "camera-start") Notify("Phone command not yet migrated: " + kind);
         }
         public void Receive(JObject frame)
         {

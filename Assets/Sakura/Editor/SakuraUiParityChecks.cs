@@ -48,7 +48,7 @@ namespace Sakura.Unity.Editor
             await Task.Delay(150);
             if (expression.Q<Label>(className:"unity-foldout__text").worldBound.width < 10) throw new Exception("Expression title was clipped by the foldout input.");
             if (expression.Q(className:"expression-expand").worldBound.center.x < expression.worldBound.center.x) throw new Exception("Expression expansion control moved to the left edge.");
-            if (expression.Q(className:"expression-expand") is not Label indicator || indicator.text != "âˆ’") throw new Exception("Expression expansion indicator failed.");
+            if (expression.Q(className:"expression-expand") is not Label indicator || indicator.text != "\u2212") throw new Exception("Expression expansion indicator failed.");
             if (!expression.Query<Button>().ToList().Any(button => button.text == "Set hotkey")) throw new Exception("Expression actions did not open.");
             var expressions = studio.GetComponent<SakuraAvatarViewport>().Expressions;
             Submit(expression.Query<Button>().ToList().First(button => button.text == "Set hotkey"));
@@ -73,6 +73,15 @@ namespace Sakura.Unity.Editor
             Submit(root.Q<Button>("model-position-lock"));
             if (viewport.PositionLocked == locked) throw new Exception("VTuber position lock did not toggle.");
             Submit(root.Q<Button>("model-position-lock"));
+            var tracking = studio.GetComponent<SakuraTracking>();
+            var hands = root.Q<Button>("footer-hands-toggle");
+            if (hands == null) throw new Exception("VTuber footer hand-tracking toggle is missing.");
+            bool handsEnabled = tracking.Hands;
+            Submit(hands);
+            if (tracking.Hands == handsEnabled || hands.text != (tracking.Hands ? "Hands on" : "Hands off"))
+                throw new Exception("VTuber footer hand-tracking toggle did not update its state and label.");
+            Submit(root.Q<Button>("footer-hands-toggle"));
+            if (tracking.Hands != handsEnabled) throw new Exception("VTuber footer hand-tracking toggle did not restore its original state.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-vtuber-parity.png");
             studio.ShowPanel("Settings");
             if (root.Query<Button>(className:"settings-tab").ToList().Any(button => button.text == "AI & LLM" || button.text == "Assistant"))

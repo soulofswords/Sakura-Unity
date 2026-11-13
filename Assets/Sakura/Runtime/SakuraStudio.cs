@@ -31,7 +31,7 @@ namespace Sakura.Unity
         private Image appLogo;
         private Button microphoneButton;
         private Button compactMicrophone, transparencyButton;
-        private Button positionLockButton;
+        private Button positionLockButton, handsButton;
         private Label positionLockCaption;
         private CharacterEntry[] catalog = Array.Empty<CharacterEntry>();
         private string format = "PMX", search = "";
@@ -352,15 +352,13 @@ namespace Sakura.Unity
             if (CurrentMode == "VTuber")
             {
                 Button("Start tracking", () => tracking.StartTracking(), footer);
-                Button("Stop", () => tracking.SetSource(SakuraTracking.InputSource.Off), footer);
+                Button("Stop", tracking.StopTracking, footer);
                 Button("Calibrate", () => tracking.Calibrate(), footer);
-                var hands = Button(tracking != null && tracking.Hands ? "Hands on" : "Hands off", () => {}, footer);
-                hands.clicked += () =>
-                {
-                    tracking.Hands = !tracking.Hands;
-                    if (tracking.Source == SakuraTracking.InputSource.Phone) tracking.PhoneControl("hands", tracking.Hands);
-                    hands.text = tracking.Hands ? "Hands on" : "Hands off";
-                };
+                handsButton = Button(tracking.Hands ? "Hands on" : "Hands off", () => {
+                    tracking.SetHandsTracking(!tracking.Hands);
+                    handsButton.text = tracking.Hands ? "Hands on" : "Hands off";
+                }, footer);
+                handsButton.name = "footer-hands-toggle";
                 Button("New instance", () => SetStatus(SakuraInstances.Open()), footer);
             }
         }
@@ -416,7 +414,7 @@ namespace Sakura.Unity
                     var device = new DropdownField("Microphone", devices, Math.Max(0, devices.IndexOf(voice.MicrophoneDevice)));
                     device.RegisterValueChangedCallback(evt => { voice.StopListening(); voice.MicrophoneDevice = device.index == 0 ? "" : device.value; }); inputCard.Add(device);
                 }
-                Label("Speech recognition uses your saved language and recognised-voice settings. Hands-free wake gating currently uses transcription; the offline wake engine is still being migrated.", "description", inputCard);
+                Label("Speech recognition uses your saved language and recognised-voice settings. Configure the optional offline wake pack under Settings → General → Hands-free listening.", "description", inputCard);
             }
             else if (name == "Model Settings")
             {
@@ -519,6 +517,7 @@ namespace Sakura.Unity
         private void Update()
         {
             if (avatarActions != null) avatarActions.TrackingOwnsMotion = tracking != null && tracking.Source != SakuraTracking.InputSource.Off;
+            if (handsButton != null && tracking != null) handsButton.text = tracking.Hands ? "Hands on" : "Hands off";
             var screen = GetComponent<SakuraScreenFeatures>();
             if (captureStatus != null && screen != null) captureStatus.text = screen.Status;
             if (positionLockButton != null && viewport != null)
@@ -703,7 +702,21 @@ namespace Sakura.Unity
         private void ReceiveModelChanged()
         {
             if (!SakuraInstances.IsSecondary) { PlayerPrefs.SetString("sakura-selected-model",viewport.LoadedModelPath); PlayerPrefs.Save(); }
+            RefreshModelPhysics();
             if (CurrentPanel == "Character" || CurrentPanel == "Model Settings" || CurrentPanel == "Expressions & hotkeys") ShowPanel(CurrentPanel);
+        }
+        public void RefreshModelPhysics()
+        {
+            var model = viewport.AvatarRoot;
+            if (model == null) return;
+            backend.Api("/api/settings", null, (json, error) => {
+                if (error != null || model == null || viewport.AvatarRoot != model) return;
+                try {
+                    bool enabled = Newtonsoft.Json.Linq.JObject.Parse(json).Value<bool?>("physics_enabled") ?? true;
+                    model.GetComponent<SakuraPmxPhysics>()?.SetSimulation(enabled);
+                    model.GetComponent<SakuraModelTools>()?.SetPhysicsEnabled(enabled);
+                } catch (Newtonsoft.Json.JsonException failure) { SetStatus("Could not read physics settings: " + failure.Message); }
+            });
         }
         private void ReceiveImportedModel(string path) { _ = viewport.LoadModel(backend.SourceFolder, path); }
         private void SetStatus(string text) { if (status != null) status.text = text; }

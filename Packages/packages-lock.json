@@ -296,6 +296,12 @@
         "com.vrmc.gltf": "0.131.4"
       }
     },
+    "com.webviewtoolkit.core": {
+      "version": "file:com.webviewtoolkit.core",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.yohawing.mmd-loader": {
       "version": "file:com.yohawing.mmd-loader",
       "depth": 0,

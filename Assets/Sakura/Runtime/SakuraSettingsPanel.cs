@@ -65,7 +65,16 @@ namespace Sakura.Unity
                 Select(card, "How Sakura addresses you", "user_address", new[] { "sir", "maam", "none" }, new[] { "Sir", "Ma’am", "No title" });
                 card = Card("Hands-free listening");
                 Field(card, "Wake phrase", "wake_word"); Check(card, "Listen for my wake phrase, including in the background", "wake_word_enabled");
-                Text("Enable the microphone in Voice & speech. Native listening currently checks the wake phrase after transcription; offline wake detection is still being migrated.", "description", card);
+                Text("Enable the microphone in Voice & speech. Install the optional English offline wake pack to reject speech without normal transcription until your wake phrase is heard. Without it, the transcript wake gate remains active.", "description", card);
+                var wakeStatus = new Label(); card.Add(wakeStatus);
+                void WakeAction(string action) => backend.Api("/api/unity/wake/" + action, "{}", (json, error) => {
+                    if (!alive) return;
+                    if (error != null) { wakeStatus.text = error; return; }
+                    var result = JObject.Parse(json);
+                    wakeStatus.text = result.Value<bool>("installed") ? "Offline wake pack ready." : "Offline wake pack is not installed.";
+                });
+                AddButton("Install offline wake pack", () => { wakeStatus.text = "Downloading offline wake pack…"; WakeAction("install"); }, card);
+                AddButton("Check offline wake pack", () => WakeAction("state"), card);
 #if UNITY_EDITOR
                 var dev = new Foldout { text = "Development backend", value = false }; body.Add(dev);
                 var source = new TextField("Preserved source folder") { value = backend.SourceFolder }; dev.Add(source);
@@ -513,6 +522,7 @@ namespace Sakura.Unity
             {
                 saving = false; ClearSecrets();
                 if (error == null && (sent["wake_word"] != null || sent["wake_word_enabled"] != null)) backend.GetComponent<SakuraVoice>()?.RefreshSettings();
+                if (error == null && sent["physics_enabled"] != null) backend.GetComponent<SakuraStudio>()?.RefreshModelPhysics();
                 if (!alive) return;
                 if (error != null) { status.text = error; return; }
                 var reply = JObject.Parse(json); if (reply["settings"] is JObject settings) values = settings;

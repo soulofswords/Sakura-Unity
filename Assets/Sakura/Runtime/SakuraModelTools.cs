@@ -34,6 +34,15 @@ namespace Sakura.Unity
             public float glow, saturation = 1, contrast = 1, overlayStrength;
             public Color overlayColor = Color.white;
             public bool outline;
+            public bool authoredGlow = true;
+        }
+        public sealed class AppearanceChange
+        {
+            public int index;
+            public bool hasColor, hasOpacity;
+            public Color color;
+            public float strength, opacity;
+            public byte[] textureBytes;
         }
         [Serializable] sealed class Profile
         {
@@ -70,6 +79,8 @@ namespace Sakura.Unity
         UniVRM10.Vrm10Instance vrm;
         List<UniVRM10.Vrm10InstanceSpringBone.Spring> authoredSprings;
         bool springsDirty;
+        bool physicsEnabled = true;
+        public bool PhysicsEnabled => physicsEnabled;
         string storage;
         Material effectMaterial;
         SakuraLive2DSetup liveSetup;
@@ -205,12 +216,19 @@ namespace Sakura.Unity
         {
             string id = bones[index].Id;
             if (frozen) { if (!profile.frozen.Contains(id)) profile.frozen.Add(id); } else profile.frozen.Remove(id);
+            if (!frozen) GetComponent<SakuraRigMonitor>()?.Forget(id);
             ApplyFrozenBones(); RebuildSprings(); Save();
         }
-        public void RestoreBones() { profile.frozen.Clear(); RebuildSprings(); Save(); }
+        public void RestoreBones() { profile.frozen.Clear(); GetComponent<SakuraRigMonitor>()?.Forget(); RebuildSprings(); Save(); }
+        public void SetPhysicsEnabled(bool enabled)
+        {
+            if (physicsEnabled == enabled) return;
+            physicsEnabled = enabled; RebuildSprings();
+        }
         void RebuildSprings()
         {
             if (vrm == null || authoredSprings == null) return;
+            if (!physicsEnabled) { vrm.SpringBone.Springs = new List<UniVRM10.Vrm10InstanceSpringBone.Spring>(); springsDirty = true; return; }
             var frozen = new HashSet<Transform>(bones.Where(bone => profile.frozen.Contains(bone.Id)).Select(bone => bone.Transform));
             var springs = new List<UniVRM10.Vrm10InstanceSpringBone.Spring>();
             foreach (var original in authoredSprings)
@@ -268,6 +286,70 @@ namespace Sakura.Unity
             Finite(transparency); var part = parts[index]; float previous = part.Settings.transparency;
             try { part.Settings.transparency = Mathf.Clamp(transparency, -1, 1); ApplyPart(part); Save(); }
             catch { part.Settings.transparency = previous; ApplyPart(part); throw; }
+        }
+        public int ImportAppearance(IReadOnlyList<AppearanceChange> changes)
+        {
+            if (changes == null || changes.Count == 0) return 0;
+            if (changes.Count > 512) throw new InvalidDataException("Appearance package has too many entries.");
+            var staged = new List<(AppearanceChange change, Part part, Texture2D texture, string filename, string file)>();
+            var seen = new HashSet<int>();
+            try
+            {
+                foreach (var change in changes)
+                {
+                    if (change == null || change.index < 0 || change.index >= parts.Count || !seen.Add(change.index))
+                        throw new InvalidDataException("Appearance package contains an invalid or duplicate part mapping.");
+                    if (change.hasColor) { CheckColor(change.color); Finite(change.strength); }
+                    if (change.hasOpacity) Finite(change.opacity);
+                    Texture2D texture = change.textureBytes == null ? null : DecodeImage(change.textureBytes);
+                    string filename = texture == null ? null : "replacement-" + Guid.NewGuid().ToString("N") + ".png";
+                    staged.Add((change, parts[change.index], texture, filename, texture == null ? null : Path.Combine(Path.GetDirectoryName(storage), filename)));
+                }
+            }
+            catch
+            {
+                foreach (var entry in staged) if (entry.texture != null) Destroy(entry.texture);
+                throw;
+            }
+
+            var previous = staged.Select(entry => (entry.part, color: entry.part.Settings.color, strength: entry.part.Settings.strength,
+                transparency: entry.part.Settings.transparency, replacement: entry.part.Replacement, replacementName: entry.part.Settings.replacement)).ToArray();
+            var oldNames = previous.Select(entry => entry.replacementName).Distinct().ToArray();
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(storage));
+                foreach (var entry in staged) if (entry.texture != null) WriteFile(entry.file, entry.change.textureBytes);
+                foreach (var entry in staged)
+                {
+                    if (entry.change.hasColor) { entry.part.Settings.color = entry.change.color; entry.part.Settings.strength = Mathf.Clamp01(entry.change.strength); }
+                    if (entry.change.hasOpacity) entry.part.Settings.transparency = Mathf.Clamp(1 - entry.change.opacity, -1, 1);
+                    if (entry.texture != null) { entry.part.Replacement = entry.texture; entry.part.Settings.replacement = entry.filename; }
+                    ApplyPart(entry.part);
+                }
+                Save();
+            }
+            catch
+            {
+                foreach (var entry in previous)
+                {
+                    entry.part.Settings.color = entry.color; entry.part.Settings.strength = entry.strength;
+                    entry.part.Settings.transparency = entry.transparency; entry.part.Replacement = entry.replacement;
+                    entry.part.Settings.replacement = entry.replacementName;
+                    try { ApplyPart(entry.part); } catch { }
+                }
+                foreach (var entry in staged)
+                {
+                    if (entry.texture != null && !parts.Any(part => part.Replacement == entry.texture)) Destroy(entry.texture);
+                    if (entry.file != null && File.Exists(entry.file)) File.Delete(entry.file);
+                }
+                ReleaseUnusedAlphaTextures();
+                throw;
+            }
+            foreach (var old in previous.Select(entry => entry.replacement).Distinct())
+                if (old != null && !parts.Any(part => part.Replacement == old)) Destroy(old);
+            foreach (string oldName in oldNames) DeleteReplacement(oldName);
+            ReleaseUnusedAlphaTextures();
+            return staged.Count;
         }
         public static Texture2D DecodeImage(byte[] bytes)
         {
@@ -395,9 +477,10 @@ namespace Sakura.Unity
         {
             ValidateEffects(settings);
             var previous = profile.effects;
-            profile.effects = new EffectSettings { glow = settings.glow, saturation = settings.saturation, contrast = settings.contrast, overlayColor = settings.overlayColor, overlayStrength = settings.overlayStrength, outline = settings.outline };
+            profile.effects = new EffectSettings { glow = settings.glow, saturation = settings.saturation, contrast = settings.contrast, overlayColor = settings.overlayColor, overlayStrength = settings.overlayStrength, outline = settings.outline, authoredGlow = settings.authoredGlow };
             try { Save(); } catch { profile.effects = previous; throw; }
             ApplyOutline(profile.effects.outline);
+            ApplyAuthoredGlow();
         }
         SakuraOutlineRenderer outlineRenderer;
         void ApplyOutline(bool enabled)
@@ -405,6 +488,15 @@ namespace Sakura.Unity
             if (!enabled && outlineRenderer == null) return;
             outlineRenderer = outlineRenderer != null ? outlineRenderer : GetComponent<SakuraOutlineRenderer>() ?? gameObject.AddComponent<SakuraOutlineRenderer>();
             outlineRenderer.SetEnabled(enabled);
+        }
+        static bool IsAdditive(Part part)
+        {
+            var drawable = part.ArtMesh != null ? part.ArtMesh.Drawable : null;
+            return drawable != null && drawable.BlendAdditive;
+        }
+        void ApplyAuthoredGlow()
+        {
+            foreach (var part in parts) if (IsAdditive(part)) ApplyPart(part);
         }
         public void ApplyEffects(RenderTexture source, RenderTexture destination)
         {
@@ -477,7 +569,9 @@ namespace Sakura.Unity
             {
                 part.ArtMesh.MainTexture = (Texture2D)(generated != null ? generated : source);
                 var color = part.originalColor * Color.Lerp(Color.white, settings.color, settings.strength);
-                color.a = part.originalColor.a * Mathf.Min(1, opacity); part.ArtMesh.Color = color;
+                color.a = part.originalColor.a * Mathf.Min(1, opacity);
+                if (!profile.effects.authoredGlow && IsAdditive(part)) color.a = 0;
+                part.ArtMesh.Color = color;
             }
             else ApplyMaterial(part);
             if (old != null) Destroy(old);
@@ -544,6 +638,8 @@ namespace Sakura.Unity
             }
             if (springsDirty && vrm != null) springsDirty = !vrm.Runtime.SpringBone.ReconstructSpringBone();
             foreach (var part in parts) if (part.Material != null && part.Original != null) ApplyMaterial(part);
+            if (cubism != null && !profile.effects.authoredGlow)
+                foreach (var part in parts) if (IsAdditive(part) && part.ArtMesh.Color.a != 0) { var hidden = part.ArtMesh.Color; hidden.a = 0; part.ArtMesh.Color = hidden; }
             if (cubism != null && !HasUpdateController) OnLateUpdate();
         }
         void OnDestroy()

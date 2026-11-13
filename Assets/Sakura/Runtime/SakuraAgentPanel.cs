@@ -5,6 +5,9 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+using WebViewToolkit.UIToolkit;
+#endif
 
 namespace Sakura.Unity
 {
@@ -420,6 +423,23 @@ namespace Sakura.Unity
             Button("Read page",()=>Propose(localBrowser?"local_app.inspect":"browser.read",new JObject()),buttons);
             Button("Refresh preview",ReadPreview,buttons);
             Button("Close page",()=>Propose(localBrowser?"local_app.close":"browser.close",new JObject()),buttons);
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            if (localBrowser && opened != null && ValidPageUrl(currentUrl)
+                && Uri.TryCreate(currentUrl, UriKind.Absolute, out var liveTarget) && liveTarget.IsLoopback)
+            {
+                var liveHost = new VisualElement(); content.Add(liveHost);
+                Text("Embedded live view of this local app, in a separate session. Closing it keeps the app's server running.", liveHost, "description");
+                WebViewElement liveView = null;
+                Button liveToggle = null;
+                liveToggle = Button("Open live view", () =>
+                {
+                    if (liveView != null) { liveHost.Remove(liveView); liveView = null; liveToggle.text = "Open live view"; return; }
+                    liveView = new WebViewElement { InitialUrl = currentUrl };
+                    liveView.style.height = 380; liveView.style.width = new Length(100, LengthUnit.Percent);
+                    liveHost.Add(liveView); liveToggle.text = "Close live view";
+                }, buttons);
+            }
+#endif
             content.Add(browserImage); if(preview!=null)browserImage.image=preview;
             var controls=new TextField("Numbered control"); content.Add(controls);
             var text=new TextField("Text to fill"); content.Add(text);

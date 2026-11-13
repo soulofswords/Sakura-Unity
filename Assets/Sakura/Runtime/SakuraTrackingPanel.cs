@@ -29,23 +29,11 @@ namespace Sakura.Unity
                 AddButton("Connect to Phone", () => { tracking.PhoneLink(); phone.value = true; }, card);
                 Toggle("Track mouth", tracking.Mouth, enabled => tracking.Mouth = enabled, card);
                 Toggle("Shoulders & body movement", tracking.Pose, enabled => tracking.Pose = enabled, card);
-                Toggle("Hand tracking · arms and fingers", tracking.Hands, enabled =>
-                {
-                    tracking.Hands = enabled;
-                    if (tracking.Source == SakuraTracking.InputSource.Phone) tracking.PhoneControl("hands", enabled);
-                }, card);
+                Toggle("Hand tracking · arms and fingers", tracking.Hands, tracking.SetHandsTracking, card);
                 var actions = new VisualElement(); actions.AddToClassList("row"); card.Add(actions);
-                AddButton("Start tracking", () =>
-                {
-                    if (camera.value == "Sakura Mobile") tracking.SetSource(SakuraTracking.InputSource.Phone);
-                    else
-                    {
-                        if (tracking.Source == SakuraTracking.InputSource.Off || tracking.Source == SakuraTracking.InputSource.Phone) tracking.SetSource(SakuraTracking.InputSource.Webcam);
-                        tracking.StartCamera(camera.value);
-                    }
-                }, actions);
+                AddButton("Start tracking", () => tracking.StartSelectedTracking(camera.value), actions);
                 AddButton("Calibrate neutral face", tracking.Calibrate, actions);
-                AddButton("Stop tracking", () => tracking.SetSource(SakuraTracking.InputSource.Off), actions);
+                AddButton("Stop tracking", tracking.StopTracking, actions);
                 card.Add(status);
                 var advanced = new Foldout { text = "Tracking source & smoothing", value = false }; card.Add(advanced);
                 source = new DropdownField("Face tracking source", sources.ToList(), (int)tracking.Source); advanced.Add(source);

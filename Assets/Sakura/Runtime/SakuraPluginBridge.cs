@@ -33,6 +33,8 @@ namespace Sakura.Unity
         readonly ConcurrentQueue<Action> main = new ConcurrentQueue<Action>();
         readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         bool lastFace, faceKnown;
+        string lastBackground;
+        Action<string, JObject> eventSink;
         readonly Dictionary<CubismParameter, float> injected = new Dictionary<CubismParameter, float>();
         readonly Dictionary<CubismParameter, (float before, float after)> writes = new Dictionary<CubismParameter, (float, float)>();
         readonly Dictionary<string, float> customValues = new Dictionary<string, float>();
@@ -115,7 +117,12 @@ namespace Sakura.Unity
                     cancellation.ThrowIfCancellationRequested();
                     if (!viewport.HasAvatar || viewport.LoadedModelPath != model.path || !string.IsNullOrEmpty(viewport.LastImportError)) throw new InvalidOperationException(viewport.LastImportError ?? "The model could not be loaded.");
                     var loadedState = State(); Emit("ModelLoadedEvent", loadedState); return Ok(loadedState);
-                case "vts_model_move": NeedModel(); return Ok(new JObject { ["modelPosition"] = viewport.PluginMove(args) });
+                case "vts_model_move":
+                    NeedModel();
+                    var moved = viewport.PluginMove(args);
+                    Emit("ModelMovedEvent", new JObject { ["modelPosition"] = moved });
+                    Emit("ModelConfigChangedEvent", new JObject { ["modelPosition"] = moved });
+                    return Ok(new JObject { ["modelPosition"] = moved });
                 case "get_status":
                     NeedModel(); return Ok(new JObject { ["model_name"] = Path.GetFileName(viewport.LoadedModelPath), ["motion_groups"] = new JArray(), ["expressions"] = new JArray(Expressions().Entries.Where(entry => !entry.Id.StartsWith("parameter:", StringComparison.Ordinal)).Select(entry => entry.Name).Distinct()), ["idle"] = new JObject { ["idle"] = "", ["lost"] = "" } });
                 case "vts_expressions": return Ok(new JObject { ["modelLoaded"] = true, ["expressions"] = new JArray(Expressions().Entries.Where(entry => !entry.Id.StartsWith("parameter:", StringComparison.Ordinal)).GroupBy(entry => entry.Name).Select(group => new JObject { ["name"] = group.Key, ["active"] = group.Any(entry => entry.Active), ["isCustom"] = true })) });
@@ -133,6 +140,7 @@ namespace Sakura.Unity
                     if (hotkey.StartsWith("expression:", StringComparison.Ordinal)) foreach (var entry in MatchExpression(hotkey.Substring(11))) Expressions().SetActive(entry.Id, true);
                     else if (hotkey.StartsWith("action:", StringComparison.Ordinal)) Expressions().RunAction(hotkey.Substring(7));
                     else throw new NotSupportedException("Unsupported native hotkeyID. Use an ID from HotkeysInCurrentModelResponse.");
+                    Emit("HotkeyTriggeredEvent", new JObject { ["hotkeyID"] = hotkey, ["triggered"] = true });
                     return Ok(new JObject { ["hotkeyID"] = hotkey, ["triggered"] = true });
                 case "vts_parameters": return Ok(ParameterTable(args));
                 case "vts_parameter_value":
@@ -422,7 +430,7 @@ namespace Sakura.Unity
         JObject UpdateEffects(JObject args)
         {
             var tools = Tools(); var current = tools.Effects;
-            var next = new SakuraModelTools.EffectSettings { glow = current.glow, saturation = current.saturation, contrast = current.contrast, overlayColor = current.overlayColor, overlayStrength = current.overlayStrength };
+            var next = new SakuraModelTools.EffectSettings { glow = current.glow, saturation = current.saturation, contrast = current.contrast, overlayColor = current.overlayColor, overlayStrength = current.overlayStrength, outline = current.outline, authoredGlow = current.authoredGlow };
             bool canonical = args.Value<bool?>("_vtsCanonical") == true;
             if (canonical)
             {
@@ -458,7 +466,9 @@ namespace Sakura.Unity
 
         public void Emit(string name, JObject data = null)
         {
-            if (!Connected || string.IsNullOrEmpty(name)) return;
+            if (string.IsNullOrEmpty(name)) return;
+            eventSink?.Invoke(name, data);
+            if (!Connected) return;
             _ = SendEvent(new JObject { ["type"] = "event", ["event"] = name, ["data"] = data ?? new JObject() });
         }
         async Task SendEvent(JObject message)
@@ -503,8 +513,19 @@ namespace Sakura.Unity
             physics.Tick(viewport);
             for (int index = 0; index < 4 && main.TryDequeue(out var action); index++) action();
             if (externalEnabled && desiredEnabled && backend != null && backend.Connected && !running && Time.realtimeSinceStartupAsDouble >= retryAfter) _ = Session();
+            PollBackground();
             if (Connected) { bool face = GetComponent<SakuraTracking>()?.FaceDetected == true; if (!faceKnown || face != lastFace) { faceKnown = true; lastFace = face; Emit("TrackingStatusChangedEvent", new JObject { ["faceFound"] = face }); } }
             else faceKnown = false;
+        }
+        void PollBackground()
+        {
+            var backdrop = GetComponent<SakuraBackdrop>();
+            if (backdrop == null) return;
+            string key = backdrop.BackgroundFileName + "|" + backdrop.SolidOutput + "|" + ColorUtility.ToHtmlStringRGB(backdrop.Colour);
+            if (lastBackground == null) { lastBackground = key; return; }
+            if (key == lastBackground) return;
+            lastBackground = key;
+            Emit("BackgroundChangedEvent", new JObject { ["backgroundFileName"] = backdrop.BackgroundFileName });
         }
         async Task Session()
         {

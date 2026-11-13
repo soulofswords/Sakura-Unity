@@ -13,6 +13,7 @@ namespace Sakura.Unity
         public Color Colour { get; private set; } = Color.green;
         public bool SolidOutput { get; private set; }
         public Texture OutputMedia => video != null ? video : picture;
+        public string BackgroundFileName => video != null ? PlayerPrefs.GetString(Key + "video", "") : picture != null ? "stage-background.png" : "";
         public string Status { get; private set; } = "Background media appears behind your character in the app window.";
         Image image;
         Texture2D picture;

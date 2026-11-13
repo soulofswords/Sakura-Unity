@@ -25,7 +25,38 @@ namespace Sakura.Unity.Editor
             try { SakuraCubismSync.BuildParameterFrame(new[] { "a" }, new float[0]); }
             catch (ArgumentException) { refused = true; }
             if (!refused) throw new Exception("Mismatched Cubism parameter arrays were accepted.");
+            ValidateFeed();
             Debug.Log("PASS: native Cubism frame schema, finite values, identifier limits, 2000-parameter bound and missing-model behavior.");
+        }
+
+        public static void ValidateFeed()
+        {
+            if (SakuraCubismSync.ApplyFeedValues(null, null) != 0) throw new Exception("A missing editor feed produced parameter values.");
+            var rows = new JArray
+            {
+                new JObject { ["Id"] = "ParamAngleX", ["Value"] = 12.5 },
+                new JObject { ["Id"] = "", ["Value"] = 1 },
+                new JObject { ["Id"] = "ParamAngleX", ["Value"] = -3 },
+                new JObject { ["Id"] = "ParamMouthOpenY", ["Value"] = .75 },
+            };
+            if (SakuraCubismSync.ApplyFeedValues(null, rows) != 2) throw new Exception("Editor feed did not drop empty IDs and deduplicate repeated IDs.");
+            Debug.Log("PASS: native Cubism editor-feed parsing drops empty IDs, deduplicates repeated IDs and tolerates a missing model.");
+        }
+
+        public static void VerifyLiveFeed()
+        {
+            ValidateFeed();
+            var viewport = UnityEngine.Object.FindFirstObjectByType<SakuraAvatarViewport>();
+            var model = viewport?.AvatarRoot?.GetComponent<CubismModel>();
+            if (model == null) throw new InvalidOperationException("Load a Live2D model before checking the native editor feed.");
+            var target = model.Parameters.FirstOrDefault(parameter => parameter != null && parameter.MaximumValue > parameter.MinimumValue);
+            if (target == null) throw new Exception("Loaded native Live2D model has no ranged parameter to clamp.");
+            float original = target.Value;
+            var rows = new JArray { new JObject { ["Id"] = target.Id, ["Value"] = target.MaximumValue + 1000 } };
+            if (SakuraCubismSync.ApplyFeedValues(model, rows) != 1) throw new Exception("Editor feed did not report the received parameter.");
+            if (target.Value != target.MaximumValue) throw new Exception("Editor feed did not clamp the received value to the model parameter range.");
+            target.Value = original;
+            Debug.Log("PASS: native editor feed applies received values by ID and clamps them to the loaded model's parameter range. No Editor connection was opened.");
         }
 
         public static void VerifyLiveParameters()
@@ -54,7 +85,7 @@ namespace Sakura.Unity.Editor
             studio.SwitchMode("VTuber"); studio.ShowPanel("Plugins");
             await Task.Delay(400);
             var root = studio.GetComponent<UIDocument>().rootVisualElement;
-            if (root.Q<IntegerField>("cubism-port")?.value != 22033 || root.Q("cubism-connect") == null || root.Q("cubism-disconnect") == null || root.Q("cubism-stream") == null)
+            if (root.Q<IntegerField>("cubism-port")?.value != 22033 || root.Q("cubism-connect") == null || root.Q("cubism-disconnect") == null || root.Q("cubism-stream") == null || root.Q("cubism-feed") == null)
                 throw new Exception("Cubism plugin controls are missing.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-cubism-sync.png");
             Debug.Log("PASS: native Cubism plugin controls. No Editor connection or parameter streaming was enabled.");

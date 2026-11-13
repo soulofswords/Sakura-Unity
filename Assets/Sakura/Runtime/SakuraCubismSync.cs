@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Live2D.Cubism.Core;
 using Newtonsoft.Json;
@@ -14,6 +15,7 @@ namespace Sakura.Unity
     {
         public event Action Changed;
         public bool Streaming { get; private set; }
+        public bool Feeding { get; private set; }
         public bool Connected { get; private set; }
         public bool Approved { get; private set; }
         public string State { get; private set; } = "disconnected";
@@ -21,12 +23,13 @@ namespace Sakura.Unity
         public string Status { get; private set; } = "Editor disconnected.";
         public int SentFrames { get; private set; }
         public int MatchedParameters { get; private set; }
+        public int FeedParameters { get; private set; }
         private SakuraBackend backend;
         private SakuraAvatarViewport viewport;
         private CharacterEntry[] models = Array.Empty<CharacterEntry>();
-        private bool framePending, statusPending;
+        private bool framePending, statusPending, feedPending;
         private int generation;
-        private float nextFrame, nextStatus;
+        private float nextFrame, nextStatus, nextFeed;
 
         public void Initialize(SakuraBackend backend, SakuraAvatarViewport viewport)
         {
@@ -64,7 +67,7 @@ namespace Sakura.Unity
         {
             if (port < 1 || port > 65535) { SetStatus("Enter a Cubism Editor port from 1 to 65535."); return; }
             if (Busy || backend == null) return;
-            Streaming = false; int revision = ++generation; framePending = false; Busy = true;
+            Streaming = false; Feeding = false; int revision = ++generation; framePending = false; feedPending = false; Busy = true;
             SetStatus("Connecting to Cubism Editor…");
             Request("connect", new JObject { ["port"] = port }, revision, result => { Busy = false; ReadState(result); });
         }
@@ -72,7 +75,7 @@ namespace Sakura.Unity
         public void Disconnect()
         {
             if (Busy || backend == null) return;
-            Streaming = false; int revision = ++generation; framePending = false; Busy = true;
+            Streaming = false; Feeding = false; int revision = ++generation; framePending = false; feedPending = false; Busy = true;
             Request("disconnect", new JObject(), revision, result => { Busy = false; ReadState(result); });
         }
 
@@ -81,10 +84,22 @@ namespace Sakura.Unity
             if (Busy || backend == null) return;
             if (enabled && (viewport == null || viewport.LoadedFormat != "Live2D" || viewport.AvatarRoot?.GetComponent<CubismModel>() == null))
             { SetStatus("Load a Live2D model before sending its parameters."); return; }
-            Streaming = false; int revision = ++generation; framePending = false; Busy = true;
+            Streaming = false; Feeding = false; int revision = ++generation; framePending = false; feedPending = false; Busy = true;
             Request("sync", new JObject { ["enabled"] = enabled }, revision, result =>
             {
                 Busy = false; Streaming = enabled; ReadState(result);
+            });
+        }
+
+        public void SetFeeding(bool enabled)
+        {
+            if (Busy || backend == null) return;
+            if (enabled && (viewport == null || viewport.LoadedFormat != "Live2D" || viewport.AvatarRoot?.GetComponent<CubismModel>() == null))
+            { SetStatus("Load a Live2D model before receiving editor parameters."); return; }
+            Feeding = false; Streaming = false; int revision = ++generation; framePending = false; feedPending = false; Busy = true;
+            Request("feed", new JObject { ["enabled"] = enabled }, revision, result =>
+            {
+                Busy = false; Feeding = enabled; ReadState(result);
             });
         }
 
@@ -123,6 +138,12 @@ namespace Sakura.Unity
             State = (string)state["state"] ?? "disconnected";
             string error = (string)state["error"];
             if (!string.IsNullOrEmpty(error)) { SetStatus(error); return; }
+            if (Feeding)
+            {
+                string feedError = (string)state["feed_error"];
+                SetStatus(!string.IsNullOrEmpty(feedError) ? feedError : "Receiving Live2D parameters from Cubism Editor · " + FeedParameters + " parameters");
+                return;
+            }
             string message = State;
             switch (message)
             {
@@ -144,14 +165,53 @@ namespace Sakura.Unity
         {
             if (backend == null || viewport == null) return;
             if (Time.unscaledTime >= nextStatus) { nextStatus = Time.unscaledTime + 1; RefreshStatus(); }
-            if (!Streaming || Busy || framePending || !Connected || !Approved || viewport.Loading || viewport.LoadedFormat != "Live2D" || Time.unscaledTime < nextFrame) return;
+            if (Busy || !Connected || !Approved || viewport.Loading || viewport.LoadedFormat != "Live2D") return;
             var model = viewport.AvatarRoot?.GetComponent<CubismModel>();
             if (model == null) return;
+            if (Feeding)
+            {
+                if (feedPending || Time.unscaledTime < nextFeed) return;
+                nextFeed = Time.unscaledTime + .1f; feedPending = true;
+                int revision = generation;
+                backend.Api("/api/vtuber/cubism/feed", null, (json, error) =>
+                {
+                    if (this == null || !isActiveAndEnabled || revision != generation) return;
+                    feedPending = false;
+                    if (error != null) { SetStatus(error); return; }
+                    try { ApplyFeed(JObject.Parse(json)); }
+                    catch (JsonException) { SetStatus("Cubism Editor returned an unreadable feed."); }
+                });
+                return;
+            }
+            if (!Streaming || framePending || Time.unscaledTime < nextFrame) return;
             var frame = ReadParameters(model);
             if (((JArray)frame["parameters"]).Count == 0) return;
             nextFrame = Time.unscaledTime + .1f; framePending = true;
-            int revision = generation;
-            Request("parameters", frame, revision, result => { framePending = false; ReadState(result); });
+            int sendRevision = generation;
+            Request("parameters", frame, sendRevision, result => { framePending = false; ReadState(result); });
+        }
+
+        private void ApplyFeed(JObject feed)
+        {
+            FeedParameters = ApplyFeedValues(viewport.AvatarRoot?.GetComponent<CubismModel>(), feed["parameters"] as JArray);
+            string error = (string)feed["error"];
+            SetStatus(!string.IsNullOrEmpty(error) ? error : "Receiving Live2D parameters from Cubism Editor · " + FeedParameters + " parameters");
+        }
+
+        public static int ApplyFeedValues(CubismModel model, JArray rows)
+        {
+            var values = new Dictionary<string, float>();
+            if (rows != null)
+                foreach (var row in rows)
+                {
+                    string id = (string)row["Id"];
+                    if (!string.IsNullOrEmpty(id)) values[id] = row.Value<float>("Value");
+                }
+            if (model != null)
+                foreach (var parameter in model.Parameters)
+                    if (parameter != null && values.TryGetValue(parameter.Id, out float value))
+                        parameter.Value = Mathf.Clamp(value, parameter.MinimumValue, parameter.MaximumValue);
+            return values.Count;
         }
 
         private void Unbind()
@@ -161,7 +221,7 @@ namespace Sakura.Unity
 
         private void OnDisable()
         {
-            generation++; Streaming = false; Busy = false; framePending = false; statusPending = false;
+            generation++; Streaming = false; Feeding = false; Busy = false; framePending = false; statusPending = false; feedPending = false;
         }
 
         private void OnDestroy() { Unbind(); }
@@ -184,12 +244,14 @@ namespace Sakura.Unity
             });
             var stream = new Toggle("Send current Live2D parameters to the editor") { name = "cubism-stream" }; owner.Add(stream);
             stream.RegisterValueChangedCallback(change => sync.SetStreaming(change.newValue));
+            var feed = new Toggle("Receive parameter values from the editor") { name = "cubism-feed" }; owner.Add(feed);
+            feed.RegisterValueChangedCallback(change => sync.SetFeeding(change.newValue));
             var status = Text(sync.Status, owner, "description"); status.name = "cubism-status";
-            Text("Enable Cubism Editor’s external application integration server, allow Sakura, then select the matching editable model or animation timeline track in the Editor. Sakura sends its rendered parameter values at up to 10 frames per second.", owner, "description");
+            Text("Enable Cubism Editor’s external application integration server, allow Sakura, then select the matching editable model or animation timeline track in the Editor. Send Sakura’s rendered parameters to the editor, or receive the editor’s parameter values into Sakura, at up to 10 frames per second. The two directions are mutually exclusive.", owner, "description");
             void Refresh()
             {
-                status.text = sync.Status; stream.SetValueWithoutNotify(sync.Streaming);
-                stream.SetEnabled(!sync.Busy); connect.SetEnabled(!sync.Busy && !sync.Connected && sync.State != "connecting"); disconnect.SetEnabled(!sync.Busy && (sync.Connected || sync.State == "connecting"));
+                status.text = sync.Status; stream.SetValueWithoutNotify(sync.Streaming); feed.SetValueWithoutNotify(sync.Feeding);
+                stream.SetEnabled(!sync.Busy); feed.SetEnabled(!sync.Busy); connect.SetEnabled(!sync.Busy && !sync.Connected && sync.State != "connecting"); disconnect.SetEnabled(!sync.Busy && (sync.Connected || sync.State == "connecting"));
                 if (!choices.SequenceEqual(sync.models))
                 {
                     choices = sync.models;

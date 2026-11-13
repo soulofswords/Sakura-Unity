@@ -48,7 +48,9 @@ def package_files(selection, max_bytes, max_files):
     files = selection.rglob('*') if selection.is_dir() else [selection]
     total = count = 0
     for file in files:
-        if file.is_symlink() or file.is_junction():
+        # Path.is_junction() is only available on newer Python versions.
+        # Keep the importer compatible with the bundled Python runtime.
+        if file.is_symlink() or getattr(file, 'is_junction', lambda: False)():
             raise ValueError('Model imports cannot include symbolic links or junctions.')
         if not file.is_file():
             continue
@@ -88,7 +90,7 @@ def import_selected(source, kind, selection=None):
     return import_package(source / 'models', package_files(selection, MAX_BYTES, MAX_FILES), kind)
 
 
-def install_unity_lifecycle(module):
+def install_unity_lifecycle(module, source=None):
     """Account/model UI starts without loading AI, audio, camera or automations."""
     service_context = None
     original_lifetime = module.app.router.lifespan_context
@@ -98,6 +100,7 @@ def install_unity_lifecycle(module):
     screen_enabled = False
     game_enabled = False
     tracked_game = None
+    wake_service = None
     from starlette.responses import JSONResponse
     from starlette.requests import Request
 
@@ -106,6 +109,8 @@ def install_unity_lifecycle(module):
         try:
             yield
         finally:
+            if wake_service is not None:
+                await asyncio.to_thread(wake_service.close)
             async with service_lock:
                 if service_context is not None:
                     await service_context.__aexit__(None, None, None)
@@ -169,6 +174,35 @@ def install_unity_lifecycle(module):
         screen_enabled = payload.get('enabled', screen_enabled)
         game_enabled = payload.get('auto_game', game_enabled)
         return {'enabled': screen_enabled, 'auto_game': game_enabled}
+
+    @module.app.post('/api/unity/wake/{action}')
+    async def offline_wake(action: str, payload: dict):
+        nonlocal wake_service
+        import wave
+        if mode != 'Companion':
+            return JSONResponse({'error': 'Offline wake is available in Companion mode only.'}, 409)
+        if action not in ('state', 'install', 'check'):
+            return JSONResponse({'error': 'Unknown wake action.'}, 400)
+        try:
+            if wake_service is None:
+                from unity_wake import UnityWake
+                wake_service = UnityWake(source or Path.cwd())
+            if action == 'state':
+                return wake_service.state()
+            if action == 'install':
+                return await asyncio.to_thread(wake_service.install)
+            import base64
+            encoded = payload.get('audio')
+            if not isinstance(encoded, str) or len(encoded) > 2_000_000:
+                raise ValueError('Wake audio exceeds its size limit.')
+            content = base64.b64decode(encoded, validate=True)
+            phrase = module.get_settings().get('wake_word', 'hey sakura')
+            result = await asyncio.to_thread(wake_service.check, content, phrase)
+            if mode != 'Companion':
+                return JSONResponse({'error': 'Mode changed during wake detection.'}, 409)
+            return result
+        except (ValueError, OSError, RuntimeError, wave.Error, EOFError) as error:
+            return JSONResponse({'error': str(error)}, 400)
 
     @module.app.get('/api/unity/screen/snapshot')
     async def screen_snapshot():
@@ -335,7 +369,7 @@ def serve(source, edition='companion'):
     import local_api_security
     import uvicorn
     gui_server.port = sock.getsockname()[1]
-    install_unity_lifecycle(app)
+    install_unity_lifecycle(app, source)
     from unity_tracking_api import install as install_tracking
     install_tracking(app.app, source)
     print('SAKURA_BRIDGE ' + json.dumps({'port': gui_server.port,
@@ -396,6 +430,25 @@ def pick_visual_asset(video=False):
 def pmx_tool(source, tool, payload):
     """Explicit native UI actions; never run a shell or load AI services."""
     sys.path.insert(0, str(source))
+    if tool == 'appearance-import':
+        import tkinter
+        from tkinter import filedialog
+        window = tkinter.Tk()
+        window.withdraw()
+        window.attributes('-topmost', True)
+        try:
+            selected = filedialog.askopenfilename(title='Import Sakura appearance settings', parent=window,
+                filetypes=[('Sakura appearance package', '*.sakura-appearance.json'), ('JSON files', '*.json')])
+        finally:
+            window.destroy()
+        if not selected:
+            return {'cancelled': True}
+        package = Path(selected).resolve()
+        if str(package).startswith('\\\\') or not package.is_file() or package.suffix.lower() != '.json':
+            raise ValueError('Choose a local Sakura appearance JSON file.')
+        if package.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError('Appearance package exceeds 64 MB.')
+        return {'path': str(package)}
     if tool in ('backdrop-image', 'backdrop-video'):
         return pick_visual_asset(tool == 'backdrop-video')
     if tool == 'texture':
@@ -423,7 +476,7 @@ def main():
     parser.add_argument('--edition', choices=('companion', 'vtuber'), default='companion')
     parser.add_argument('--import-format', choices=('pmx', 'vrm', 'live2d'))
     parser.add_argument('--package')
-    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture', 'backdrop-image', 'backdrop-video'))
+    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture', 'backdrop-image', 'backdrop-video', 'appearance-import'))
     args = parser.parse_args()
     try:
         source = validate_source(args.source)

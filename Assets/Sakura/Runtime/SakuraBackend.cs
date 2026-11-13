@@ -43,6 +43,23 @@ namespace Sakura.Unity
         private BridgeIdentity identity;
         private readonly ConcurrentQueue<Action> pending = new ConcurrentQueue<Action>();
 
+        private void Awake()
+        {
+            if (Application.isEditor) return;
+            string bundled = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Sakura");
+            if (File.Exists(Path.Combine(bundled, "runtime", "python.exe"))) SourceFolder = bundled;
+        }
+
+        public static string PythonExecutable(string folder)
+        {
+            foreach (string relative in new[] { "runtime/python.exe", "venv/Scripts/python.exe" })
+            {
+                string file = Path.Combine(folder, relative.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(file)) return file;
+            }
+            throw new FileNotFoundException("Sakura's Python runtime is missing. Repair or reinstall this application.");
+        }
+
         private void Update()
         {
             while (pending.TryDequeue(out var action)) action();
@@ -50,8 +67,7 @@ namespace Sakura.Unity
 
         private ProcessStartInfo Command(bool serve)
         {
-            string python = Path.Combine(SourceFolder, "venv", "Scripts", "python.exe");
-            if (!File.Exists(python)) throw new FileNotFoundException("Choose a Sakura folder with its Python environment.");
+            string python = PythonExecutable(SourceFolder);
             string bridge = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Tools", "backend_bridge.py"));
             if (!File.Exists(bridge)) throw new FileNotFoundException("Development backend bridge is missing.");
             if (SourceFolder.Contains("\"") || bridge.Contains("\"")) throw new ArgumentException("Invalid source path.");
@@ -63,6 +79,12 @@ namespace Sakura.Unity
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
                 WorkingDirectory = SourceFolder
             };
+            string tcl = Path.Combine(Path.GetDirectoryName(python), "tcl");
+            if (Directory.Exists(tcl))
+            {
+                command.EnvironmentVariables["TCL_LIBRARY"] = Path.Combine(tcl, "tcl8.6");
+                command.EnvironmentVariables["TK_LIBRARY"] = Path.Combine(tcl, "tk8.6");
+            }
             if (serve && VtuberEdition && SakuraInstances.IsSecondary)
             {
                 command.EnvironmentVariables["SAKURA_INSTANCE_INDEX"] = SakuraInstances.Index.ToString();
@@ -110,7 +132,7 @@ namespace Sakura.Unity
 
         public void RunPmxTool(string tool, string model, Action<string, string> completed, float[] direction = null)
         {
-            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture" && tool != "backdrop-image" && tool != "backdrop-video") throw new ArgumentException("Invalid model tool.");
+            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture" && tool != "backdrop-image" && tool != "backdrop-video" && tool != "appearance-import") throw new ArgumentException("Invalid model tool.");
             if (modelToolProcess != null) { completed(null, "Finish the open PMX tool first."); return; }
             try
             {
@@ -271,6 +293,7 @@ namespace Sakura.Unity
             using (var request = Request(route))
             {
                 if (route.EndsWith("/install", StringComparison.Ordinal)) request.timeout = 1800;
+                else if (route == "/api/unity/wake/check") request.timeout = 45;
                 if (body != null)
                 {
                     request.method = "POST";

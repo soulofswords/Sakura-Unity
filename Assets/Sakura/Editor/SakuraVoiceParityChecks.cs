@@ -9,6 +9,8 @@ namespace Sakura.Unity.Editor
         [MenuItem("Sakura/Validation/Check speech interruption and sleeping wake")]
         public static void Run()
         {
+            byte[] wake = SakuraVoice.EncodeWakeWav(new float[48000], 48000);
+            Require(wake.Length == 44 + 32000 && BitConverter.ToInt32(wake, 24) == 16000, "offline wake resampling preserves duration and PCM rate");
             Require(SakuraVoice.ParseSpeechInterrupt("stop", "hey sakura") == "", "stop-only command");
             Require(SakuraVoice.ParseSpeechInterrupt("Hey Sakura, wait a moment!", "hey sakura") == "", "addressed pause command");
             Require(SakuraVoice.ParseSpeechInterrupt("Stop speaking, how does this work?", "hey sakura") == "how does this work?", "follow-up retained");

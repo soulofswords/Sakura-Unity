@@ -149,7 +149,7 @@ namespace Sakura.Unity
         }
 
         private bool CanCapture(int captureGeneration) => Listening && captureGeneration == generation && isActiveAndEnabled && Companion;
-        private string ListeningText() => Speaking ? "Microphone ON · listening for stop or wait" : Backend.Busy ? "Working · listening for stop or wait" : wakeEnabled ? "Microphone ON · transcript wake gate: say " + wakePhrase : "Microphone ON · listening";
+        private string ListeningText() => Speaking ? "Microphone ON · listening for stop or wait" : Backend.Busy ? "Working · listening for stop or wait" : wakeEnabled ? "Microphone ON · say " + wakePhrase : "Microphone ON · listening";
 
         private void Update()
         {
@@ -219,7 +219,9 @@ namespace Sakura.Unity
             float capturedAt = Time.realtimeSinceStartup;
             bool wasHeld = pushToTalk;
             CloseMicrophone(); recognizing = true; SetStatus("Recognising speech…");
-            Backend.UploadAudio(EncodeWav(pcm, sampleRate), (json, error) =>
+            byte[] wav = EncodeWav(pcm, sampleRate);
+            bool offlineApproved = false;
+            void Recognize() => Backend.UploadAudio(wav, (json, error) =>
             {
                 if (this == null || !isActiveAndEnabled || captureGeneration != generation || !Companion) return;
                 recognizing = false; resumeAt = Time.realtimeSinceStartup + .25f;
@@ -253,20 +255,54 @@ namespace Sakura.Unity
                 }
                 if (wakeEnabled && !wasHeld && !woke && !interruptOnly)
                 {
-                    // shortcut: transcript gating requires STT; it is not the original offline wake detector.
                     string command = ExtractWakeCommand(text, wakePhrase);
                     if (command != null)
                     {
                         if (command.Length == 0) { wakeDeadline = Time.realtimeSinceStartup + 15; SetStatus("Ready · say your question within 15 seconds"); return; }
                         text = command;
                     }
-                    else if (Time.realtimeSinceStartup >= wakeDeadline) { SetStatus("Say " + wakePhrase + " first · transcript wake gate"); return; }
+                    else if (!offlineApproved && Time.realtimeSinceStartup >= wakeDeadline) { SetStatus("Say " + wakePhrase + " first"); return; }
                     wakeDeadline = 0;
                 }
                 TranscriptReceived?.Invoke(text);
                 Backend.SendChat(text);
                 SetStatus("Speech sent · microphone paused during Sakura’s reply");
             });
+            if (wakeEnabled && !wasHeld && !interruptOnly && Time.realtimeSinceStartup >= wakeDeadline)
+            {
+                SetStatus("Checking wake phrase offline…");
+                var payload = new Newtonsoft.Json.Linq.JObject { ["audio"] = Convert.ToBase64String(EncodeWakeWav(pcm, sampleRate)) };
+                Backend.Api("/api/unity/wake/check", payload.ToString(Newtonsoft.Json.Formatting.None), (json, error) =>
+                {
+                    if (this == null || !isActiveAndEnabled || captureGeneration != generation || !Companion) return;
+                    if (error != null) { recognizing = false; SetStatus("Offline wake failed: " + error); return; }
+                    try
+                    {
+                        var result = Newtonsoft.Json.Linq.JObject.Parse(json);
+                        if (result.Value<bool>("available") && !result.Value<bool>("detected"))
+                        { recognizing = false; SetStatus("Listening offline · say " + wakePhrase); return; }
+                        offlineApproved = result.Value<bool>("available") && result.Value<bool>("detected");
+                        Recognize();
+                    }
+                    catch (Exception failure) { recognizing = false; SetStatus("Wake check failed: " + failure.Message); }
+                });
+            }
+            else Recognize();
+        }
+
+        public static byte[] EncodeWakeWav(float[] pcm, int rate)
+        {
+            if (pcm == null || rate < 8000 || rate > 192000 || pcm.Length > (long)rate * 16)
+                throw new ArgumentException("Wake audio must be at most 16 seconds at a supported sample rate.");
+            if (rate == 16000) return EncodeWav(pcm, rate);
+            var mono = new float[(int)((long)pcm.Length * 16000 / rate)];
+            for (int index = 0; index < mono.Length; index++)
+            {
+                double position = (double)index * rate / 16000;
+                int first = (int)position, second = Math.Min(first + 1, pcm.Length - 1);
+                mono[index] = Mathf.Lerp(pcm[first], pcm[second], (float)(position - first));
+            }
+            return EncodeWav(mono, 16000);
         }
 
         private void PlayReply(string relativeAudio)

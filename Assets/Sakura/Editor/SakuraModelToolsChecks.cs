@@ -6,6 +6,30 @@ namespace Sakura.Unity.Editor
 {
     public static class SakuraModelToolsChecks
     {
+        public static void ValidateAuthoredGlow()
+        {
+            var root = new GameObject("Authored glow fixture");
+            string key = "authored-glow-check-" + Guid.NewGuid();
+            string profile = SakuraModelTools.ProfilePath(key);
+            try
+            {
+                var tools = SakuraModelTools.GetOrCreate(root, key);
+                if (!tools.Effects.authoredGlow) throw new Exception("Authored glow did not default to enabled.");
+                tools.SetEffects(new SakuraModelTools.EffectSettings { authoredGlow = false, glow = .5f });
+                if (tools.Effects.authoredGlow || Mathf.Abs(tools.Effects.glow - .5f) > .001f) throw new Exception("Authored glow toggle did not apply alongside bloom.");
+                UnityEngine.Object.DestroyImmediate(tools);
+                tools = SakuraModelTools.GetOrCreate(root, key);
+                if (tools.Effects.authoredGlow || Mathf.Abs(tools.Effects.glow - .5f) > .001f) throw new Exception("Authored glow setting did not persist.");
+                tools.SetEffects(new SakuraModelTools.EffectSettings());
+                if (!tools.Effects.authoredGlow) throw new Exception("Reset effects did not restore authored glow.");
+                Debug.Log("SAKURA_AUTHORED_GLOW_CHECKS_OK: default-on, toggle round-trip with bloom, persistence across reload, reset restores default. Additive ArtMesh hiding is verified on a real Live2D model in Play mode.");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                string folder = Path.GetDirectoryName(profile); if (Directory.Exists(folder)) Directory.Delete(folder, true);
+            }
+        }
         public static void VerifyEffects()
         {
             if (!Application.isPlaying) throw new Exception("Run model effects verification in Play mode.");
@@ -82,6 +106,19 @@ namespace Sakura.Unity.Editor
                 rejected = false;
                 try { SakuraModelTools.DecodeImage(oversized); } catch (InvalidDataException) { rejected = true; }
                 if (!rejected) throw new Exception("Oversized PNG was decoded.");
+                tools.ImportAppearance(new[] { new SakuraModelTools.AppearanceChange {
+                    index = part, hasColor = true, color = Color.green, strength = .25f,
+                    hasOpacity = true, opacity = .5f, textureBytes = texture.EncodeToPNG() } });
+                if (tools.Parts[part].Replacement == null || tools.Parts[part].Settings.color != Color.green ||
+                    Mathf.Abs(tools.Parts[part].Settings.transparency - .5f) > .001f)
+                    throw new Exception("Appearance import did not apply independent channels.");
+                rejected = false;
+                try { tools.ImportAppearance(new[] {
+                    new SakuraModelTools.AppearanceChange { index = part, hasColor = true, color = Color.red, strength = 1 },
+                    new SakuraModelTools.AppearanceChange { index = part, hasOpacity = true, opacity = 0 } }); }
+                catch (InvalidDataException) { rejected = true; }
+                if (!rejected || tools.Parts[part].Settings.color != Color.green)
+                    throw new Exception("Rejected appearance import partially changed the model.");
                 tools.RestoreColor(part);
                 if (tools.Parts[part].Settings.strength != 0 || tools.Parts[part].Settings.transparency != .5f) throw new Exception("Color reset cleared opacity.");
                 tools.ReplaceTexture(part, texture.EncodeToPNG());
