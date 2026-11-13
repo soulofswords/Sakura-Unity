@@ -19,6 +19,22 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.bridge.validate_source(folder)
 
+    def test_standalone_edition_cannot_enable_companion_capture_or_ai(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        app = FastAPI()
+        self.bridge.install_unity_lifecycle(types.SimpleNamespace(app=app, EDITION='vtuber'))
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                for mode in ('Companion', 'Agent'):
+                    result = await client.post('/api/unity/mode', json={'mode': mode, 'revision': 1})
+                    self.assertEqual(result.status_code, 409)
+                self.assertEqual((await client.post('/api/unity/start-services', json={})).status_code, 409)
+                self.assertEqual((await client.post('/api/unity/screen', json={'enabled': True})).status_code, 409)
+                self.assertEqual((await client.get('/api/unity/screen/snapshot')).status_code, 409)
+        asyncio.run(run())
+
     def test_texture_picker_accepts_each_imported_format_and_rejects_escape(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -50,6 +66,91 @@ class BridgeTests(unittest.TestCase):
             with patch.dict('sys.modules', {'tkinter': tk, 'tkinter.filedialog': dialog}):
                 with self.assertRaises(ValueError):
                     self.bridge.pick_visual_asset(video=True)
+
+    def test_screen_capture_requires_explicit_opt_in_and_resets_outside_companion(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        app = FastAPI()
+        module = types.SimpleNamespace(app=app)
+        self.bridge.install_unity_lifecycle(module)
+
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                self.assertEqual((await client.get('/api/unity/screen/snapshot')).status_code, 409)
+                self.assertEqual((await client.get('/api/unity/game-status')).status_code, 409)
+                self.assertEqual((await client.post('/api/unity/screen', json={'enabled': 'true'})).status_code, 400)
+                with patch.object(self.bridge, 'capture_desktop', return_value='fixture') as capture:
+                    self.assertEqual((await client.post('/api/unity/screen', json={'enabled': True})).status_code, 200)
+                    self.assertEqual((await client.get('/api/unity/screen/snapshot')).json(), {'image': 'fixture'})
+                    await client.post('/api/unity/screen', json={'enabled': False})
+                    self.assertEqual((await client.get('/api/unity/screen/snapshot')).status_code, 409)
+                    await client.post('/api/unity/screen', json={'enabled': True})
+                    await client.post('/api/unity/mode', json={'mode': 'Agent', 'revision': 1})
+                    self.assertEqual((await client.post('/api/unity/screen', json={'enabled': True})).status_code, 409)
+                    self.assertEqual((await client.get('/api/unity/screen/snapshot')).status_code, 409)
+                    await client.post('/api/unity/mode', json={'mode': 'Companion', 'revision': 2})
+                    self.assertEqual((await client.get('/api/unity/screen/snapshot')).status_code, 409)
+                    self.assertEqual(capture.call_count, 1)
+        asyncio.run(run())
+
+    def test_published_preview_normalizes_frames_without_flattening_animation(self):
+        import io
+        from PIL import Image
+        encoded = io.BytesIO()
+        frames = [Image.new('RGBA', (20, 30), color) for color in ('red', 'blue')]
+        frames[0].save(encoded, 'WEBP', save_all=True, append_images=frames[1:], duration=100, lossless=True)
+        content, count, columns = self.bridge.preview_sheet(encoded.getvalue())
+        self.assertEqual((count, columns), (2, 2))
+        with Image.open(io.BytesIO(content)) as output:
+            self.assertEqual(output.size, (320, 160))
+            self.assertEqual(output.getpixel((80, 80)), (255, 0, 0, 255))
+            self.assertEqual(output.getpixel((240, 80)), (0, 0, 255, 255))
+        with self.assertRaises(ValueError):
+            self.bridge.preview_sheet(b'not a preview')
+
+    def test_preview_alias_keeps_existing_account_authorization(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI, Request
+        from starlette.responses import JSONResponse
+        app = FastAPI()
+        @app.get('/api/model-library/models/{identifier}/preview')
+        async def protected(identifier: str, request: Request):
+            return JSONResponse({'error': 'Sign in first.'}, 403)
+        self.bridge.install_unity_lifecycle(types.SimpleNamespace(app=app))
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                result = await client.get('/api/unity/library-preview/model1')
+                self.assertEqual(result.status_code, 403)
+                self.assertEqual(result.json()['error'], 'Sign in first.')
+                self.assertEqual((await client.post('/api/unity/game-vram/confirm', json={'adapter': 'fixture'})).status_code, 409)
+        asyncio.run(run())
+
+    def test_vram_close_confirmation_rechecks_settings_and_measurements(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        app = FastAPI()
+        settings = {'game_vram_auto_close_enabled': False}
+        self.bridge.install_unity_lifecycle(types.SimpleNamespace(app=app, get_settings=lambda: settings))
+        game = {'detected': True, 'name': 'fixture.exe', 'gpus': [{'name': 'fixture GPU'}]}
+        modules = {
+            'game_detection': types.SimpleNamespace(game_session=lambda _: game.copy()),
+            'hardware_metrics': types.SimpleNamespace(sample_windows=lambda: {'gpus': game['gpus']}),
+            'game_vram_guard': types.SimpleNamespace(critical_adapter=lambda rows, name: rows[0] if rows and name == 'fixture GPU' else None),
+        }
+        async def run():
+            with patch.dict('sys.modules', modules):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                    await client.post('/api/unity/screen', json={'auto_game': True})
+                    self.assertEqual((await client.post('/api/unity/game-vram/confirm', json={'adapter': 'fixture GPU'})).status_code, 409)
+                    settings['game_vram_auto_close_enabled'] = True
+                    self.assertEqual((await client.post('/api/unity/game-vram/confirm', json={'adapter': 'other GPU'})).status_code, 409)
+                    self.assertEqual((await client.post('/api/unity/game-vram/confirm', json={'adapter': 'fixture GPU'})).json(), {'ok': True})
+                    game['detected'] = False
+                    self.assertEqual((await client.post('/api/unity/game-vram/confirm', json={'adapter': 'fixture GPU'})).status_code, 409)
+        asyncio.run(run())
 
     def test_real_source_resolves(self):
         source = self.bridge.validate_source(r'F:\AI\assistant\Sakura')

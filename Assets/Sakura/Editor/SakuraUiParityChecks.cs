@@ -30,6 +30,16 @@ namespace Sakura.Unity.Editor
             var tabs = root.Q(className:"settings-tabs");
             if (tabs == null || tabs.resolvedStyle.display != DisplayStyle.None) throw new Exception("Voice pane contains an extra settings tab strip.");
             if (root.Q("conversation-friend") == null || root.Q("conversation-teacher") == null) throw new Exception("Conversation switches are missing.");
+            var language = root.Q<DropdownField>("voice-language");
+            var preset = root.Q<DropdownField>("voice-preset");
+            if (language == null || preset == null || !language.enabledSelf) throw new Exception("Voice language choices were not loaded.");
+            string oldLanguage = language.value, oldVoice = preset.value;
+            language.value = "Hindi";
+            if (!preset.value.Contains("Hindi")) throw new Exception("Hindi did not select a Hindi voice.");
+            language.value = "Hinglish";
+            if (!preset.value.Contains("Hinglish")) throw new Exception("Hinglish did not select a Hinglish voice.");
+            language.value = oldLanguage;
+            if (preset.value != oldVoice) throw new Exception("Language selection lost the original voice.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-voice-parity.png");
             studio.ShowPanel("Expressions & hotkeys");
             var expression = root.Q<Foldout>(className:"expression-card");
@@ -38,7 +48,7 @@ namespace Sakura.Unity.Editor
             await Task.Delay(150);
             if (expression.Q<Label>(className:"unity-foldout__text").worldBound.width < 10) throw new Exception("Expression title was clipped by the foldout input.");
             if (expression.Q(className:"expression-expand").worldBound.center.x < expression.worldBound.center.x) throw new Exception("Expression expansion control moved to the left edge.");
-            if (expression.Q(className:"expression-expand") is not Label indicator || indicator.text != "−") throw new Exception("Expression expansion indicator failed.");
+            if (expression.Q(className:"expression-expand") is not Label indicator || indicator.text != "âˆ’") throw new Exception("Expression expansion indicator failed.");
             if (!expression.Query<Button>().ToList().Any(button => button.text == "Set hotkey")) throw new Exception("Expression actions did not open.");
             var expressions = studio.GetComponent<SakuraAvatarViewport>().Expressions;
             Submit(expression.Query<Button>().ToList().First(button => button.text == "Set hotkey"));
@@ -79,6 +89,36 @@ namespace Sakura.Unity.Editor
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-compact-parity.png",460,900);
             System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"fullFeatureParity\":false}");
             Debug.Log("PASS: mode-specific navigation, direct Voice pane, expression cards, position lock, toolbar scrolling and VTuber settings isolation.");
+        }
+
+        public static async Task VerifyCompactLayout()
+        {
+            var studio = UnityEngine.Object.FindFirstObjectByType<SakuraStudio>();
+            if (studio == null || !Application.isPlaying) throw new InvalidOperationException("Enter Studio Play mode first.");
+            var document = studio.GetComponent<UIDocument>(); var previous = document.panelSettings.targetTexture;
+            var target = new RenderTexture(460, 740, 24); target.Create(); document.panelSettings.targetTexture = target;
+            string mode = studio.CurrentMode;
+            try
+            {
+                foreach (string choice in new[] { "Companion", "VTuber" })
+                {
+                    studio.SwitchMode(choice); studio.ShowPanel("Character"); await Task.Delay(650);
+                    var root = document.rootVisualElement;
+                    var panel = root.Q("companion-panel"); var footer = root.Q("companion-statusbar");
+                    if (panel.worldBound.yMax >= footer.worldBound.yMin) throw new Exception(choice + " panel overlaps compact footer: " + panel.worldBound + " / " + footer.worldBound + " root=" + root.worldBound + " classes=" + string.Join(",",root.GetClasses()));
+                    if (choice == "Companion" && root.Q("chat-panel").worldBound.Overlaps(footer.worldBound)) throw new Exception("Compact chat overlaps mode controls.");
+                    var buttons = footer.Query<Button>().ToList();
+                    foreach (var button in buttons)
+                    {
+                        if (button.worldBound.xMin < 0 || button.worldBound.xMax > root.worldBound.xMax || button.worldBound.yMax > root.worldBound.yMax) throw new Exception("Compact mode action is outside the window.");
+                        if (choice == "Companion" && button.worldBound.Overlaps(root.Q("compact-microphone").worldBound)) throw new Exception("Compact mode action overlaps microphone.");
+                    }
+                    for (int i = 0; i < buttons.Count; i++) for (int j = i + 1; j < buttons.Count; j++)
+                        if (buttons[i].worldBound.Overlaps(buttons[j].worldBound)) throw new Exception("Compact mode buttons overlap.");
+                }
+                Debug.Log("PASS: compact Companion/VTuber panels, mode controls and microphone have separate visible bounds.");
+            }
+            finally { studio.SwitchMode(mode); document.panelSettings.targetTexture = previous; target.Release(); UnityEngine.Object.Destroy(target); }
         }
 
         public static async Task VerifyModelSettings()

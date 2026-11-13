@@ -1,5 +1,12 @@
 .studio { --card:#251b2d; --wash:#1c1423; --input:#302439; --ink:#fff0f8; --muted:#ccb6c8; --line:#4c354d; --button:#442b43; --accent:#ff9ec8; --stage:#120b18; flex-grow:1; background-color:var(--stage); color:var(--ink); font-size:13px; }
 .studio.light { --card:#fffafc; --wash:#f9f0f5; --input:#fff; --ink:#493443; --muted:#785f70; --line:#e8d3df; --button:#f9e2ed; --accent:#a13464; --stage:#f5edf3; }
+.studio.window-transparent { background-color:rgba(0,0,0,0); }
+.quick-controls, .quick-settings { display:none; }
+.compact .quick-controls { display:flex; position:absolute; right:12px; bottom:12px; flex-direction:row; }
+.quick-controls Button { width:46px; height:46px; min-height:46px; border-radius:23px; padding:0; margin-left:8px; -unity-text-align:middle-center; }
+.compact .quick-settings { display:flex; position:absolute; right:12px; top:12px; width:34px; height:34px; min-height:34px; border-radius:17px; padding:0; align-items:center; justify-content:center; }
+.vtuber .quick-controls, .vtuber .quick-settings, .agent .quick-controls, .agent .quick-settings { display:none; }
+.microphone-active { border-width:3px; background-color:#702742; color:#fff0f8; }
 .unity-label { white-space:normal; margin:0; padding:0; }
 .studio .card-title { margin-bottom:12px; }
 .studio .description { margin-top:10px; margin-bottom:10px; }
@@ -76,9 +83,14 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .short .dock-button, .compact .dock-button { width:48px; height:46px; min-height:46px; padding:8px; }
 .short .dock-label, .compact .dock-label { display:none; }
 .short .panel { top:13px; }
-.compact .panel { width:auto; left:84px; right:10px; }
-.compact .chat { left:74px; width:270px; }
-.compact .footer { left:74px; right:10px; flex-wrap:wrap; }
+.compact .panel { width:auto; left:84px; right:10px; bottom:180px; }
+.compact .chat { left:74px; width:270px; bottom:170px; }
+.compact .footer { left:74px; right:12px; bottom:70px; flex-wrap:wrap; }
+.compact .footer .status { width:100%; flex-basis:100%; max-height:34px; margin-bottom:6px; white-space:nowrap; text-overflow:ellipsis; }
+.compact .footer Button { min-height:30px; padding:6px 8px; margin:0 6px 4px 0; font-size:11px; }
+.compact.vtuber .panel { bottom:160px; }
+.compact.vtuber .footer { right:10px; bottom:14px; }
+.controls-hidden .quick-controls, .controls-hidden .quick-settings { display:none; }
 .picker-overlay { position:absolute; top:42px; bottom:0; left:0; right:0; background-color:rgba(0,0,0,.45); align-items:center; justify-content:center; }
 .picker-window { width:780px; max-width:95%; height:80%; background-color:var(--card); border-width:1px; border-color:var(--line); border-radius:20px; padding:20px; }
 .picker-results { flex-grow:1; }

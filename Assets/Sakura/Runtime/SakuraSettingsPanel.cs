@@ -16,6 +16,7 @@ namespace Sakura.Unity
         private readonly Action<string> applyTheme;
         private JObject values = new JObject(), changes = new JObject();
         private readonly List<TextField> secretInputs = new List<TextField>();
+        private readonly Dictionary<string, string> voiceLanguages = new Dictionary<string, string>();
         private SakuraSpeakerProfiles speakerProfiles;
         private string selected = "General";
         private bool saving, previewing, alive = true;
@@ -132,6 +133,8 @@ namespace Sakura.Unity
                 }
                 var voices = new DropdownField("Voice",new List<string> { (string)Value("selected_voice") ?? "Loading voices…" },0); card.Add(voices);
                 voices.name = "voice-preset";
+                var language = new DropdownField("Voice & reply language", new List<string> { "English", "Hindi", "Hinglish" }, 0); language.name = "voice-language"; language.SetEnabled(false); card.Add(language);
+                Text("Language follows the selected voice. Hindi and Hinglish also use Hindi speech recognition. Save settings to apply your voice and language together.", "description", card);
                 var library = new Foldout { text = "Voice library", value = false }; card.Add(library);
                 var libraryContents = new VisualElement(); library.Add(libraryContents);
                 backend.Api("/api/voices",null,(json,error) =>
@@ -142,6 +145,14 @@ namespace Sakura.Unity
                     var options = (result["presets"] as JArray ?? new JArray()).Concat(result["rvc_models"] as JArray ?? new JArray()).ToArray();
                     var ids = options.Select(row => (string)row["id"]).ToList();
                     if (ids.Count == 0) return;
+                    voiceLanguages.Clear();
+                    foreach (var row in options) voiceLanguages[(string)row["id"]] = (string)row["language"] ?? "English";
+                    language.choices = new[] { "English", "Hindi", "Hinglish" }.Concat(voiceLanguages.Values).Distinct().ToList();
+                    string currentId = (string)Value("selected_voice");
+                    language.SetValueWithoutNotify(currentId != null && voiceLanguages.TryGetValue(currentId, out string currentLanguage) ? currentLanguage : "English");
+                    language.SetEnabled(true);
+                    var rememberedVoices = new Dictionary<string, string>();
+                    if (currentId != null) rememberedVoices[language.value] = currentId;
                     voices.choices = options.Select(row =>
                     {
                         string title = (string)row["name"] ?? (string)row["id"];
@@ -153,22 +164,57 @@ namespace Sakura.Unity
                         if (voices.index < 0 || voices.index >= ids.Count) return;
                         changes["selected_voice"] = ids[voices.index];
                         var chosen = options[voices.index];
+                        string chosenLanguage = (string)chosen["language"] ?? "English";
+                        language.SetValueWithoutNotify(chosenLanguage); rememberedVoices[chosenLanguage] = ids[voices.index];
                         if (chosen["pth"] != null)
                         {
                             changes["rvc_model"] = (string)chosen["pth"];
                             changes["rvc_index"] = (string)chosen["index"] ?? "";
                         }
                     });
+                    language.RegisterValueChangedCallback(evt =>
+                    {
+                        string currentVoice = (string)Value("selected_voice");
+                        var playingVoice = backend.GetComponent<SakuraVoice>();
+                        if (backend.Busy || playingVoice?.Speaking == true)
+                        {
+                            language.SetValueWithoutNotify(currentVoice != null && voiceLanguages.TryGetValue(currentVoice, out string previousLanguage) ? previousLanguage : "English");
+                            status.text = "Wait for the current reply to finish before changing voice or language."; return;
+                        }
+                        if (currentVoice != null && voiceLanguages.TryGetValue(currentVoice, out string selectedLanguage) && selectedLanguage == evt.newValue) return;
+                        string preferred = rememberedVoices.TryGetValue(evt.newValue, out string remembered) ? remembered : null;
+                        int choice = preferred == null ? -1 : ids.IndexOf(preferred);
+                        if (choice < 0)
+                        {
+                            string gender = (string)options.FirstOrDefault(row => (string)row["id"] == currentVoice)?["gender"];
+                            var candidates = options.Where(row => ((string)row["language"] ?? "English") == evt.newValue).ToList();
+                            var target = candidates.FirstOrDefault(row => (string)row["gender"] == gender && (string)row["backend"] == "kokoro") ?? candidates.FirstOrDefault();
+                            choice = target == null ? -1 : ids.IndexOf((string)target["id"]);
+                        }
+                        if (choice >= 0) { voices.index = choice; status.text = evt.newValue + " voice selected. Save settings to apply."; }
+                        else { status.text = "No available voice was found for " + evt.newValue + "."; }
+                    });
                     RenderVoiceLibrary(libraryContents, options, voices, ids);
                 });
                 AddButton("Preview voice", PreviewVoice, card);
                 AddButton("Stop speaking", () => backend.GetComponent<SakuraVoice>()?.StopSpeaking(), card);
+                if (backend.Mode == "Companion" && backend.GetComponent<SakuraVoice>() is SakuraVoice interruptVoice)
+                {
+                    var interruption = new Toggle("Spoken stop / wait during playback · use headphones") { value = interruptVoice.SpokenInterruptionEnabled }; card.Add(interruption);
+                    interruption.RegisterValueChangedCallback(evt => interruptVoice.SpokenInterruptionEnabled = evt.newValue);
+                    Text("Enable the microphone first. This session-only option listens for stop/wait commands during playback. Native microphone capture has no acoustic echo cancellation. Headphones keep Sakura’s voice out of the microphone.", "description", card);
+                }
                 var advanced = new Foldout { text = "Voice adjustment", value = false }; card.Add(advanced);
                 Field(advanced, "Pitch", "tts_pitch"); Field(advanced, "Rate", "tts_rate");
                 card = Card("RVC voice changer"); Field(card, "RVC model", "rvc_model"); Field(card, "RVC index", "rvc_index"); Number(card, "RVC pitch", "rvc_pitch", -24, 24);
                 var indexRate = new Slider("RVC index strength", 0, 1) { value = (float?)Value("rvc_index_rate") ?? .75f }; card.Add(indexRate);
                 indexRate.RegisterValueChangedCallback(evt => changes["rvc_index_rate"] = evt.newValue);
                 Text("Choose an installed RVC voice in the Voice library or enter model and index paths from the Sakura voices folder.", "description", card);
+                if (backend.Mode == "VTuber")
+                {
+                    var changer = backend.GetComponent<SakuraVoiceChanger>() ?? backend.gameObject.AddComponent<SakuraVoiceChanger>();
+                    changer.BuildPanel(card);
+                }
                 var import = new Foldout { text = "Import custom RVC voice", value = false }; card.Add(import);
                 var voiceName = new TextField("Voice name") { maxLength = 48 }; import.Add(voiceName);
                 var modelPath = new TextField(".pth file on this PC"); import.Add(modelPath);
@@ -180,6 +226,7 @@ namespace Sakura.Unity
                     var nativeVoice = backend.GetComponent<SakuraVoice>();
                     if (backend.Busy || (nativeVoice != null && nativeVoice.Speaking)) { status.text = "Wait for the current reply to finish before importing a voice."; return; }
                     string importedName = voiceName.value;
+                    backend.GetComponent<SakuraVoiceChanger>()?.StopConversion();
                     importButton.SetEnabled(false); status.text = "Importing RVC voice…";
                     backend.UploadRvcVoice(importedName, modelPath.value, indexPath.value, (json, error) =>
                     {
@@ -210,7 +257,25 @@ namespace Sakura.Unity
             {
                 var card = Card("NVIDIA tracking setup");
                 Field(card, "NVIDIA AR SDK folder", "nvidia_ar_sdk_folder");
-                Text("The SDK folder is saved for the existing tracker. Native Unity camera tracking is pending integration.", "description", card);
+                Text("Save the SDK folder before starting the native RTX tracker. Webcam CPU tracking and connected phone tracking are available below.", "description", card);
+                var tracking = backend.GetComponent<SakuraTracking>();
+                if (tracking != null) new SakuraTrackingPanel(tracking, body);
+                else Text("Camera tracking is unavailable in this session.", "description", card);
+                card = Card("Speech input");
+                var voice = backend.GetComponent<SakuraVoice>();
+                if (voice != null)
+                {
+                    var devices = new List<string> { "System default" }; devices.AddRange(Microphone.devices);
+                    var microphone = new DropdownField("Microphone", devices, Math.Max(0, devices.IndexOf(voice.MicrophoneDevice))); card.Add(microphone);
+                    microphone.RegisterValueChangedCallback(_ =>
+                    {
+                        bool listening = voice.Listening;
+                        voice.StopListening(); voice.MicrophoneDevice = microphone.index == 0 ? "" : microphone.value;
+                        if (listening) voice.StartListening();
+                    });
+                    AddButton("Stop microphone", voice.StopListening, card);
+                    Text("Microphone starts off. Use the chat microphone to enable listening. Spoken stop/wait checks run only after you enable listening.", "description", card);
+                }
             }
             else if (selected == "Assistant")
             {
@@ -385,8 +450,11 @@ namespace Sakura.Unity
                 if (!alive || backend.Mode != mode) { previewing = false; return; }
                 if (serviceError != null) { previewing = false; status.text = serviceError; return; }
                 bool customVoice = ((string)Value("selected_voice") ?? "").StartsWith("rvc_", StringComparison.Ordinal);
+                string previewVoiceId = (string)Value("selected_voice") ?? "kokoro_af_heart";
+                string previewLanguage = voiceLanguages.TryGetValue(previewVoiceId, out string knownLanguage) ? knownLanguage : "English";
                 var payload = new JObject
                 {
+                    ["text"] = previewLanguage == "Hindi" ? "नमस्ते! मेरी आवाज़ ऐसी है। क्या आपको पसंद आई?" : previewLanguage == "Hinglish" ? "Hello! Meri voice aisi hai. Aapko kaisi lagi?" : "Hello! This is how I sound. Do you like this voice?",
                     ["voice"] = (string)Value("selected_voice") ?? "kokoro_af_heart",
                     ["pitch"] = (string)Value("tts_pitch") ?? "+0Hz",
                     ["rate"] = (string)Value("tts_rate") ?? "+0%",
@@ -437,6 +505,8 @@ namespace Sakura.Unity
         private void Save()
         {
             if (saving || changes.Count == 0) { status.text = saving ? "Saving…" : "No changes to save."; return; }
+            if (changes["selected_voice"] != null || changes["rvc_model"] != null || changes["rvc_index"] != null || changes["rvc_pitch"] != null || changes["rvc_index_rate"] != null)
+                backend.GetComponent<SakuraVoiceChanger>()?.StopConversion();
             saving = true; status.text = "Saving settings…";
             var sent = (JObject)changes.DeepClone();
             backend.Api("/api/settings", sent.ToString(Formatting.None), (json, error) =>

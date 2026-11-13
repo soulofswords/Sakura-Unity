@@ -93,9 +93,13 @@ def install_unity_lifecycle(module):
     service_context = None
     original_lifetime = module.app.router.lifespan_context
     service_lock = asyncio.Lock()
-    mode = 'Companion'
+    mode = 'VTuber' if getattr(module, 'EDITION', 'companion') == 'vtuber' else 'Companion'
     revision = 0
+    screen_enabled = False
+    game_enabled = False
+    tracked_game = None
     from starlette.responses import JSONResponse
+    from starlette.requests import Request
 
     @asynccontextmanager
     async def lifetime(app):
@@ -133,10 +137,12 @@ def install_unity_lifecycle(module):
 
     @module.app.post('/api/unity/mode')
     async def set_mode(payload: dict):
-        nonlocal mode, revision
+        nonlocal mode, revision, screen_enabled, game_enabled
         requested, sequence = payload.get('mode'), payload.get('revision')
         if requested not in ('Companion', 'VTuber', 'Agent') or type(sequence) is not int or sequence < 1:
             return JSONResponse({'error': 'Choose a valid mode and revision.'}, 400)
+        if getattr(module, 'EDITION', 'companion') == 'vtuber' and requested != 'VTuber':
+            return JSONResponse({'error': 'The standalone VTuber edition supports tracking mode only.'}, 409)
         async with service_lock:
             if sequence <= revision:
                 return {'ok': True, 'mode': mode, 'stale': True}
@@ -149,7 +155,84 @@ def install_unity_lifecycle(module):
                 module.app.state.tracking_only = requested == 'VTuber'
                 module.app.state.ai_unloaded = requested == 'VTuber'
             mode = requested
+            if requested != 'Companion':
+                screen_enabled = game_enabled = False
             return {'ok': True, 'mode': mode, 'tracking_only': requested == 'VTuber'}
+
+    @module.app.post('/api/unity/screen')
+    async def set_screen(payload: dict):
+        nonlocal screen_enabled, game_enabled
+        if mode != 'Companion':
+            return JSONResponse({'error': 'Screen sharing is available in Companion mode.'}, 409)
+        if any(key in payload and type(payload[key]) is not bool for key in ('enabled', 'auto_game')):
+            return JSONResponse({'error': 'Use an on/off value.'}, 400)
+        screen_enabled = payload.get('enabled', screen_enabled)
+        game_enabled = payload.get('auto_game', game_enabled)
+        return {'enabled': screen_enabled, 'auto_game': game_enabled}
+
+    @module.app.get('/api/unity/screen/snapshot')
+    async def screen_snapshot():
+        if mode != 'Companion' or not screen_enabled:
+            return JSONResponse({'error': 'Enable screen sharing in Companion mode first.'}, 409)
+        image = await asyncio.to_thread(capture_desktop)
+        if mode != 'Companion' or not screen_enabled:
+            return JSONResponse({'error': 'Screen sharing was stopped.'}, 409)
+        return {'image': image}
+
+    @module.app.get('/api/unity/game-status')
+    async def game_status():
+        nonlocal tracked_game
+        if mode != 'Companion' or not game_enabled:
+            return JSONResponse({'error': 'Enable automatic game detection in Companion mode first.'}, 409)
+        from game_detection import game_session
+        result = await asyncio.to_thread(game_session, tracked_game)
+        tracked_game = result if result.get('detected') else None
+        if sys.platform == 'win32':
+            try:
+                from hardware_metrics import sample_windows
+                result['gpus'] = (await asyncio.to_thread(sample_windows)).get('gpus', [])
+            except (OSError, RuntimeError, AttributeError):
+                result['gpus'] = []
+        if mode != 'Companion' or not game_enabled:
+            return JSONResponse({'error': 'Automatic game detection was stopped.'}, 409)
+        return result
+
+    @module.app.post('/api/unity/game-vram/confirm')
+    async def confirm_vram_close(payload: dict):
+        if mode != 'Companion' or not game_enabled:
+            return JSONResponse({'error': 'Automatic game detection is not active.'}, 409)
+        adapter = payload.get('adapter')
+        if not isinstance(adapter, str) or not adapter or len(adapter) > 300:
+            return JSONResponse({'error': 'Choose the measured rendering adapter.'}, 400)
+        if module.get_settings().get('game_vram_auto_close_enabled') is False:
+            return JSONResponse({'error': 'Automatic closing is disabled.'}, 409)
+        game = await game_status()
+        if not isinstance(game, dict) or not game.get('detected'):
+            return JSONResponse({'error': 'No running game was confirmed.'}, 409)
+        from game_vram_guard import critical_adapter
+        if mode != 'Companion' or not game_enabled or module.get_settings().get('game_vram_auto_close_enabled') is False or not critical_adapter(game.get('gpus', []), adapter):
+            return JSONResponse({'error': 'Fresh measurements no longer show critical VRAM pressure.'}, 409)
+        return {'ok': True}
+
+    @module.app.get('/api/unity/library-preview/{identifier}')
+    async def library_preview(identifier: str, request: Request):
+        from starlette.responses import Response
+        import re
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}', identifier):
+            return JSONResponse({'error': 'Choose a model from the library.'}, 400)
+        route = next((route for route in module.app.routes if getattr(route, 'path', '') == '/api/model-library/models/{identifier}/preview'), None)
+        if route is None:
+            return JSONResponse({'error': 'Model previews are unavailable.'}, 404)
+        result = await route.endpoint(identifier, request)
+        if result.status_code != 200:
+            return result
+        try:
+            sheet, frames, columns = await asyncio.to_thread(preview_sheet, result.body)
+        except (OSError, ValueError):
+            return JSONResponse({'error': 'The model preview could not be decoded.'}, 400)
+        return Response(sheet, media_type='image/png', headers={
+            'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+            'X-Sakura-Preview-Frames': str(frames), 'X-Sakura-Preview-Columns': str(columns)})
 
     @module.app.post('/api/unity/start-services')
     async def start_services():
@@ -195,6 +278,43 @@ def install_unity_lifecycle(module):
             return {'ok': True}
 
     module.app.router.lifespan_context = lifetime
+
+
+def capture_desktop():
+    """Same bounded primary-display capture as the reference DesktopAPI."""
+    import base64
+    import io
+    from PIL import ImageGrab
+    try:
+        image = ImageGrab.grab().convert('RGB')
+        image.thumbnail((1600, 1200))
+        output = io.BytesIO()
+        image.save(output, format='JPEG', quality=82)
+        return base64.b64encode(output.getvalue()).decode('ascii')
+    except OSError:
+        return None
+
+
+def preview_sheet(content):
+    import io
+    from PIL import Image
+    if len(content) > 8_000_000 or content[:4] != b'RIFF' or content[8:12] != b'WEBP':
+        raise ValueError('Choose a published WebP preview.')
+    with Image.open(io.BytesIO(content)) as image:
+        if image.width > 4096 or image.height > 4096 or image.n_frames > 600:
+            raise ValueError('The model preview exceeds its size limit.')
+        frames = min(24, image.n_frames)
+        columns = min(6, frames)
+        sheet = Image.new('RGBA', (columns * 160, ((frames + columns - 1) // columns) * 160))
+        for index in range(frames):
+            image.seek(index * image.n_frames // frames)
+            tile = image.convert('RGBA')
+            tile.thumbnail((160, 160))
+            sheet.paste(tile, ((index % columns) * 160 + (160 - tile.width) // 2,
+                               (index // columns) * 160 + (160 - tile.height) // 2))
+        output = io.BytesIO()
+        sheet.save(output, format='PNG')
+        return output.getvalue(), frames, columns
 
 
 def serve(source, edition='companion'):

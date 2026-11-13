@@ -39,7 +39,7 @@ namespace Sakura.Unity
         {
             body.Clear();
             if (tab == "Bones") { Bones(); return; }
-            if (tab == "Parameters") { Parameters(); return; }
+            if (tab == "Parameters") { viewport.GetComponent<SakuraParameterMappings>()?.BuildPanel(body); Parameters(); return; }
             if (tab == "Effects") { Effects(); return; }
             if (tools.Parts.Count == 0) { Text("No editable model materials were found."); return; }
             selected = Mathf.Clamp(selected, 0, tools.Parts.Count - 1);
@@ -77,6 +77,7 @@ namespace Sakura.Unity
                 }
             }
             operation.RegisterValueChangedCallback(_ => Populate()); Populate();
+            viewport.AvatarRoot.GetComponent<SakuraMaterialExpressions>()?.BuildCapturePanel(body, () => selected, () => operation.index == 0 ? "tint" : "opacity");
         }
         void Remapping()
         {
@@ -137,6 +138,7 @@ namespace Sakura.Unity
         void Parameters()
         {
             if (tools.Parameters.Length == 0) { Text("Parameter controls are available for Live2D models."); return; }
+            AdvancedLive2D();
             var search = new TextField("Search parameters"); body.Add(search);
             var rows = new VisualElement(); body.Add(rows);
             void Populate()
@@ -175,6 +177,47 @@ namespace Sakura.Unity
                 }
             }
             search.RegisterValueChangedCallback(_ => Populate()); Populate();
+        }
+        void AdvancedLive2D()
+        {
+            var box = new Foldout { text = "Live2D setup & movement", value = true }; body.Add(box);
+            Button("Auto setup blink & breathing", () =>
+            {
+                int count = tools.AutoSetupLive2D(); body.Clear(); Parameters();
+                status.text = "Configured " + count + " authored eye and breathing parameters. Existing physics is retained.";
+            }, box);
+            var settings = tools.Live2D;
+            var white = new Toggle("Fix white outlines · texture alpha") { value = settings.whiteOutlineFix }; box.Add(white);
+            var rates = new List<string> { "Match app", "30", "60", "120" };
+            int[] values = { 0, 30, 60, 120 };
+            var physics = new DropdownField("Physics frame rate", rates, Math.Max(0, Array.IndexOf(values, settings.physicsFps))); box.Add(physics); physics.SetEnabled(tools.HasLive2DPhysics);
+            var legacy = new Toggle("Legacy render-step physics") { value = settings.legacy }; box.Add(legacy); legacy.SetEnabled(tools.HasLive2DPhysics);
+            if (!tools.HasLive2DPhysics) box.Add(new Label("No authored physics rig is available for this model."));
+            var bounds = new Toggle("Bound position, zoom & rotation") { value = settings.limitMovement }; box.Add(bounds);
+            var hint = new Label("Move freely inside these bounds. Use the padlock to freeze placement. Position limits use percent of the window, scale uses percent, and rotation uses degrees."); hint.AddToClassList("description"); box.Add(hint);
+            void Save(Action<SakuraLive2DSettings> change)
+            {
+                var next = tools.Live2D.Copy(); change(next); tools.SetLive2DSettings(next); status.text = tools.Warning ?? "Saved for this model.";
+            }
+            white.RegisterValueChangedCallback(change => Run(() => Save(next => next.whiteOutlineFix = change.newValue)));
+            physics.RegisterValueChangedCallback(_ => Run(() => Save(next => next.physicsFps = values[physics.index])));
+            legacy.RegisterValueChangedCallback(change => Run(() => Save(next => next.legacy = change.newValue)));
+            bounds.RegisterValueChangedCallback(change => Run(() => Save(next => next.limitMovement = change.newValue)));
+            void Range(string title, float minimum, float maximum, Action<SakuraLive2DSettings, float, float> write)
+            {
+                var row = new VisualElement(); row.AddToClassList("row"); box.Add(row);
+                var min = new FloatField(title + " minimum") { value = minimum, isDelayed = true }; min.style.flexGrow = 1; row.Add(min);
+                var max = new FloatField(title + " maximum") { value = maximum, isDelayed = true }; max.style.flexGrow = 1; row.Add(max);
+                void Changed()
+                {
+                    Run(() => { Save(next => write(next, min.value, max.value)); body.Clear(); Parameters(); });
+                }
+                min.RegisterValueChangedCallback(_ => Changed()); max.RegisterValueChangedCallback(_ => Changed());
+            }
+            Range("Horizontal", settings.xMin, settings.xMax, (next, min, max) => { next.xMin = min; next.xMax = max; });
+            Range("Vertical", settings.yMin, settings.yMax, (next, min, max) => { next.yMin = min; next.yMax = max; });
+            Range("Scale", settings.zoomMin, settings.zoomMax, (next, min, max) => { next.zoomMin = min; next.zoomMax = max; });
+            Range("Rotation", settings.rotationMin, settings.rotationMax, (next, min, max) => { next.rotationMin = min; next.rotationMax = max; });
         }
         void Effects()
         {

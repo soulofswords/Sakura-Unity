@@ -59,17 +59,35 @@ namespace Sakura.Unity.Editor
             string editionFile = "Assets/Resources/Sakura/Edition.txt";
             byte[] previousEdition = File.Exists(editionFile) ? File.ReadAllBytes(editionFile) : null;
             string previousName = PlayerSettings.productName;
+            bool previousAlpha = PlayerSettings.preserveFramebufferAlpha, previousFlip = PlayerSettings.useFlipModelSwapchain;
+            bool previousDefaultApi = PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64);
+            var previousApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.StandaloneWindows64);
+            var previousFullscreen = PlayerSettings.fullScreenMode;
+            var pipeline = AssetDatabase.LoadAssetAtPath<UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset>("Assets/Settings/PC_RPAsset.asset");
+            var pipelineState = pipeline == null ? null : new SerializedObject(pipeline);
+            var alphaOutput = pipelineState?.FindProperty("m_AllowPostProcessAlphaOutput");
+            bool previousPipelineAlpha = alphaOutput?.boolValue ?? false;
             try
             {
+                if (alphaOutput != null) { alphaOutput.boolValue = true; pipelineState.ApplyModifiedPropertiesWithoutUndo(); AssetDatabase.SaveAssetIfDirty(pipeline); }
+                PlayerSettings.preserveFramebufferAlpha = true;
+                PlayerSettings.useFlipModelSwapchain = false;
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64, false);
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneWindows64, new[] { UnityEngine.Rendering.GraphicsDeviceType.Direct3D11 });
+                PlayerSettings.fullScreenMode = FullScreenMode.Windowed;
                 File.WriteAllText(editionFile, edition);
                 AssetDatabase.ImportAsset(editionFile, ImportAssetOptions.ForceSynchronousImport);
                 PlayerSettings.productName = edition == "vtuber" ? "Sakura VTuber" : "Sakura Companion";
                 string executable = Path.Combine(destination, PlayerSettings.productName + ".exe");
+                var pmxPlugin = AssetImporter.GetAtPath("Packages/com.yohawing.mmd-loader/Runtime/Plugins/x86_64/mmd_runtime_ffi.dll") as PluginImporter;
+                if (pmxPlugin == null || !pmxPlugin.GetCompatibleWithPlatform(BuildTarget.StandaloneWindows64))
+                    throw new InvalidOperationException("Enable the PMX native loader for Windows x64 before building.");
                 var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
                 {
                     scenes = new[] { "Assets/Scenes/SakuraStudio.unity" },
                     target = BuildTarget.StandaloneWindows64,
                     locationPathName = executable,
+                    extraScriptingDefines = new[] { "SAKURA_DWM_ALPHA", "SAKURA_PREVIEW_VERIFY" },
                     options = BuildOptions.None
                 });
                 if(report.summary.result != BuildResult.Succeeded) throw new InvalidOperationException("Build failed with " + report.summary.totalErrors + " errors.");
@@ -83,6 +101,11 @@ namespace Sakura.Unity.Editor
             finally
             {
                 PlayerSettings.productName = previousName;
+                PlayerSettings.preserveFramebufferAlpha = previousAlpha; PlayerSettings.useFlipModelSwapchain = previousFlip;
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneWindows64, previousApis);
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64, previousDefaultApi);
+                PlayerSettings.fullScreenMode = previousFullscreen;
+                if (alphaOutput != null) { alphaOutput.boolValue = previousPipelineAlpha; pipelineState.ApplyModifiedPropertiesWithoutUndo(); AssetDatabase.SaveAssetIfDirty(pipeline); }
                 if(previousEdition == null) AssetDatabase.DeleteAsset(editionFile);
                 else {File.WriteAllBytes(editionFile,previousEdition);AssetDatabase.ImportAsset(editionFile);}
             }

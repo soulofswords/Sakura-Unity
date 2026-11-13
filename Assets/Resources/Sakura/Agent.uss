@@ -1,11 +1,13 @@
 .agent-workspace {
-    --agent-bg: #171b21;
-    --agent-card: #20242b;
-    --agent-input: #292f38;
-    --agent-line: #414b59;
-    --agent-ink: #edf1f7;
-    --agent-muted: #b5c1d0;
-    --agent-accent: #91ceff;
+    --agent-bg: #1c1423;
+    --agent-card: #251b2d;
+    --agent-input: #302439;
+    --agent-line: #4c354d;
+    --agent-ink: #fff0f8;
+    --agent-muted: #ccb6c8;
+    --agent-accent: #ff9ec8;
+    --agent-button: #442b43;
+    --agent-user: #4c3349;
     background-color: var(--agent-bg);
     border-color: var(--agent-line);
     border-radius: 0;
@@ -16,13 +18,15 @@
     font-size: 13px;
 }
 .light .agent-workspace {
-    --agent-bg: #edf2f8;
-    --agent-card: #ffffff;
-    --agent-input: #f0f4fa;
-    --agent-line: #d8e3ee;
-    --agent-ink: #27364b;
-    --agent-muted: #526279;
-    --agent-accent: #075f8a;
+    --agent-bg: #f9f0f5;
+    --agent-card: #fffafc;
+    --agent-input: #ffffff;
+    --agent-line: #e8d3df;
+    --agent-ink: #493443;
+    --agent-muted: #785f70;
+    --agent-accent: #a13464;
+    --agent-button: #f9e2ed;
+    --agent-user: #eed6e1;
 }
 .agent-workspace .agent-navigation {
     width: 208px;
@@ -38,15 +42,17 @@
     border-color: var(--agent-line);
     border-radius: 8px;
     padding: 6px 10px;
-    background-color: var(--agent-input);
-    color: var(--agent-ink);
+    background-color: var(--agent-button);
+    color: var(--agent-accent);
     font-size: 12px;
     -unity-font-style: normal;
 }
 .agent-workspace Button:hover, .agent-workspace Button:focus { border-color: var(--agent-accent); }
 .agent-navigation Button { margin-bottom: 4px; white-space: normal; -unity-text-align: middle-left; }
-.agent-navigation .agent-page { background-color: transparent; color: var(--agent-muted); border-color: transparent; min-height: 35px; }
-.agent-navigation .agent-page-selected { background-color: var(--agent-input); color: var(--agent-ink); border-color: var(--agent-line); }
+.agent-navigation .agent-page { flex-direction: row; align-items: center; padding-left: 37px; background-color: transparent; color: var(--agent-muted); border-color: transparent; min-height: 35px; }
+.agent-navigation .agent-page-selected { background-color: var(--agent-button); color: var(--agent-ink); border-color: var(--agent-line); }
+.agent-navigation .agent-nav-icon { position: absolute; left: 10px; top: 8px; width: 17px; height: 17px; flex-shrink: 0; }
+.agent-navigation .agent-page .unity-button__text { flex-grow: 1; min-width: 0; white-space: normal; }
 .agent-sidebar-heading { margin: 16px 0 9px; font-size: 11px; color: var(--agent-muted); }
 .agent-workspace .agent-main { padding: 0 20px 16px; min-width: 0; flex-grow: 1; }
 .agent-header { min-height: 65px; flex-shrink: 0; align-items: center; border-bottom-width: 1px; border-bottom-color: var(--agent-line); }
@@ -83,7 +89,9 @@
 .agent-task-options-scroll { max-height: 155px; }
 .agent-composer > .row { flex-shrink: 0; align-items: center; }
 .agent-composer > .row .unity-base-field { margin: 0 6px 6px 0; }
-.agent-workspace #agent-provider { max-width: 215px; min-width: 130px; flex-shrink: 1; }
+.agent-workspace #agent-provider { width: 265px; max-width: 100%; min-width: 180px; flex-shrink: 0; }
+.agent-workspace #agent-provider .unity-base-popup-field__text { white-space: normal; overflow: visible; text-overflow: clip; flex-grow: 1; flex-shrink: 1; min-width: 0; }
+.agent-workspace #agent-provider .unity-base-popup-field__input { flex-wrap: nowrap; min-width: 0; }
 .agent-workspace #agent-access { max-width: 175px; min-width: 130px; flex-shrink: 1; }
 .agent-composer > .row Button { margin: 0 6px 6px 0; }
 .agent-execution-mode { padding: 2px; margin-right: 6px; margin-bottom: 6px; border-radius: 18px; background-color: var(--agent-input); }
@@ -96,7 +104,7 @@
 .agent-task-controls { justify-content: flex-end; margin: 6px 0 12px; }
 .agent-task-controls Button { background-color: transparent; font-size: 11px; min-height: 29px; }
 .agent-user-message, .agent-assistant-message { margin: 0 0 10px; padding: 10px 14px; border-width: 1px; border-color: var(--agent-line); border-radius: 14px; background-color: var(--agent-card); color: var(--agent-ink); font-size: 14px; white-space: normal; }
-.agent-user-message { margin-left: 12%; background-color: var(--agent-input); }
+.agent-user-message { margin-left: 12%; background-color: var(--agent-user); }
 .agent-assistant-message { margin-right: 8%; }
 .agent-empty-title { margin: 30px 0 8px; font-size: 20px; color: var(--agent-ink); }
 .agent-inspector { width: 220px; flex-shrink: 0; border-left-width: 1px; border-left-color: var(--agent-line); margin-left: 10px; padding-left: 14px; }

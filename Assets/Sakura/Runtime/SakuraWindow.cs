@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace Sakura.Unity
 {
-    public sealed class SakuraWindow : MonoBehaviour
+    public sealed partial class SakuraWindow : MonoBehaviour
     {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegGetValueW")]
@@ -22,6 +22,12 @@ namespace Sakura.Unity
         }
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
         private IntPtr handle;
+        [StructLayout(LayoutKind.Sequential)] struct Point { public int x, y; }
+        [StructLayout(LayoutKind.Sequential)] struct Rectangle { public int left, top, right, bottom; }
+        [StructLayout(LayoutKind.Sequential)] struct Placement
+        { public int length, flags, show; public Point minimum, maximum; public Rectangle normal; }
+        Placement companionPlacement;
+        bool restoreCompanion;
         [DllImport("user32.dll")] private static extern IntPtr GetActiveWindow();
         [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] private static extern IntPtr GetStyle(IntPtr window,int index);
         [DllImport("user32.dll",EntryPoint="SetWindowLongPtrW")] private static extern IntPtr SetStyle(IntPtr window,int index,IntPtr value);
@@ -30,15 +36,18 @@ namespace Sakura.Unity
         [DllImport("user32.dll")] private static extern bool IsZoomed(IntPtr window);
         [DllImport("user32.dll")] private static extern bool ReleaseCapture();
         [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window,uint message,IntPtr wParam,IntPtr lParam);
+        [DllImport("user32.dll")] private static extern bool GetWindowPlacement(IntPtr window, ref Placement placement);
+        [DllImport("user32.dll")] private static extern bool SetWindowPlacement(IntPtr window, ref Placement placement);
 #endif
         private IEnumerator Start()
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
-            for(int attempt = 0; attempt < 60 && handle == IntPtr.Zero; attempt++) { handle = GetActiveWindow(); yield return null; }
+            for(int attempt = 0; attempt < 60 && handle == IntPtr.Zero; attempt++) { handle = FindPlayerWindow(); yield return null; }
             if(handle != IntPtr.Zero)
             {
                 SetStyle(handle,-16,new IntPtr(GetStyle(handle,-16).ToInt64() & ~0x00C00000L));
                 SetWindowPos(handle,IntPtr.Zero,0,0,0,0,0x0020 | 0x0001 | 0x0002 | 0x0004 | 0x0010);
+                RefreshTransparency();
             }
 #else
             yield break;
@@ -63,6 +72,27 @@ namespace Sakura.Unity
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
             if(handle == IntPtr.Zero) return;
             ReleaseCapture(); SendMessage(handle,0x00A1,new IntPtr(2),IntPtr.Zero);
+#endif
+        }
+        public void SetAgentMode(bool agent)
+        {
+            transparencyAgentMode = agent;
+            RefreshTransparency();
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            if (handle == IntPtr.Zero) return;
+            if (agent && !restoreCompanion && !IsZoomed(handle))
+            {
+                var placement = new Placement { length = Marshal.SizeOf<Placement>() };
+                if (GetWindowPlacement(handle, ref placement) && placement.normal.right - placement.normal.left < 900)
+                {
+                    companionPlacement = placement; restoreCompanion = true;
+                    ShowWindow(handle, 3);
+                }
+            }
+            else if (!agent && restoreCompanion)
+            {
+                SetWindowPlacement(handle, ref companionPlacement); restoreCompanion = false;
+            }
 #endif
         }
     }

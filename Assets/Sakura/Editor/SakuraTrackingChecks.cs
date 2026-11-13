@@ -12,6 +12,8 @@ namespace Sakura.Unity.Editor
         public static void Verify()
         {
             void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
+            Check(SakuraAvatarViewport.NormalizeCursor(new Vector2(150, 90), new Vector2(150, 90), new Vector2(320, 640)) == Vector2.zero, "Compact gaze origin follows the avatar");
+            Check(SakuraAvatarViewport.NormalizeCursor(new Vector2(310, 410), new Vector2(150, 90), new Vector2(320, 640)) == Vector2.one, "Gaze uses actual stage dimensions");
             Check(Mathf.Approximately(SakuraTrackingRig.Blink(0), 0), "Open eyes must stay open");
             Check(Mathf.Approximately(SakuraTrackingRig.Blink(.6f), 1), "Blink closure threshold");
             Check(!SakuraTrackingRig.FaceRotation(new JObject { ["matrix"] = new JArray(1, 2) }, out _), "Reject malformed matrices");

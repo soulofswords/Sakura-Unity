@@ -54,6 +54,7 @@ namespace Sakura.Unity
             { new SakuraMaterialPanel(viewport,backend,body,selected); return; }
             if (selected == "Mouth")
             {
+                viewport.GetComponent<SakuraLipSync>()?.BuildPanel(body);
                 body.Add(new Label("Mouth & lip sync"));
                 body.Add(new Label("Select a mouth expression to preview or bind it. Camera mouth tracking is controlled separately in Camera & tracking."));
                 new SakuraExpressionPanel(viewport,body,"",true);
@@ -64,6 +65,8 @@ namespace Sakura.Unity
 
         private void Motion()
         {
+            viewport.GetComponent<SakuraMotionRecorder>()?.BuildPanel(body);
+            viewport.AvatarRoot?.GetComponent<SakuraLive2DMotions>()?.BuildPanel(body);
             var motion = viewport.Idle;
             if (motion == null) { body.Add(new Label("Choose a model first.")); return; }
             foreach (string title in new[] { "Auto breathing","Auto blinking","Idle motions" })

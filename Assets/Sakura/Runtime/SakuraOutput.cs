@@ -57,7 +57,8 @@ namespace Sakura.Unity
             if (!Enum.IsDefined(typeof(Quality), quality)) throw new ArgumentException("Invalid quality preset.");
             if (Recording || SavingRecording) { Report("Stop recording before changing quality."); return; }
             Preset = quality; PlayerPrefs.SetInt("sakura.output.quality", (int)quality);
-            QualitySettings.vSyncCount = 0; Application.targetFrameRate = quality == Quality.High ? 60 : 30;
+            QualitySettings.vSyncCount = 0; Application.targetFrameRate = quality == Quality.Low ? 30 : 60;
+            Viewport?.SetRenderQuality(quality);
             QualitySettings.shadows = quality == Quality.Low ? ShadowQuality.Disable : ShadowQuality.All;
             QualitySettings.shadowResolution = quality == Quality.High ? ShadowResolution.High : ShadowResolution.Low;
             QualitySettings.lodBias = quality == Quality.Low ? .7f : quality == Quality.High ? 1.5f : 1f;
@@ -122,10 +123,16 @@ namespace Sakura.Unity
             }
             bool shot = screenshot; screenshot = false; reading = true;
             var backdrop = GetComponent<SakuraBackdrop>();
-            if (backdrop != null && backdrop.SolidOutput)
+            if (backdrop != null && (backdrop.SolidOutput || backdrop.OutputMedia != null))
             {
                 if (backgroundComposite == null) backgroundComposite = new Material(Resources.Load<Shader>("Sakura/BackdropComposite"));
-                backgroundComposite.SetColor("_Background", backdrop.Colour);
+                backgroundComposite.SetColor("_Background", backdrop.SolidOutput ? backdrop.Colour : Color.clear);
+                var media = backdrop.OutputMedia;
+                backgroundComposite.SetTexture("_Media", media);
+                backgroundComposite.SetFloat("_UseMedia", media != null ? 1 : 0);
+                float mediaAspect = media == null ? 1 : media.width / (float)Mathf.Max(1, media.height);
+                float aspect = size.x / (float)size.y;
+                backgroundComposite.SetVector("_MediaScale", new Vector4(Mathf.Min(1, aspect / mediaAspect), Mathf.Min(1, mediaAspect / aspect), 0, 0));
                 Graphics.Blit(source, capture, backgroundComposite);
             }
             else Graphics.Blit(source, capture);
@@ -138,8 +145,12 @@ namespace Sakura.Unity
                 // GPU readback is bottom-up on OpenGL, top-down on D3D/Metal.
                 if (SystemInfo.graphicsUVStartsAtTop) FlipRows(bytes, size.x, size.y);
                 CapturedFrames++;
-                if (recorder != null && recorder.Size == size) recorder.Submit(bytes);
-                if (shot) SavePng(bytes, size.x, size.y);
+                if (recorder != null || shot)
+                {
+                    var straight = (byte[])bytes.Clone(); StraightAlpha(straight, capture.sRGB);
+                    if (recorder != null && recorder.Size == size) recorder.Submit(straight);
+                    if (shot) SavePng(straight, size.x, size.y);
+                }
                 foreach (var channel in Channels)
                 {
                     if (!channel.Enabled || channel.Busy) continue;
@@ -160,6 +171,24 @@ namespace Sakura.Unity
             if (width < 1 || height < 1 || bytes == null || bytes.Length != checked(stride * height)) throw new ArgumentException("Invalid RGBA frame.");
             for (int y = 0; y < height / 2; y++)
                 for (int x = 0; x < stride; x++) { int a = y * stride + x, b = (height - 1 - y) * stride + x; byte swap = bytes[a]; bytes[a] = bytes[b]; bytes[b] = swap; }
+        }
+        public static void StraightAlpha(byte[] pixels, bool srgb)
+        {
+            if (pixels == null || pixels.Length % 4 != 0) throw new ArgumentException("Use complete RGBA pixels.");
+            for (int index = 0; index < pixels.Length; index += 4)
+            {
+                byte alpha = pixels[index + 3];
+                if (alpha == 255) continue;
+                for (int channel = 0; channel < 3; channel++)
+                {
+                    if (alpha == 0) { pixels[index + channel] = 0; continue; }
+                    float value = pixels[index + channel] / 255f;
+                    if (srgb) value = Mathf.GammaToLinearSpace(value);
+                    value = Mathf.Clamp01(value * 255 / alpha);
+                    if (srgb) value = Mathf.LinearToGammaSpace(value);
+                    pixels[index + channel] = (byte)Mathf.RoundToInt(value * 255);
+                }
+            }
         }
         private void SavePng(byte[] bytes, int width, int height)
         {

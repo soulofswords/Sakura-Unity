@@ -32,6 +32,17 @@ namespace Sakura.Unity.Editor
                 texture.SetPixels(new[] { Color.red, Color.red, Color.red, Color.red }); texture.Apply();
                 Graphics.Blit(texture, target, material); read.ReadPixels(new Rect(0, 0, 2, 2), 0, 0); read.Apply(); pixel = read.GetPixel(0, 0);
                 if (pixel.r < .98f || pixel.g > .02f || pixel.b > .02f) throw new Exception("Solid background changed opaque avatar pixels.");
+                material.SetTexture("_Media", texture); material.SetFloat("_UseMedia", 1); material.SetVector("_MediaScale", new Vector4(1, 1, 0, 0));
+                Graphics.Blit(Texture2D.blackTexture, target, material);
+                // A transparent avatar exposes the media; an opaque avatar remains above it.
+                var clear = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    clear.SetPixel(0, 0, Color.clear); clear.Apply(); Graphics.Blit(clear, target, material);
+                    read.ReadPixels(new Rect(0, 0, 2, 2), 0, 0); read.Apply(); pixel = read.GetPixel(0, 0);
+                    if (pixel.r < .98f || pixel.g > .02f || pixel.b > .02f) throw new Exception("Background media was omitted from streaming compositing.");
+                }
+                finally { UnityEngine.Object.Destroy(clear); }
                 Debug.Log("PASS: background placement, non-intercepting picking, solid output compositing and opaque avatar preservation.");
             }
             finally

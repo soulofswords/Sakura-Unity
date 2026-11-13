@@ -34,6 +34,7 @@ namespace Sakura.Unity
         public string Mode { get; private set; } = "Companion";
         private int modeRevision;
         private int chatGeneration;
+        private System.Threading.CancellationTokenSource chatLifetime = new System.Threading.CancellationTokenSource();
         private UnityWebRequest activeChat;
         private Process server;
         private Process catalogProcess;
@@ -54,7 +55,7 @@ namespace Sakura.Unity
             string bridge = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Tools", "backend_bridge.py"));
             if (!File.Exists(bridge)) throw new FileNotFoundException("Development backend bridge is missing.");
             if (SourceFolder.Contains("\"") || bridge.Contains("\"")) throw new ArgumentException("Invalid source path.");
-            return new ProcessStartInfo(python, "-u \"" + bridge + "\" --source \"" + SourceFolder + "\"" + (serve ? " --serve --edition " + (VtuberEdition ? "vtuber" : "companion") : ""))
+            var command = new ProcessStartInfo(python, "-u \"" + bridge + "\" --source \"" + SourceFolder + "\"" + (serve ? " --serve --edition " + (VtuberEdition ? "vtuber" : "companion") : ""))
             {
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
@@ -62,6 +63,13 @@ namespace Sakura.Unity
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
                 WorkingDirectory = SourceFolder
             };
+            if (serve && VtuberEdition && SakuraInstances.IsSecondary)
+            {
+                command.EnvironmentVariables["SAKURA_INSTANCE_INDEX"] = SakuraInstances.Index.ToString();
+                command.EnvironmentVariables["SAKURA_INSTANCE_PROFILE"] = SakuraInstances.SessionProfile;
+                command.EnvironmentVariables["SAKURA_VTUBER_INSTANCE"] = "1";
+            }
+            return command;
         }
 
         public void RefreshCatalog()
@@ -89,7 +97,12 @@ namespace Sakura.Unity
                     });
                 };
                 process.ErrorDataReceived += (_, args) => { };
-                process.Exited += (_, args) => pending.Enqueue(() => { catalogProcess?.Dispose(); catalogProcess = null; });
+                process.Exited += (_, args) =>
+                {
+                    // Drain redirected output before releasing the fast catalog process.
+                    process.WaitForExit();
+                    pending.Enqueue(() => { if (catalogProcess == process) catalogProcess = null; process.Dispose(); });
+                };
                 process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
             }
             catch (Exception error) { catalogProcess?.Dispose(); catalogProcess = null; StatusChanged?.Invoke(error.Message); }
@@ -165,7 +178,11 @@ namespace Sakura.Unity
                     });
                 };
                 process.ErrorDataReceived += (_, args) => { };
-                process.Exited += (_, args) => pending.Enqueue(() => { importProcess?.Dispose(); importProcess = null; });
+                process.Exited += (_, args) =>
+                {
+                    process.WaitForExit();
+                    pending.Enqueue(() => { if (importProcess == process) importProcess = null; process.Dispose(); });
+                };
                 process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
             }
             catch (Exception error) { importProcess?.Dispose(); importProcess = null; StatusChanged?.Invoke("Import failed. " + error.Message); }
@@ -227,7 +244,7 @@ namespace Sakura.Unity
         {
             if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Invalid mode.");
             if (VtuberEdition && mode != "VTuber") throw new InvalidOperationException("This is the standalone VTuber edition.");
-            if (Mode != mode) chatGeneration++;
+            if (Mode != mode) InterruptChat();
             Mode = mode; modeRevision++;
             activeChat?.Abort();
             if (!Connected) return;
@@ -272,19 +289,41 @@ namespace Sakura.Unity
         {
             if (Busy || string.IsNullOrWhiteSpace(text)) return;
             if (Mode == "VTuber") { StatusChanged?.Invoke("AI conversation stays off in VTuber mode."); return; }
+            var room = GetComponent<SakuraAvatarActions>();
+            if (Mode == "Companion" && room != null && room.Sleeping)
+            {
+                if (!SakuraVoice.WakeFromSleep(text, GetComponent<SakuraVoice>()?.WakePhrase ?? "hey sakura", out string command))
+                { StatusChanged?.Invoke("Sleeping · say wake up Sakura or your wake phrase."); return; }
+                if (!room.Act("home")) { StatusChanged?.Invoke("Use Stop & return home in Background to wake the character."); return; }
+                text = command;
+                if (string.IsNullOrWhiteSpace(text)) { StatusChanged?.Invoke("Awake · ready to listen."); return; }
+            }
             Busy = true;
             StatusChanged?.Invoke("Starting AI for your reply…");
             string mode = Mode; int revision = ++modeRevision;
-            int generation = chatGeneration;
+            int generation = ++chatGeneration;
+            chatLifetime.Cancel(); chatLifetime.Dispose(); chatLifetime = new System.Threading.CancellationTokenSource();
+            GetComponent<SakuraVoice>()?.StopSpeaking();
             Api("/api/unity/mode", JsonUtility.ToJson(new ModeRequest { mode = mode, revision = revision }), (modeJson, modeError) =>
             {
-                if (modeError != null || mode != Mode || generation != chatGeneration) { Busy = false; if (modeError != null) ChatError(modeError); return; }
+                if (mode != Mode || generation != chatGeneration) return;
+                if (modeError != null) { Busy = false; ChatError(modeError); return; }
                 Api("/api/unity/start-services", "{}", (json, error) =>
                 {
-                    if (error != null || mode != Mode || generation != chatGeneration) { Busy = false; if (error != null) ChatError(error); return; }
+                    if (mode != Mode || generation != chatGeneration) return;
+                    if (error != null) { Busy = false; ChatError(error); return; }
                     StartCoroutine(Chat(text, mode, generation, task));
                 });
             });
+        }
+
+        public void InterruptChat()
+        {
+            chatGeneration++;
+            chatLifetime.Cancel();
+            CancelScreenReaction();
+            activeChat?.Abort(); activeChat = null;
+            Busy = false;
         }
 
         private void ChatError(string error) { StatusChanged?.Invoke(error); ReplyReceived?.Invoke("I could not reply: " + error); }
@@ -364,6 +403,8 @@ namespace Sakura.Unity
                 activeChat = request;
                 request.method = "POST";
                 var payload = Newtonsoft.Json.Linq.JObject.FromObject(new ChatRequest { text = text, surface = mode == "Agent" ? "agent" : "companion", agent_task = mode == "Agent" ? task : null });
+                if (mode == "Companion" && !Regex.IsMatch(text, @"^(?:hello|hi|hey|hii+|hiya|namaste|नमस्ते)[!.\s]*$", RegexOptions.IgnoreCase))
+                    GetComponent<SakuraScreenFeatures>()?.AddChatContext(payload);
                 var actions = GetComponent<SakuraAvatarActions>();
                 var viewport = GetComponent<SakuraAvatarViewport>();
                 if (mode == "Companion" && viewport != null)
@@ -375,14 +416,27 @@ namespace Sakura.Unity
                     {
                         payload["room_context"] = actions.Context;
                         payload["avatar_room"] = new Newtonsoft.Json.Linq.JArray(actions.Capabilities);
+                        if (actions.RoomEnabled && IsRoomQuestion(text))
+                        {
+                            string frame = viewport.CaptureVisionFrame();
+                            if (frame != null)
+                            {
+                                payload["screen_image"] = frame;
+                                payload.Remove("screen_frames");
+                                payload["screen_source"] = "virtual_room";
+                            }
+                        }
                     }
+                    if (payload["screen_image"] != null && payload["screen_source"] == null
+                        && Regex.IsMatch(text, @"\b(?:your|ur|hair|eyes?|clothes|outfit|avatar|appearance|that girl)\b|बाल|आँख|कपड़े", RegexOptions.IgnoreCase))
+                        payload["avatar_image"] = viewport.CaptureVisionFrame();
                 }
                 request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
                 request.SetRequestHeader("Content-Type", "application/json");
                 yield return request.SendWebRequest();
-                activeChat = null;
-                Busy = false;
+                if (activeChat == request) activeChat = null;
                 if (Mode != mode || generation != chatGeneration) yield break;
+                Busy = false;
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     ChatError(ResponseError(request.downloadHandler?.text, request.error)); yield break;
@@ -395,8 +449,20 @@ namespace Sakura.Unity
                 else if (string.IsNullOrWhiteSpace(response.reply)) ChatError("The selected model returned an empty reply.");
                 else
                 {
+                    var reply = Newtonsoft.Json.Linq.JObject.Parse(request.downloadHandler.text);
+                    if (mode == "Companion" && reply["avatar_model"] != null)
+                    {
+                        Busy = true;
+                        var load = ApplyModelSelection(reply, chatLifetime.Token);
+                        while (!load.IsCompleted) yield return null;
+                        if (mode != Mode || generation != chatGeneration) yield break;
+                        Busy = false;
+                        response.reply = load.IsFaulted ? "The outfit did not load. Please choose it in Models." : load.Result;
+                        response.speech_reply = response.reply;
+                        reply["reply"] = response.reply;
+                    }
                     ReplyReceived?.Invoke(response.reply); StatusChanged?.Invoke("Ready");
-                    ReplyDataReceived?.Invoke(Newtonsoft.Json.Linq.JObject.Parse(request.downloadHandler.text));
+                    ReplyDataReceived?.Invoke(reply);
                     if (mode != "Companion") yield break;
                     Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = response.speech_reply ?? response.reply }), (json, error) =>
                     {
@@ -409,8 +475,29 @@ namespace Sakura.Unity
             }
         }
 
+        public async System.Threading.Tasks.Task<string> ApplyModelSelection(Newtonsoft.Json.Linq.JObject reply, System.Threading.CancellationToken cancellation = default)
+        {
+            if (Mode != "Companion" || VtuberEdition) return "Character changes through chat are available in Companion mode.";
+            var viewport = GetComponent<SakuraAvatarViewport>();
+            if (viewport == null || viewport.Loading) return "A character is already loading. Please try again when it finishes.";
+            string model = reply?["avatar_model"]?.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)reply["avatar_model"] : null;
+            try
+            {
+                SakuraAvatarViewport.ResolveCharacterPath(SourceFolder, model);
+                await viewport.LoadModel(SourceFolder, model, cancellation);
+                cancellation.ThrowIfCancellationRequested();
+                if (viewport.LoadedModelPath != model || viewport.LastImportError != null || !viewport.HasAvatar)
+                    return "The outfit did not load: " + (viewport.LastImportError ?? "The requested character could not be loaded.");
+                return "Changed to " + System.IO.Path.GetFileName(model).Replace(".model3.json", "").Replace(".pmx", "").Replace(".vrm", "") + ".";
+            }
+            catch (Exception) { return "The outfit did not load. Choose an installed character in Models."; }
+        }
+
+        public static bool IsRoomQuestion(string text) => Regex.IsMatch(text ?? "", @"\b(?:room|surroundings|where (?:are|do) (?:you|u) (?:live|stay)?|look around)\b|कमरा|कमरे", RegexOptions.IgnoreCase);
+
         private void OnDestroy()
         {
+            chatLifetime.Cancel(); chatLifetime.Dispose();
             foreach (var process in new[] { server, catalogProcess, importProcess, modelToolProcess })
             {
                 if (process == null) continue;

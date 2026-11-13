@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
@@ -12,6 +13,8 @@ namespace Sakura.Unity
     [DisallowMultipleComponent]
     public sealed class SakuraVoice : MonoBehaviour
     {
+        public bool SpeechInputBusy => recognizing || enrolling;
+        public bool SpokenInterruptionEnabled { get; set; }
         [Serializable] private sealed class Settings { public bool wake_word_enabled; public string wake_word; }
         [Serializable] private sealed class Recognition { public string text; public string error; public bool speaker_rejected; public string speaker_message; }
 
@@ -24,6 +27,7 @@ namespace Sakura.Unity
         public bool Listening { get; private set; }
         public bool Recording => microphone != null;
         public bool Speaking => speaker != null && speaker.isPlaying;
+        public AudioSource SpeechSource => speaker;
         public string Status { get; private set; } = "Microphone OFF";
         public float InputLevel { get; private set; }
 
@@ -37,7 +41,12 @@ namespace Sakura.Unity
         private int readFrame, generation, playbackGeneration;
         private bool pushToTalk, recognizing, starting, loadingSettings, settingsReady, wakeEnabled;
         private bool enrolling, resumeAfterEnrolment;
+        private bool captureInterruptOnly;
+        private SakuraAvatarActions sleepActions;
+        private string pendingSpeechText;
+        private readonly PlaybackEchoGuard echoGuard = new PlaybackEchoGuard();
         private string wakePhrase = "hey sakura";
+        public string WakePhrase => wakePhrase;
         private string playbackMode;
         private float resumeAt, microphoneStartedAt, wakeDeadline;
 
@@ -47,7 +56,7 @@ namespace Sakura.Unity
         {
             if (Backend == null) Backend = GetComponent<SakuraBackend>();
             boundBackend = Backend;
-            if (boundBackend != null) boundBackend.AudioReplyReceived += PlayReply;
+            if (boundBackend != null) { boundBackend.AudioReplyReceived += PlayReply; boundBackend.ReplyDataReceived += ReadSpeechText; }
             speaker = gameObject.AddComponent<AudioSource>();
             speaker.playOnAwake = false; speaker.spatialBlend = 0;
             if (FindFirstObjectByType<AudioListener>() == null) ownedListener = gameObject.AddComponent<AudioListener>();
@@ -131,7 +140,8 @@ namespace Sakura.Unity
                 catch (Exception error) { startError = error.Message; }
                 if (microphone == null) { FailInput("Microphone could not start. " + startError); yield break; }
                 microphoneStartedAt = Time.realtimeSinceStartup; readFrame = 0;
-                gate = new SpeechGate(microphone.frequency, SpeechThreshold, .3f, .65f, 15f);
+                captureInterruptOnly = Speaking || Backend.Busy;
+                gate = captureInterruptOnly ? new SpeechGate(microphone.frequency, SpeechThreshold, .12f, .3f, 3f) : new SpeechGate(microphone.frequency, SpeechThreshold, .3f, .65f, 15f);
                 heldSpeech.Clear();
                 SetStatus(pushToTalk ? "Microphone ON · speak, then release" : ListeningText());
             }
@@ -139,10 +149,17 @@ namespace Sakura.Unity
         }
 
         private bool CanCapture(int captureGeneration) => Listening && captureGeneration == generation && isActiveAndEnabled && Companion;
-        private string ListeningText() => wakeEnabled ? "Microphone ON · transcript wake gate: say " + wakePhrase : "Microphone ON · listening";
+        private string ListeningText() => Speaking ? "Microphone ON · listening for stop or wait" : Backend.Busy ? "Working · listening for stop or wait" : wakeEnabled ? "Microphone ON · transcript wake gate: say " + wakePhrase : "Microphone ON · listening";
 
         private void Update()
         {
+            var actions = GetComponent<SakuraAvatarActions>();
+            if (actions != sleepActions)
+            {
+                if (sleepActions != null) sleepActions.SleepChanged -= SleepChanged;
+                sleepActions = actions;
+                if (sleepActions != null) sleepActions.SleepChanged += SleepChanged;
+            }
             if (enrolling) return;
             if (!Companion)
             {
@@ -151,7 +168,7 @@ namespace Sakura.Unity
                 return;
             }
             if (!Listening) return;
-            if (Speaking || Backend.Busy || recognizing || Time.realtimeSinceStartup < resumeAt)
+            if (recognizing || (Speaking && !SpokenInterruptionEnabled) || Time.realtimeSinceStartup < resumeAt)
             {
                 if (microphone != null) CloseMicrophone();
                 return;
@@ -161,6 +178,7 @@ namespace Sakura.Unity
                 if (!starting) StartCoroutine(OpenMicrophone(generation));
                 return;
             }
+            if (!pushToTalk && captureInterruptOnly != (Speaking || Backend.Busy)) { CloseMicrophone(); return; }
             int position = Microphone.GetPosition(activeDevice);
             if (position < 0 || !Microphone.IsRecording(activeDevice)) { FailInput("Microphone disconnected or stopped. Check the selected device and retry."); return; }
             if (position == 0 && Time.realtimeSinceStartup - microphoneStartedAt > 3) { FailInput("Microphone produced no audio. Check Windows microphone access and the selected device."); return; }
@@ -180,7 +198,7 @@ namespace Sakura.Unity
                     heldSpeech.AddRange(mono);
                     if (heldSpeech.Count >= microphone.frequency * 45) { EndPushToTalk(); return; }
                 }
-                else if (gate.Push(mono)) { Submit(gate.Take(), microphone.frequency); return; }
+                else if (gate.Push(mono)) { Submit(gate.Take(), microphone.frequency, captureInterruptOnly); return; }
             }
         }
 
@@ -194,9 +212,11 @@ namespace Sakura.Unity
             Submit(pcm, rate);
         }
 
-        private void Submit(float[] pcm, int sampleRate)
+        private void Submit(float[] pcm, int sampleRate, bool interruptOnly = false)
         {
             int captureGeneration = generation;
+            int capturedPlayback = playbackGeneration;
+            float capturedAt = Time.realtimeSinceStartup;
             bool wasHeld = pushToTalk;
             CloseMicrophone(); recognizing = true; SetStatus("Recognising speech…");
             Backend.UploadAudio(EncodeWav(pcm, sampleRate), (json, error) =>
@@ -212,7 +232,26 @@ namespace Sakura.Unity
                 if (!string.IsNullOrEmpty(result.error)) { SetStatus(result.error); return; }
                 string text = (result.text ?? "").Trim();
                 if (text.Length == 0) { SetStatus("No clear speech recognised. Check the selected microphone and try again."); return; }
-                if (wakeEnabled && !wasHeld)
+                if (!wasHeld && echoGuard.Matches(text, capturedAt) && (interruptOnly || ExtractWakeCommand(text, wakePhrase) == null))
+                { SetStatus("Speaker echo ignored · listening"); return; }
+                bool woke = false;
+                if (sleepActions != null && sleepActions.Sleeping)
+                {
+                    if (!WakeFromSleep(text, wakePhrase, out string command)) { SetStatus("Sleeping · say wake up Sakura or your wake phrase"); return; }
+                    if (!sleepActions.Act("home")) sleepActions.Stop();
+                    text = command; woke = true;
+                    if (text.Length == 0) { SetStatus("Awake · ready to listen"); return; }
+                }
+                if (interruptOnly)
+                {
+                    string followup = ParseSpeechInterrupt(text, wakePhrase);
+                    if (followup == null || (!Speaking && !Backend.Busy) || (Speaking && capturedPlayback != playbackGeneration)) return;
+                    Backend.InterruptChat(); StopSpeaking();
+                    SetStatus("Paused. Ask your next question.");
+                    if (followup.Length == 0) return;
+                    text = followup;
+                }
+                if (wakeEnabled && !wasHeld && !woke && !interruptOnly)
                 {
                     // shortcut: transcript gating requires STT; it is not the original offline wake detector.
                     string command = ExtractWakeCommand(text, wakePhrase);
@@ -233,7 +272,8 @@ namespace Sakura.Unity
         private void PlayReply(string relativeAudio)
         {
             if (!Companion || !isActiveAndEnabled || string.IsNullOrEmpty(relativeAudio)) return;
-            PlayAudio(relativeAudio);
+            string text = pendingSpeechText; pendingSpeechText = null;
+            PlayAudio(relativeAudio, text);
         }
 
         public void PlayReadout(string relativeAudio)
@@ -244,7 +284,10 @@ namespace Sakura.Unity
 
         public void PlayCohost(string relativeAudio) => PlayReply(relativeAudio);
 
-        private void PlayAudio(string relativeAudio)
+        private void ReadSpeechText(Newtonsoft.Json.Linq.JObject reply) { pendingSpeechText = (string)reply["speech_reply"] ?? (string)reply["reply"]; }
+        private void SleepChanged(bool sleeping) { if (sleeping) { StopSpeaking(); wakeDeadline = 0; SetStatus("Sleeping · say wake up Sakura or your wake phrase"); } }
+
+        private void PlayAudio(string relativeAudio, string text = null)
         {
             StopSpeaking(); CloseMicrophone();
             int playback = playbackGeneration;
@@ -256,23 +299,23 @@ namespace Sakura.Unity
                 if (this == null || !isActiveAndEnabled || playback != playbackGeneration || Backend.Mode != mode)
                 { if (clip != null) Destroy(clip); return; }
                 if (error != null || clip == null) { SetStatus("Voice playback failed: " + (error ?? "empty audio")); resumeAt = Time.realtimeSinceStartup + .65f; return; }
-                speaker.clip = clip; speaker.Play();
+                speaker.clip = clip; speaker.Play(); echoGuard.Remember(text, Time.realtimeSinceStartup);
                 StartCoroutine(CompletePlayback(playback));
             });
         }
 
         private IEnumerator CompletePlayback(int playback)
         {
-            SetStatus("Sakura speaking · microphone paused to prevent echo");
+            SetStatus(Listening && SpokenInterruptionEnabled ? "Sakura speaking · listening for stop or wait" : Listening ? "Sakura speaking · microphone paused to prevent echo" : "Sakura speaking · microphone OFF");
             while (speaker != null && speaker.isPlaying && playback == playbackGeneration) yield return null;
             if (playback != playbackGeneration) yield break;
-            ReleasePlayback(); resumeAt = Time.realtimeSinceStartup + .65f;
+            echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); resumeAt = Time.realtimeSinceStartup + .65f;
             SetStatus(Listening ? ListeningText() : "Microphone OFF");
         }
 
         public void StopSpeaking()
         {
-            playbackGeneration++; ReleasePlayback(); resumeAt = Time.realtimeSinceStartup + .65f;
+            playbackGeneration++; echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); resumeAt = Time.realtimeSinceStartup + .65f;
         }
 
         private void ReleasePlayback()
@@ -304,7 +347,9 @@ namespace Sakura.Unity
         private void SetStatus(string message) { if (Status == message) return; Status = message; StatusChanged?.Invoke(message); }
         private void OnDisable()
         {
-            if (boundBackend != null) boundBackend.AudioReplyReceived -= PlayReply;
+            if (boundBackend != null) { boundBackend.AudioReplyReceived -= PlayReply; boundBackend.ReplyDataReceived -= ReadSpeechText; }
+            if (sleepActions != null) sleepActions.SleepChanged -= SleepChanged;
+            sleepActions = null; pendingSpeechText = null;
             StopAllCoroutines(); starting = false; loadingSettings = false;
             StopListening(); StopSpeaking();
             enrolling = false; resumeAfterEnrolment = false;
@@ -346,6 +391,63 @@ namespace Sakura.Unity
             if (escaped.Count == 0 || text == null) return null;
             var match = Regex.Match(text, @"(?<![\p{L}\p{M}\p{N}])" + string.Join(@"[^\p{L}\p{M}\p{N}]+", escaped) + @"(?![\p{L}\p{M}\p{N}])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             return match.Success ? Regex.Replace(text.Substring(match.Index + match.Length), @"^[\s,\.!?।]+", "").Trim() : null;
+        }
+
+        public static bool WakeFromSleep(string text, string phrase, out string command)
+        {
+            string raw = (text ?? "").Trim();
+            foreach (string prefix in new[] { "wake up sakura", "sakura wake up", "wake up", phrase })
+            {
+                if (string.IsNullOrWhiteSpace(prefix)) continue;
+                string[] words = Regex.Split(prefix.Trim(), @"[\s,.!?।]+").Where(word => word.Length > 0).ToArray();
+                if (words.Length == 0) continue;
+                string pattern = @"\A" + string.Join(@"[\s,.!?।]+", words.Select(Regex.Escape)) + @"(?:[\s,.!?।]+|$)";
+                var match = Regex.Match(raw, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (match.Success) { command = raw.Substring(match.Length).Trim(); return true; }
+            }
+            command = ""; return false;
+        }
+
+        public static string ParseSpeechInterrupt(string text, string phrase)
+        {
+            const string control = @"(?:please\s+)?(?:stop(?:\s+(?:speaking|talking))?|wait(?:\s+(?:a second|a moment))?|hold on|pause|(?:ज़रा\s+|जरा\s+)?रुको(?:\s+(?:ज़रा|जरा))?|रुक जाओ|बस(?: करो)?|ruko(?: zara)?|ruk jao)(?:\s+please)?(?![\p{L}\p{M}\p{N}])";
+            const string separators = @"[\s,.!?।:;—–-]*";
+            string value = (text ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(phrase))
+            {
+                var prefix = Regex.Match(value, @"\A" + Regex.Escape(phrase.Trim()) + @"[\s,.!?।:;-]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (prefix.Success) value = value.Substring(prefix.Length);
+            }
+            var match = Regex.Match(value, @"\A(?:" + control + ")" + separators + "(?:(?:" + control + ")" + separators + "){0,5}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!match.Success) return null;
+            string followup = Regex.Replace(value.Substring(match.Length), @"\A(?:and\s+)?(?:please\s+)?", "", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant).Trim();
+            if (followup.Length == 0) return "";
+            bool repeated = Regex.IsMatch(value, @"\A(?:(?:" + control + @")[\s,.!?।:;—–-]+){2}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            bool question = Regex.IsMatch(followup, @"\A(?:what|why|how|when|where|which|who|tell me|explain|can you|could you|do you|did you|is it|are you|मुझे|बताओ|क्या|क्यों|कैसे|कब|कहाँ|kya|kyun|kaise|batao)(?![\p{L}\p{M}\p{N}])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            return repeated || question ? followup : null;
+        }
+
+        public sealed class PlaybackEchoGuard
+        {
+            private sealed class Phrase { public string Text; public float Started, Until; }
+            private readonly List<Phrase> phrases = new List<Phrase>();
+            private static string[] Words(string text) => Regex.Matches((text ?? "").Normalize(NormalizationForm.FormKC).ToLowerInvariant(), @"[\p{L}\p{M}\p{N}]+").Cast<Match>().Select(match => match.Value).ToArray();
+            public void Remember(string text, float now)
+            {
+                string[] words = Words(text);
+                if (words.Length < 4) return;
+                phrases.Add(new Phrase { Text = string.Join(" ", words), Started = now, Until = now + 60 });
+                if (phrases.Count > 8) phrases.RemoveAt(0);
+            }
+            public void Finish(float now)
+            { if (phrases.Count > 0) phrases[phrases.Count - 1].Until = Math.Min(phrases[phrases.Count - 1].Until, now + 1.8f); }
+            public bool Matches(string text, float capturedAt)
+            {
+                string[] words = Words(text);
+                if (words.Length < 4) return false;
+                string candidate = " " + string.Join(" ", words) + " ";
+                return phrases.Any(phrase => capturedAt >= phrase.Started && capturedAt <= phrase.Until && (" " + phrase.Text + " ").Contains(candidate));
+            }
         }
 
         public sealed class SpeechGate

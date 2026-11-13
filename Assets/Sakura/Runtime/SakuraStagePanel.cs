@@ -37,6 +37,7 @@ namespace Sakura.Unity
             Actions.Viewport = viewport; Actions.Stage = Stage;
             Stage.Initialize(backend.SourceFolder);
             (viewport.GetComponent<SakuraBackdrop>() ?? viewport.gameObject.AddComponent<SakuraBackdrop>()).BuildPanel(backend, parent);
+            viewport.GetComponent<SakuraStageItems>()?.BuildPanel(parent);
             var card = new VisualElement(); card.AddToClassList("card"); parent.Add(card);
             var title = new Label("3D backgrounds & props"); title.AddToClassList("card-title"); card.Add(title);
             status = new Label("Opt in to load scenery alongside your character. Up to four static PMX objects."); status.style.whiteSpace = WhiteSpace.Normal;
@@ -72,6 +73,7 @@ namespace Sakura.Unity
             foreach (string action in new[] { "home", "desk", "mirror", "bed", "sit", "walk", "roam", "explore", "nod", "shake_head", "stretch" }) { string a = action; Button("Room: " + a, () => { if (!Actions.Act(a)) Notice("Enable room motion and mark the required points first."); }, card); }
             var dance = new DropdownField("Body motion", new List<string> { "groove", "step", "wave", "twist", "disco", "march", "hands_both", "hand_left", "hand_right", "greeting_wave", "chest_tap", "laugh", "laugh_bend" }, 0); card.Add(dance);
             Button("Start body motion", () => { if (!Actions.Gesture(dance.value)) Notice("Load a rigged character and stop tracking first."); }, card);
+            Button("Explore & describe room", () => backend.SendChat("Explore and describe your room."), card);
             Button("Stop & return home", Actions.Stop, card);
             var info = new Label("Furniture points follow the selected stage transform. Bed points mark the mattress centre. Chair points mark the standing position over its seat. Tracking takes priority. Routes require clear segments; collision detection and automatic room recognition are not available."); info.style.whiteSpace = WhiteSpace.Normal; card.Add(info); card.Add(status);
             card.RegisterCallback<DetachFromPanelEvent>(_ => { alive = false; Stage.StatusChanged -= Notice; Actions.StatusChanged -= Notice; });

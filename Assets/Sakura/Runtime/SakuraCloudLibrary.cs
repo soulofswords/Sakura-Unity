@@ -28,12 +28,14 @@ namespace Sakura.Unity
         private string folder = "", query = "";
         private bool downloading;
         private bool alive = true;
+        private bool signedIn;
+        private int catalogGeneration;
 
         public SakuraCloudLibrary(SakuraBackend backend, VisualElement host, string format)
         {
             this.backend = backend; this.format = format.ToLowerInvariant();
             root = new VisualElement(); root.AddToClassList("card"); host.Add(root);
-            root.RegisterCallback<DetachFromPanelEvent>(args => { alive = false; password.value = ""; });
+            root.RegisterCallback<DetachFromPanelEvent>(args => { alive = false; catalogGeneration++; password.value = ""; });
             AddText("Cloud import " + format, "card-title", root);
             AddText("Downloaded models install into models/" + this.format + "/ and appear in their format selector. Your existing models are kept.", "description", root);
             account = new Foldout { text = "Sign in or create a Sakura account", value = true }; root.Add(account);
@@ -53,12 +55,13 @@ namespace Sakura.Unity
             AddButton("Refresh library", Refresh, browse);
             breadcrumb = new VisualElement(); breadcrumb.AddToClassList("row"); browse.Add(breadcrumb);
             results = new VisualElement(); results.AddToClassList("cloud-grid"); browse.Add(results);
+            int connectionGeneration = catalogGeneration;
             backend.Api("/api/model-library/connection", null, (json, error) =>
             {
-                if (!alive) return;
+                if (!alive || connectionGeneration != catalogGeneration) return;
                 if (error != null) { status.text = error; return; }
                 var connection = JsonUtility.FromJson<ApiReply>(json);
-                if (connection.configured) { account.value = false; Refresh(); }
+                if (connection.configured) { signedIn = true; account.value = false; Refresh(); }
                 else status.text = "Sign in to the Sakura library to browse characters.";
             });
         }
@@ -88,7 +91,7 @@ namespace Sakura.Unity
                 if (failure != null) { status.text = failure; return; }
                 var reply = JsonUtility.FromJson<ApiReply>(json);
                 if (action == "recover" || reply.confirmation_required) { status.text = reply.message ?? "Check your email to continue."; return; }
-                account.value = false; Refresh();
+                signedIn = true; account.value = false; Refresh();
             });
         }
 
@@ -99,7 +102,7 @@ namespace Sakura.Unity
             {
                 if (!alive) return;
                 if (error != null) { status.text = error; return; }
-                models = Array.Empty<CloudCharacter>(); results.Clear(); password.value = "";
+                signedIn = false; catalogGeneration++; models = Array.Empty<CloudCharacter>(); results.Clear(); password.value = "";
                 account.value = true; browse.style.display = DisplayStyle.None;
                 status.text = "Signed out of the Sakura model library.";
             });
@@ -107,10 +110,12 @@ namespace Sakura.Unity
 
         private void Refresh()
         {
+            if (!alive || !signedIn) return;
+            int generation = ++catalogGeneration;
             status.text = "Loading the protected model library…";
             backend.Api("/api/model-library/models", null, (json, error) =>
             {
-                if (!alive) return;
+                if (!alive || !signedIn || generation != catalogGeneration) return;
                 if (error != null) { status.text = error; return; }
                 models = (JsonUtility.FromJson<CloudCatalog>(json).models ?? Array.Empty<CloudCharacter>())
                     .Where(item => item.format == format && (item.asset_kind == "character" || string.IsNullOrEmpty(item.asset_kind))).ToArray();
@@ -153,11 +158,76 @@ namespace Sakura.Unity
         private void AddCharacter(CloudCharacter character, string name)
         {
             var card = new VisualElement(); card.AddToClassList("cloud-character"); results.Add(card);
+            if (signedIn && character.preview) AddPreview(character, card);
             AddText(name, "card-title", card);
             AddText((character.bytes / 1048576f).ToString("0.0") + " MB", "description", card);
             var detail = AddText("", "description", card);
             var button = AddButton(character.installed ? "Installed" : "Download", () => Install(character, detail), card);
             button.SetEnabled(!character.installed);
+        }
+
+        private void AddPreview(CloudCharacter character, VisualElement card)
+        {
+            var image = new Image { scaleMode = ScaleMode.ScaleAndCrop, pickingMode = PickingMode.Ignore };
+            image.style.width = Length.Percent(100); image.style.height = 140; image.style.alignSelf = Align.Center; card.Add(image);
+            image.RegisterCallback<GeometryChangedEvent>(change =>
+            {
+                if (change.newRect.width > 0 && Mathf.Abs(change.newRect.height - change.newRect.width) > 1) image.style.height = change.newRect.width;
+            });
+            var message = AddText("", "description", card);
+            bool attached = true, attempted = false, hover = false, loading = false;
+            bool animated = format != "live2d";
+            int frame = 0;
+            IDisposable request = null;
+            SakuraLibraryPreview preview = null;
+            var animation = card.schedule.Execute(() =>
+            {
+                if (!animated || !hover || preview == null || preview.Frames <= 1) return;
+                frame = (frame + 1) % preview.Frames;
+                image.uv = SakuraLibraryPreview.FrameUv(frame, preview.Frames, preview.Columns);
+            }).Every(100);
+            animation.Pause();
+            card.RegisterCallback<PointerEnterEvent>(_ => { hover = true; if (animated && preview != null && preview.Frames > 1) animation.Resume(); });
+            card.RegisterCallback<PointerLeaveEvent>(_ =>
+            {
+                hover = false; animation.Pause(); frame = 0;
+                if (preview != null) image.uv = SakuraLibraryPreview.FrameUv(0, preview.Frames, preview.Columns);
+            });
+            var visibility = card.schedule.Execute(() =>
+            {
+                if (!attached || !alive || !signedIn) return;
+                bool visible = PreviewVisible(card);
+                if (loading && !visible) { request?.Dispose(); request = null; loading = attempted = false; message.text = ""; return; }
+                if (attempted || !visible) return;
+                attempted = loading = true; message.text = "Loading preview…";
+                request = backend.LoadLibraryPreview(character.id, (loaded, error) =>
+                {
+                    loading = false; request = null;
+                    if (!attached || !alive || !signedIn) { loaded?.Dispose(); return; }
+                    if (!PreviewVisible(card)) { loaded?.Dispose(); attempted = false; message.text = ""; return; }
+                    if (error != null || loaded == null) { message.text = "Preview unavailable."; return; }
+                    preview = loaded; image.image = preview.Texture; image.uv = SakuraLibraryPreview.FrameUv(0, preview.Frames, preview.Columns); message.text = "";
+                    if (animated && hover && preview.Frames > 1) animation.Resume();
+                });
+            }).Every(250);
+            card.RegisterCallback<DetachFromPanelEvent>(_ =>
+            {
+                attached = false; visibility.Pause(); animation.Pause(); request?.Dispose(); request = null;
+                image.image = null; preview?.Dispose(); preview = null;
+            });
+        }
+
+        public static bool PreviewVisible(VisualElement element)
+        {
+            if (element.panel == null || element.worldBound.width <= 0 || element.worldBound.height <= 0) return false;
+            Rect bounds = element.worldBound;
+            if (!bounds.Overlaps(element.panel.visualTree.worldBound)) return false;
+            for (var parent = element; parent != null; parent = parent.parent)
+            {
+                if (parent.resolvedStyle.display == DisplayStyle.None || parent.resolvedStyle.visibility == Visibility.Hidden) return false;
+                if (parent is ScrollView scroll && !bounds.Overlaps(scroll.contentViewport.worldBound)) return false;
+            }
+            return true;
         }
 
         private void Install(CloudCharacter model, Label detail)

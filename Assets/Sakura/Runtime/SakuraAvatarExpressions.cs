@@ -24,17 +24,25 @@ namespace Sakura.Unity
             public bool Active;
             internal Action<float> Apply;
             internal float PreviewUntil;
+            internal string Source;
         }
-        [Serializable] sealed class SavedEntry { public string id, label, hotkey; public float strength = 1; }
-        [Serializable] sealed class Saved { public List<SavedEntry> entries = new List<SavedEntry>(); }
+        public sealed class ActionEntry { public string Id, Name, Hotkey; internal string Source; internal Action Run; }
+        [Serializable] sealed class SavedEntry { public string id, label, hotkey, source; public float strength = 1; }
+        [Serializable] sealed class Saved { public List<SavedEntry> entries = new List<SavedEntry>(); public List<SavedEntry> actions = new List<SavedEntry>(); }
         readonly List<Entry> entries = new List<Entry>();
+        readonly List<ActionEntry> actions = new List<ActionEntry>();
+        SakuraVtubeHotkeys.Profile vtube;
         readonly Dictionary<CubismParameter, (float before, float after)> parameterWrites = new Dictionary<CubismParameter, (float, float)>();
         readonly HashSet<Entry> applied = new HashSet<Entry>();
+        Entry reaction;
+        float reactionWeight, reactionUntil;
         CubismModel cubism;
         Vrm10Instance vrm;
         string preference;
         public event Action Changed;
         public IReadOnlyList<Entry> Entries => entries;
+        public IReadOnlyList<ActionEntry> Actions => actions;
+        public bool ImportedVtubeHotkeys => vtube != null && vtube.Present;
         public string ImportWarning { get; private set; }
         public bool SuspendHotkeys { get; set; }
         public bool HasUpdateController { get; set; }
@@ -81,6 +89,7 @@ namespace Sakura.Unity
                     meshIndex++;
                 }
             }
+            AddActions();
             if (PlayerPrefs.HasKey(preference))
             {
                 try
@@ -91,27 +100,117 @@ namespace Sakura.Unity
                         var entry = entries.FirstOrDefault(item => item.Id == value.id); if (entry == null) continue;
                         entry.Label = string.IsNullOrWhiteSpace(value.label) ? entry.Name : value.label;
                         if (!float.IsNaN(value.strength) && !float.IsInfinity(value.strength)) entry.Strength = Mathf.Clamp01(value.strength);
-                        if (ValidHotkey(value.hotkey) && !entries.Any(item => item.Hotkey == value.hotkey)) entry.Hotkey = value.hotkey;
+                        string key = NormalizeHotkey(value.hotkey);
+                        if (key != null && !KeyUsed(key)) entry.Hotkey = key;
+                        entry.Source = value.source;
+                    }
+                    foreach (var value in saved.actions ?? new List<SavedEntry>())
+                    {
+                        var action = actions.FirstOrDefault(item => item.Id == value.id); if (action == null) continue;
+                        string key = NormalizeHotkey(value.hotkey); if (key != null && !KeyUsed(key)) action.Hotkey = key; action.Source = value.source;
                     }
                 }
                 catch (Exception error) { Debug.LogWarning("Expression preferences could not be read: " + error.Message); }
             }
+            AssignDefaults(); Save();
         }
         Entry Add(string id, string name, Action<float> apply)
         {
             var entry = new Entry { Id = id, Name = name, Label = name, Apply = apply }; entries.Add(entry); return entry;
         }
+        bool KeyUsed(string key, string except = null) => entries.Any(entry => entry.Id != except && entry.Hotkey == key) || actions.Any(entry => entry.Id != except && entry.Hotkey == key);
+        static bool LegacyManual(Entry entry) => entry.Source == null && !string.IsNullOrEmpty(entry.Hotkey) && !System.Text.RegularExpressions.Regex.IsMatch(entry.Hotkey, @"^Ctrl\+(?:(?:Alt|Shift)\+)*Digit[0-9]$");
+        void AssignDefaults()
+        {
+            if (ImportedVtubeHotkeys)
+            {
+                foreach (var entry in entries.Where(entry => entry.Id.StartsWith("expression:", StringComparison.Ordinal) || entry.Id.StartsWith("motion:", StringComparison.Ordinal)))
+                {
+                    if (entry.Source == "manual" || LegacyManual(entry)) continue;
+                    entry.Hotkey = null; entry.Source = "vtube";
+                }
+                foreach (var entry in entries.Where(entry => (entry.Id.StartsWith("expression:", StringComparison.Ordinal) || entry.Id.StartsWith("motion:", StringComparison.Ordinal)) && entry.Source == "vtube"))
+                {
+                    string file = entry.Id.Substring(entry.Id.IndexOf(':') + 1).Replace('\\', '/');
+                    var imported = vtube.Bindings.FirstOrDefault(binding => binding.File != null && binding.File.Equals(file, StringComparison.OrdinalIgnoreCase));
+                    if (imported?.Hotkey != null && !KeyUsed(imported.Hotkey, entry.Id)) entry.Hotkey = imported.Hotkey;
+                }
+                var reset = actions.First(entry => entry.Id == "clear-expressions");
+                if (reset.Source != "manual")
+                {
+                    reset.Hotkey = null; reset.Source = "vtube";
+                    string key = vtube.Bindings.FirstOrDefault(binding => binding.Action == "RemoveAllExpressions")?.Hotkey;
+                    if (key != null && !KeyUsed(key, reset.Id)) reset.Hotkey = key;
+                }
+                return;
+            }
+            int index = 0;
+            foreach (var entry in entries.Where(entry => !entry.Id.StartsWith("parameter:", StringComparison.Ordinal)))
+            {
+                if (entry.Source == "manual" || !string.IsNullOrEmpty(entry.Hotkey)) continue;
+                while (index < 40)
+                {
+                    string key = new[] { "Ctrl+", "Ctrl+Alt+", "Ctrl+Shift+", "Ctrl+Alt+Shift+" }[index / 10] + "Digit" + "1234567890"[index % 10]; index++;
+                    if (KeyUsed(key)) continue;
+                    entry.Hotkey = key; entry.Source = "automatic"; break;
+                }
+            }
+        }
+        SakuraAvatarViewport Viewport() => GetComponentInParent<SakuraAvatarViewport>() ?? throw new InvalidOperationException("Load this model in the native viewport first.");
+        void AddActions()
+        {
+            void AddAction(string id, string name, Action run) => actions.Add(new ActionEntry { Id = id, Name = name, Run = run });
+            void ToggleMotion(string option)
+            {
+                var motion = GetComponent<SakuraIdleMotion>() ?? throw new InvalidOperationException("This model has no idle controls.");
+                if (option == "breath") motion.Breathing = !motion.Breathing;
+                else if (option == "blink") motion.Blinking = !motion.Blinking;
+                else motion.IdleMotions = !motion.IdleMotions;
+                motion.Save();
+            }
+            AddAction("clear-expressions", "Clear expressions", Clear);
+            AddAction("screenshot", "Take screenshot", () => { var output = Viewport().GetComponent<SakuraOutput>() ?? throw new InvalidOperationException("Screenshot output is unavailable."); output.Screenshot(); });
+            AddAction("toggle-breathing", "Toggle auto breathing", () => ToggleMotion("breath"));
+            AddAction("toggle-blink", "Toggle auto blinking", () => ToggleMotion("blink"));
+            AddAction("toggle-idle", "Toggle idle motions", () => ToggleMotion("idle"));
+            AddAction("toggle-model-lock", "Lock / unlock model position", () => { var viewport = Viewport(); viewport.PositionLocked = !viewport.PositionLocked; });
+            AddAction("model-bigger", "Make model bigger", () => { var viewport = Viewport(); viewport.SetZoomPercent(viewport.ZoomPercent * 1.05f); });
+            AddAction("model-smaller", "Make model smaller", () => { var viewport = Viewport(); viewport.SetZoomPercent(viewport.ZoomPercent * .95f); });
+            void Rotate(float angle)
+            {
+                Viewport().Rotate(angle);
+            }
+            AddAction("model-rotate-left", "Rotate model left", () => Rotate(-5));
+            AddAction("model-rotate-right", "Rotate model right", () => Rotate(5));
+            AddAction("cycle-background", "Cycle stage background", () =>
+            {
+                var backdrop = Viewport().GetComponent<SakuraBackdrop>() ?? throw new InvalidOperationException("Stage background controls are unavailable.");
+                Color[] palette = { Color.green, new Color32(22, 143, 213, 255), new Color32(243, 237, 249, 255), new Color32(18, 35, 51, 255) };
+                int index = Array.FindIndex(palette, color => ((Vector4)(color - backdrop.Colour)).sqrMagnitude < .0001f);
+                backdrop.SetColour(palette[(index + 1) % palette.Length]); backdrop.SetSolid(true);
+            });
+        }
+        public void BindAction(string id, string hotkey)
+        {
+            var target = actions.FirstOrDefault(entry => entry.Id == id) ?? throw new ArgumentException("Action no longer exists.");
+            if (!string.IsNullOrEmpty(hotkey)) hotkey = NormalizeHotkey(hotkey) ?? throw new ArgumentException("Choose a supported shortcut.");
+            if (!string.IsNullOrEmpty(hotkey) && KeyUsed(hotkey, target.Id)) throw new ArgumentException("That shortcut is already assigned.");
+            target.Hotkey = hotkey; target.Source = "manual"; Save();
+        }
+        public void RunAction(string id) => (actions.FirstOrDefault(entry => entry.Id == id) ?? throw new ArgumentException("Action no longer exists.")).Run();
         void LoadLiveExpressions(string path)
         {
             if (!File.Exists(path)) return;
             if (new FileInfo(path).Length > 8 * 1024 * 1024) throw new InvalidDataException("Model manifest exceeds 8 MB.");
-            var files = JObject.Parse(File.ReadAllText(path))["FileReferences"]?["Expressions"] as JArray;
-            if (files == null) return;
+            vtube = SakuraVtubeHotkeys.Load(path); if (vtube.Warning != null) ImportWarning = vtube.Warning;
+            var motions = GetComponent<SakuraLive2DMotions>() ?? gameObject.AddComponent<SakuraLive2DMotions>();
+            motions.Initialize(path, vtube);
+            var files = vtube.Expressions;
             foreach (var item in files.Take(500))
             {
                 try
                 {
-                    string relative = item.Value<string>("File");
+                    string relative = item.File;
                     string file = SakuraModelImport.ResolveFile(Path.GetDirectoryName(path), relative);
                     if (!File.Exists(file) || new FileInfo(file).Length > 8 * 1024 * 1024) throw new InvalidDataException("Missing or oversized expression: " + relative);
                     var json = JObject.Parse(File.ReadAllText(file));
@@ -127,7 +226,7 @@ namespace Sakura.Unity
                     if (parameters.Count == 0) continue;
                     string id = "expression:" + relative;
                     if (entries.Any(entry => entry.Id == id)) continue;
-                    Add(id, item.Value<string>("Name") ?? Path.GetFileNameWithoutExtension(relative), weight =>
+                    Add(id, item.Name ?? Path.GetFileNameWithoutExtension(relative), weight =>
                     {
                         foreach (var data in parameters)
                         {
@@ -139,6 +238,16 @@ namespace Sakura.Unity
                 }
                 catch (Exception error) { ImportWarning = error.Message; Debug.LogWarning("Live2D expression skipped: " + error.Message); }
             }
+            foreach (var motion in motions.Motions)
+            {
+                string relative = motion.File;
+                Add("motion:" + relative, "Motion · " + motion.Name, weight => motions.SetWeight(relative, weight));
+            }
+            motions.ActiveChanged += (relative, active) =>
+            {
+                var entry = entries.FirstOrDefault(value => value.Id == "motion:" + relative);
+                if (entry != null) { entry.Active = active; Changed?.Invoke(); }
+            };
         }
         void WriteParameter(CubismParameter parameter, float value)
         {
@@ -161,36 +270,91 @@ namespace Sakura.Unity
         }
         public void SetActive(string id, bool active) { var entry = Find(id); entry.Active = active; entry.PreviewUntil = 0; Changed?.Invoke(); }
         public void Preview(string id, float seconds = 1.5f) { Find(id).PreviewUntil = Time.unscaledTime + Mathf.Clamp(seconds, .01f, 10); Changed?.Invoke(); }
-        public void Clear() { foreach (var entry in entries) { entry.Active = false; entry.PreviewUntil = 0; } ApplyNow(); Changed?.Invoke(); }
+        public void Clear() { StopReplyMood(); foreach (var entry in entries) { entry.Active = false; entry.PreviewUntil = 0; } ApplyNow(); Changed?.Invoke(); }
+        public void StopReplyMood()
+        {
+            reactionUntil = reactionWeight = 0;
+            if (reaction != null && !reaction.Active && applied.Remove(reaction) && cubism == null) reaction.Apply(0);
+            reaction = null;
+        }
+        public bool SetReplyMood(string mood)
+        {
+            StopReplyMood();
+            string pattern = mood switch
+            {
+                "happy" => @"happy|joy|smile|cheer|笑|嬉|喜|开心|にこ",
+                "amused" => @"amuse|laugh|grin|にや|ニヤ|笑い|大笑|happy|joy|smile",
+                "surprised" => @"surpris|shock|wow|驚|びっくり|惊|吃惊",
+                "concerned" => @"sad|worr|concern|困|悲|哀|心配|难过",
+                "focused" or "curious" => @"focus|serious|think|真剣|考|思考|认真",
+                "sparkle" => @"sparkl|twinkl|star.?eyes|キラ|きら|星目|星星眼|happy|smile",
+                _ => null
+            };
+            if (pattern == null || entries.Any(entry => entry.Active || entry.PreviewUntil > Time.unscaledTime)) return false;
+            const string unsafeNames = @"outfit|cloth|dress|nude|undress|remove|toggle|accessor|stocking|weapon|hide|衣|服|脱|消|口|mouth|blink|ウィンク|まばたき|eyeclose";
+            var chosen = entries.FirstOrDefault(entry => !entry.Id.StartsWith("motion:", StringComparison.Ordinal) && !System.Text.RegularExpressions.Regex.IsMatch(entry.Name + " " + entry.Label, unsafeNames, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                && System.Text.RegularExpressions.Regex.IsMatch(entry.Name + " " + entry.Label, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+            if (chosen == null) return false;
+            if (reaction != chosen)
+            {
+                if (reaction != null && applied.Remove(reaction) && cubism == null) reaction.Apply(0);
+                reaction = chosen; reactionWeight = 0;
+            }
+            reactionUntil = Time.unscaledTime + 6; return true;
+        }
+        public bool ApplyByLabel(JObject command)
+        {
+            if (command == null) return false;
+            if (command.Value<bool?>("clear") == true) { Clear(); return true; }
+            string label = command.Value<string>("label");
+            if (string.IsNullOrWhiteSpace(label)) return false;
+            var matches = entries.Where(entry => string.Equals(entry.Label, label, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(entry.Name, label, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matches.Length != 1) return false;
+            SetActive(matches[0].Id, true); ApplyNow(); return true;
+        }
         public void Bind(string id, string hotkey)
         {
-            if (!string.IsNullOrEmpty(hotkey) && !ValidHotkey(hotkey)) throw new ArgumentException("Choose a letter, digit, function key or navigation key, with optional modifiers.");
+            if (!string.IsNullOrEmpty(hotkey)) hotkey = NormalizeHotkey(hotkey) ?? throw new ArgumentException("Choose a letter, digit, function key or navigation key, with optional modifiers.");
             var target = Find(id);
-            if (!string.IsNullOrEmpty(hotkey) && entries.Any(entry => entry != target && entry.Hotkey == hotkey)) throw new ArgumentException("That shortcut is already assigned to another expression.");
-            target.Hotkey = hotkey; Save();
+            if (!string.IsNullOrEmpty(hotkey) && (entries.Any(entry => entry != target && entry.Hotkey == hotkey) || actions.Any(entry => entry.Hotkey == hotkey))) throw new ArgumentException("That shortcut is already assigned.");
+            target.Hotkey = hotkey; target.Source = "manual"; Save();
         }
         void Save()
         {
-            PlayerPrefs.SetString(preference, JsonUtility.ToJson(new Saved { entries = entries.Select(entry => new SavedEntry { id = entry.Id, label = entry.Label, hotkey = entry.Hotkey, strength = entry.Strength }).ToList() }));
+            PlayerPrefs.SetString(preference, JsonUtility.ToJson(new Saved { entries = entries.Select(entry => new SavedEntry { id = entry.Id, label = entry.Label, hotkey = entry.Hotkey, strength = entry.Strength, source = entry.Source }).ToList(), actions = actions.Select(entry => new SavedEntry { id = entry.Id, hotkey = entry.Hotkey, source = entry.Source }).ToList() }));
             PlayerPrefs.Save(); Changed?.Invoke();
         }
         public bool TriggerHotkey(string hotkey)
         {
+            hotkey = NormalizeHotkey(hotkey); if (hotkey == null) return false;
+            var action = actions.FirstOrDefault(value => value.Hotkey == hotkey);
+            if (action != null) { RunAction(action.Id); return true; }
             var entry = entries.FirstOrDefault(value => !string.IsNullOrEmpty(value.Hotkey) && value.Hotkey == hotkey);
             if (entry == null) return false; SetActive(entry.Id, !entry.Active); return true;
         }
         static bool TryKey(string code, out Key key)
         {
             if (code.StartsWith("Key", StringComparison.Ordinal)) code = code.Substring(3);
-            return Enum.TryParse(code, out key) && key != Key.None && !IsModifier(key);
+            return Enum.TryParse(code, true, out key) && key != Key.None && !IsModifier(key) && Enum.IsDefined(typeof(Key), key);
         }
-        public static bool ValidHotkey(string hotkey)
+        public static string NormalizeHotkey(string hotkey)
         {
-            if (string.IsNullOrEmpty(hotkey)) return false;
-            var pieces = hotkey.Split('+'); if (!TryKey(pieces[pieces.Length - 1], out _)) return false;
-            var modifiers = pieces.Take(pieces.Length - 1).ToArray();
-            return modifiers.Distinct().Count() == modifiers.Length && modifiers.All(value => value == "Ctrl" || value == "Alt" || value == "Shift" || value == "Meta");
+            if (string.IsNullOrWhiteSpace(hotkey) || hotkey.Length > 100) return null;
+            var pieces = hotkey.Split('+').Select(value => value.Trim()).ToArray(); string code = pieces[pieces.Length - 1];
+            var aliases = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["ArrowLeft"] = "LeftArrow", ["ArrowRight"] = "RightArrow", ["ArrowUp"] = "UpArrow", ["ArrowDown"] = "DownArrow", ["Left"] = "LeftArrow", ["Right"] = "RightArrow", ["Up"] = "UpArrow", ["Down"] = "DownArrow", ["Return"] = "Enter" };
+            if (aliases.TryGetValue(code, out string alias)) code = alias;
+            if (code.Length == 1 && char.IsDigit(code[0])) code = "Digit" + code;
+            else if (code.All(char.IsDigit)) return null;
+            if (code.StartsWith("Key", StringComparison.OrdinalIgnoreCase)) code = code.Substring(3);
+            if (!TryKey(code, out Key key)) return null;
+            var modifiers = pieces.Take(pieces.Length - 1).Select(value => new[] { "Ctrl", "Alt", "Shift", "Meta" }.FirstOrDefault(candidate => candidate.Equals(value, StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (modifiers.Any(value => value == null) || modifiers.Distinct().Count() != modifiers.Length) return null;
+            string name = key.ToString(); if (name.Length == 1 && char.IsLetter(name[0])) name = "Key" + name;
+            string normalized = string.Join("+", new[] { "Ctrl", "Alt", "Shift", "Meta" }.Where(modifiers.Contains).Concat(new[] { name }));
+            return normalized == "Tab" || normalized == "Ctrl+Shift+KeyT" || normalized == "Ctrl+Shift+KeyH" ? null : normalized;
         }
+        public static bool ValidHotkey(string hotkey) => NormalizeHotkey(hotkey) != null;
         static bool IsModifier(Key key) => key == Key.LeftCtrl || key == Key.RightCtrl || key == Key.LeftShift || key == Key.RightShift || key == Key.LeftAlt || key == Key.RightAlt || key == Key.LeftMeta || key == Key.RightMeta;
         public static string PressedHotkey()
         {
@@ -215,8 +379,13 @@ namespace Sakura.Unity
         void Update()
         {
             RestoreParameters();
+            bool automatic = reaction != null && reactionUntil > Time.unscaledTime && !entries.Any(entry => entry.Active || entry.PreviewUntil > Time.unscaledTime);
+            reactionWeight = Mathf.Lerp(reactionWeight, automatic ? .65f : 0, 1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime, .1f) / .28f));
             if (Application.isFocused && !SuspendHotkeys && !EditingText())
-            { string hotkey = PressedHotkey(); if (hotkey != null) TriggerHotkey(hotkey); }
+            {
+                string hotkey = PressedHotkey();
+                if (hotkey != null) try { TriggerHotkey(hotkey); } catch (Exception error) { Debug.LogWarning("Shortcut could not run. " + error.Message); }
+            }
             if (vrm != null) ApplyNow();
         }
         public void ApplyNow()
@@ -225,15 +394,18 @@ namespace Sakura.Unity
             {
                 bool active = entry.Active || entry.PreviewUntil > Time.unscaledTime;
                 if (active) { entry.Apply(entry.Strength); applied.Add(entry); }
-                else if (applied.Remove(entry) && cubism == null) entry.Apply(0);
+                else if (entry == reaction && reactionWeight > .005f && !entries.Any(manual => manual.Active || manual.PreviewUntil > Time.unscaledTime))
+                { entry.Apply(entry.Strength * reactionWeight); applied.Add(entry); }
+                else if (applied.Remove(entry) && (cubism == null || entry.Id.StartsWith("motion:", StringComparison.Ordinal))) entry.Apply(0);
             }
         }
         public void OnLateUpdate() { if (isActiveAndEnabled && cubism != null) ApplyNow(); }
         void LateUpdate() { if (cubism == null) { if (vrm == null) ApplyNow(); } else if (!HasUpdateController) OnLateUpdate(); }
         void OnDisable()
         {
+            reaction = null; reactionWeight = reactionUntil = 0;
             RestoreParameters();
-            if (cubism == null) foreach (var entry in applied) entry.Apply(0);
+            foreach (var entry in applied) if (cubism == null || entry.Id.StartsWith("motion:", StringComparison.Ordinal)) entry.Apply(0);
             applied.Clear();
         }
     }

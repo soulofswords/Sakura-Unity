@@ -40,6 +40,7 @@ namespace Sakura.Unity
             public List<string> frozen = new List<string>();
             public List<ParameterSettings> parameters = new List<ParameterSettings>();
             public EffectSettings effects = new EffectSettings();
+            public SakuraLive2DSettings live2D = new SakuraLive2DSettings();
         }
         public sealed class Part
         {
@@ -70,6 +71,11 @@ namespace Sakura.Unity
         bool springsDirty;
         string storage;
         Material effectMaterial;
+        SakuraLive2DSetup liveSetup;
+        readonly Dictionary<Texture, Texture2D> alphaFixed = new Dictionary<Texture, Texture2D>();
+        public SakuraLive2DSettings Live2D => profile.live2D;
+        public bool HasLive2DPhysics => liveSetup != null && liveSetup.PhysicsAvailable;
+        public Live2D.Cubism.Framework.Physics.CubismPhysicsRig Live2DPhysicsRig => liveSetup?.Rig;
         public EffectSettings Effects => profile.effects;
         public bool HasEffects => Effects.glow > 0 || Effects.saturation != 1 || Effects.contrast != 1 || Effects.overlayStrength > 0;
         public string Warning { get; private set; }
@@ -108,6 +114,9 @@ namespace Sakura.Unity
             }
             profile.parts ??= new List<PartSettings>(); profile.frozen ??= new List<string>(); profile.parameters ??= new List<ParameterSettings>();
             profile.effects ??= new EffectSettings();
+            profile.live2D ??= new SakuraLive2DSettings();
+            try { profile.live2D.Validate(); }
+            catch (ArgumentException) { profile.live2D = new SakuraLive2DSettings(); Warning = "Invalid saved Live2D limits were reset."; }
             try { ValidateEffects(profile.effects); }
             catch (ArgumentException) { profile.effects = new EffectSettings(); Warning = "Invalid saved effects were reset."; }
             profile.parts.RemoveAll(value => value == null); profile.parameters.RemoveAll(value => value == null);
@@ -115,6 +124,8 @@ namespace Sakura.Unity
             foreach (var value in profile.parameters) value.smoothing = Mathf.Clamp(value.smoothing, 0, 100);
             if (cubism != null)
             {
+                liveSetup = new SakuraLive2DSetup(gameObject, modelKey); liveSetup.Apply(profile.live2D);
+                if (liveSetup.Warning != null) Warning = liveSetup.Warning;
                 foreach (var art in GetComponentsInChildren<CubismRenderer>(true))
                 {
                     if (art.MainTexture == null) continue;
@@ -279,10 +290,11 @@ namespace Sakura.Unity
             catch
             {
                 foreach (var entry in previous) { entry.part.Replacement = entry.texture; entry.part.Settings.replacement = entry.name; ApplyPart(entry.part); }
-                Destroy(replacement); if (File.Exists(file)) File.Delete(file); throw;
+                Destroy(replacement); if (File.Exists(file)) File.Delete(file); ReleaseUnusedAlphaTextures(); throw;
             }
             foreach (var texture in previous.Select(entry => entry.texture).Distinct()) if (texture != null && !parts.Any(part => part.Replacement == texture)) Destroy(texture);
             foreach (string filename in previous.Select(entry => entry.name).Distinct()) DeleteReplacement(filename);
+            ReleaseUnusedAlphaTextures();
         }
         public void RestoreTexture(int index) => RestoreTextureGroup(new[] { index });
         public void RestoreTextureGroup(IEnumerable<int> indices)
@@ -292,6 +304,7 @@ namespace Sakura.Unity
             catch { foreach (var entry in previous) { entry.part.Replacement = entry.texture; entry.part.Settings.replacement = entry.name; ApplyPart(entry.part); } throw; }
             foreach (var texture in previous.Select(entry => entry.texture).Distinct()) if (texture != null && !parts.Any(part => part.Replacement == texture)) Destroy(texture);
             foreach (string filename in previous.Select(entry => entry.name).Distinct()) DeleteReplacement(filename);
+            ReleaseUnusedAlphaTextures();
         }
         void DeleteReplacement(string name)
         {
@@ -306,6 +319,61 @@ namespace Sakura.Unity
         public void Save()
         {
             Directory.CreateDirectory(Path.GetDirectoryName(storage)); WriteFile(storage, Encoding.UTF8.GetBytes(JsonUtility.ToJson(profile, true)));
+        }
+        public void SetLive2DSettings(SakuraLive2DSettings settings)
+        {
+            if (cubism == null) throw new InvalidOperationException("Load a Live2D model first.");
+            settings.Validate(); var previous = profile.live2D; profile.live2D = settings.Copy();
+            bool appearanceChanged = previous.whiteOutlineFix != profile.live2D.whiteOutlineFix;
+            try
+            {
+                liveSetup?.Apply(profile.live2D);
+                if (appearanceChanged) foreach (var part in parts) ApplyPart(part);
+                Save(); ReleaseUnusedAlphaTextures();
+            }
+            catch
+            {
+                profile.live2D = previous; liveSetup?.Apply(previous);
+                if (appearanceChanged) foreach (var part in parts) ApplyPart(part);
+                ReleaseUnusedAlphaTextures(); throw;
+            }
+        }
+        public int AutoSetupLive2D()
+        {
+            if (cubism == null) throw new InvalidOperationException("Load a Live2D model first.");
+            int count = 0;
+            foreach (var parameter in Parameters)
+            {
+                bool blink = parameter.Id == "ParamEyeLOpen" || parameter.Id == "ParamEyeROpen" || parameter.GetComponent<global::Live2D.Cubism.Framework.CubismEyeBlinkParameter>() != null;
+                bool breath = parameter.Id.IndexOf("breath", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!blink && !breath) continue;
+                var settings = GetParameter(parameter.Id); if (blink) settings.autoBlink = true; if (breath) settings.autoBreath = true; count++;
+            }
+            Save(); return count;
+        }
+        Texture SourceTexture(Part part)
+        {
+            Texture source = part.Replacement != null ? part.Replacement : part.OriginalTexture;
+            if (part.ArtMesh == null || !Live2D.whiteOutlineFix || source == null) return source;
+            if (source.width > 4096 || source.height > 4096) { Warning = "White-outline correction skipped an atlas above 4096 × 4096. Use a smaller replacement image to correct its edges."; return source; }
+            if (!alphaFixed.TryGetValue(source, out var fixedTexture))
+            {
+                fixedTexture = ReadTexture(source);
+                try
+                {
+                    fixedTexture.SetPixels32(SakuraLive2DSetup.FixAlphaEdges(fixedTexture.GetPixels32(), fixedTexture.width, fixedTexture.height)); fixedTexture.Apply();
+                    fixedTexture.wrapMode = source.wrapMode; fixedTexture.filterMode = source.filterMode;
+                    alphaFixed.Add(source, fixedTexture);
+                }
+                catch { Destroy(fixedTexture); throw; }
+            }
+            return fixedTexture;
+        }
+        void ReleaseUnusedAlphaTextures()
+        {
+            var sources = new HashSet<Texture>(parts.Select(part => (Texture)(part.Replacement != null ? part.Replacement : part.OriginalTexture)));
+            foreach (var entry in alphaFixed.ToArray())
+                if (!Live2D.whiteOutlineFix || !sources.Contains(entry.Key)) { Destroy(entry.Value); alphaFixed.Remove(entry.Key); }
         }
         static void ValidateEffects(EffectSettings settings)
         {
@@ -364,7 +432,7 @@ namespace Sakura.Unity
         }
         void ApplyPart(Part part)
         {
-            var settings = part.Settings; var source = part.Replacement != null ? part.Replacement : part.OriginalTexture;
+            var settings = part.Settings; var source = SourceTexture(part);
             float opacity = 1 - settings.transparency; Texture2D generated = null;
             if (source != null && ((part.ArtMesh == null && settings.strength > 0) || opacity > 1))
             {
@@ -452,6 +520,11 @@ namespace Sakura.Unity
         void LateUpdate()
         {
             ApplyFrozenBones();
+            if (cubism != null && Live2D.limitMovement)
+            {
+                var viewport = GetComponentInParent<SakuraAvatarViewport>();
+                if (viewport != null) viewport.ApplyLive2DLimits(Live2D);
+            }
             if (springsDirty && vrm != null) springsDirty = !vrm.Runtime.SpringBone.ReconstructSpringBone();
             foreach (var part in parts) if (part.Material != null && part.Original != null) ApplyMaterial(part);
             if (cubism != null && !HasUpdateController) OnLateUpdate();
@@ -459,6 +532,8 @@ namespace Sakura.Unity
         void OnDestroy()
         {
             if (effectMaterial != null) Destroy(effectMaterial);
+            foreach (var texture in alphaFixed.Values) if (texture != null) Destroy(texture);
+            alphaFixed.Clear();
             foreach (var group in parts.Where(part => part.Renderer != null).GroupBy(part => part.Renderer))
             {
                 var materials = group.Key.sharedMaterials;

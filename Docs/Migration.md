@@ -76,7 +76,7 @@ Double-click the background or avatar to hide controls. Companion retains its ch
 
 The native Settings tabs reuse the existing settings API. Camera, microphone, renderer-specific physics and other partially migrated preferences still require their corresponding native integrations. Visible controls and saved preferences do not establish full feature parity.
 
-## Native PMX and idle checkpoint — 2026-11-12
+## Native PMX and idle checkpoint â€” 2026-11-12
 
 PMX controls now keep independent per-model overrides under Application.persistentDataPath/pmx-overrides. They do not edit the PMX, original textures or original app's browser storage. Stored native settings use replacement writes. Original browser colour/texture/expression overrides are not yet migrated into the native profile.
 
@@ -90,9 +90,9 @@ No installer, APK or published update is produced by this checkpoint. Full nativ
 
 The eight native appearance sliders use the same ranges as the reference app. Automatic matching searches the original .3/.12/.05 steps, retains directional shading and checks whole-model plus up to six measurable material references. After snapshots wait for a fresh frame, so they cannot accidentally show the final isolated reference material.
 
-The native local model picker remembers its last folder separately for PMX, VRM and Live2D, including across reopening. A live Ringo-folder reopen check passed. SDK example scenes remain local owner-imported files and are excluded from this code checkpoint; SDK runtime, editor support, renderer assets and licenses are committed. The owner’s Unity cloud-connect preference is not changed or committed.
+The native local model picker remembers its last folder separately for PMX, VRM and Live2D, including across reopening. A live Ringo-folder reopen check passed. SDK example scenes remain local owner-imported files and are excluded from this code checkpoint; SDK runtime, editor support, renderer assets and licenses are committed. The ownerâ€™s Unity cloud-connect preference is not changed or committed.
 
-## Native voice and expressions checkpoint — 2026-11-13
+## Native voice and expressions checkpoint â€” 2026-11-13
 
 The runtime assembly explicitly references Unity.InputSystem for focused expression shortcuts. A normal editor restart rebuilt the dependency graph and cleared the Safe Mode compilation errors. The obsolete duplicate mcs.rsp was removed; csc.rsp retains the unsafe setting required by the imported SDK. Voice settings open on the Voice tab, and the native microphone starts off.
 
@@ -100,10 +100,10 @@ Live tests exercised Ringo's 22 expressions plus a disposable synthetic mesh for
 
 The bridge captures the application's merged router lifespan rather than only the root lifespan, preserving Agent router lifecycle handlers when services start lazily. Native chat and speech retain mode-generation checks and desktop authentication; audio downloads accept only the owned /audio filename route. Tokens remain in memory and are not written into verification reports.
 
-A real local-model greeting attempt timed out after 120 seconds. That exposed an empty-error-body NullReferenceException in the native chat transport. The transport now reports a visible failure and clears Busy; a live isolated HTTP 503 regression test confirms it. Successful local generation and physical speech remain unverified. No model/provider setting was changed to conceal the failure.
+An early local-model greeting timed out after 120 seconds and exposed an empty-error-body NullReferenceException in the native transport. The transport now reports a visible failure and clears Busy; an isolated HTTP 503 regression test confirms it. Lazy optional audio imports subsequently allowed a real local greeting to return HTTP 200 in 10.1 seconds. Physical speech and sustained conversation remain unverified.
 
 
-## PC parity correction checkpoint — 2026-11-13
+## PC parity correction checkpoint â€” 2026-11-13
 
 PC parity takes priority over further mobile work, following the owner's correction. The reference is the current Sakura desktop source and its existing UI. The original source, SDK samples and personal assets remain in place.
 
@@ -115,21 +115,21 @@ Native UI checks exercise tab ordering, clipping, material picking, RGB controls
 
 ### Outstanding parity work
 
-- Full Live2D physics controls, custom parameter/VTS mapping, outline and authored-glow behavior. Native material editing, bone freezing and bounded postprocessing are now implemented.
-- Automatic bone diagnosis, PMX material-expression presets, migration of original browser-stored overrides and broader shader/reference comparisons.
-- Rotating/local-library preview cards and full native cloud-preview behavior.
-- Native VTS plugin actions, Cubism synchronization, collab, VMC transmission and fresh isolated multi-instance behavior.
-- Screen capture, reactions, game-mode resource safeguards and their complete native controls.
-- Physical voice-enrollment verification, offline wake recognition, interruption, live voice-changing capture and lip-sync verification.
-- Live2D stage-item editing, full prop attachment/animation controls and native window transparency behavior. Native stage images, looping video and solid output backgrounds are implemented.
-- A fully interactive embedded Agent browser, first-run walkthrough and independent installer/update packaging.
+- Full Live2D outline/authored-glow equivalence and broader PMX shader/reference comparisons across real models.
+- Automatic bone diagnosis and migration of original browser-stored model overrides.
+- Authenticated live-account cloud-preview/download acceptance. Local rotating previews and published cloud sprite-sheet playback are implemented and checked without signing into a cloud account.
+- Remaining VTS protocol requests/events and native collab. Parameter injection, temporary physics overrides and a bounded native plugin bridge exist; full protocol parity is not claimed.
+- External VMC/Cubism interoperability. Native VMC sending and the existing VBridger facial-input route exist. Export watching reloads changed Live2D exports; an Editor-to-Sakura parameter feed is absent from the backend.
+- Physical sustained gameplay, microphone/wake interaction, voice enrollment, voice-changing capture, lip sync, output receivers and emergency-close hardware verification. Session-only headphone interruption has no acoustic echo cancellation.
+- Exact ArtMesh/bone prop attachment and the remaining item/plugin actions. Image/Live2D items, ordering, avatar-follow, locking, throws and authored item motions are implemented.
+- A fully interactive embedded Agent browser and independent installer/update packaging.
 - Phone and physical receiver verification. Further mobile migration is paused until PC parity is accepted.
 
 The Windows executables under C:/AI/unity exe remain development previews linked to the existing source environment. Full feature and visual parity is incomplete. No release is published from this checkpoint.
 
 The PC review also closed minimized-chat height overriding its collapsed style, active wake settings becoming stale after Save, saved theme being ignored at startup, and shortcut recording continuing after a pane was hidden. Regression checks cover collapse/expand, explicit theme application and cancellation on both close and hide. Physical microphone behavior remains unverified.
 
-## Integrated PC controls checkpoint — 2026-11-13
+## Integrated PC controls checkpoint â€” 2026-11-13
 
 Agent mode now has the reference sidebar, lower composer, collapsed task settings, provider/access controls, recent tasks, persisted task conversation, searchable archived history and management-page navigation. A live disposable backend task passed create, inspect, pending approval, rejection, cancellation and deletion. No test action executed against owner files. The saved conversation preference was restored after the test.
 
@@ -140,3 +140,44 @@ Voice & speech now includes grouped voice selection/preview, recognised-voice ma
 Background controls support colour swatches, HSV/RGB editing, a solid OBS output background, normalized local images and muted repeating local video. Background media is saved independently of character assets. Images/videos appear in app-window capture. The dedicated output uses solid colour when opted in, while the avatar render texture keeps alpha for model-only hit testing. Synthetic GPU checks cover background placement, picking exclusion, transparent-pixel replacement and opaque-avatar preservation. A physical video-file playback test remains pending.
 
 Seventeen bridge/tracking Python tests pass. Native checks cover Agent UI/lifecycle, speaker validation and small multipart fixtures, model tools/effects, backdrop compositing, original shell/layout, expressions, PMX editing, tracking kernels, stage transforms, output dimensions and double-click behavior. No physical microphone recording or cloud publication was performed. These checks are bounded acceptance evidence. Full 1:1 feature parity remains incomplete, including the outstanding items above.
+## Screen, integration and guided-setup checkpoint â€” 2026-11-13
+
+The native first-run guide follows the original Companion five-step and VTuber four-step sequences. Next opens and highlights its target. Skip/Finish and seen state persist independently, and Settings provides explicit replay. Navigation checks preserve the previous preferences.
+
+Companion screen controls now use authenticated, explicit capture leases. Switching into Agent or VTuber clears those leases. Fresh bounded JPEG frames can accompany ordinary questions or occasional source-backed reactions. Real desktop capture returned a valid fresh frame, was stopped, and was not sent to an AI provider during the check. Game detection reuses the existing process/GPU sampler and model-switching policy. Successful model selection is retained, cloud fallback uses hysteresis, and stale in-flight game requests restore the universal model. The emergency guard matches the original sustained-pressure delay and cancellable countdown. Closing a player requires fresh backend confirmation; Editor checks use synthetic counters and never close the Editor.
+
+Native VMC sends supported humanoid bones, root, trackers and expressions as bounded OSC/UDP bundles. The sender defaults off and has mirror, scale and recenter controls. Deterministic encoding checks passed. Receiver interoperability remains unverified. Cubism sends the loaded native Live2D parameter values to the existing Editor service at up to 10 Hz. Real SDK capture preserved final tracking/expression values in Amika; no external Editor connection was opened during this check. The existing backend does not provide an Editor-to-Sakura parameter feed.
+
+Cloud preview requests retain existing signed-in account authorization, use a two-request queue and an 8 MB streaming limit. Published WebP previews are normalized into bounded PNG sprite sheets for native hover playback. Live2D uses a portrait frame. Unit checks cover animation preservation, authorization rejection, UVs and dimension bounds. A signed-in live download/preview test remains pending.
+
+Render presets now bound the actual avatar texture resolution and MSAA while preserving viewport aspect ratio. Balanced and High target 60 FPS, Low targets 30 FPS. These are configured targets rather than measured guarantees on GTX/RTX hardware.
+
+Twenty-one Python bridge/tracking tests pass. New native checks cover first-run navigation, guarded screen payloads, game pressure timing/cancellation/hysteresis, VMC packet limits, Cubism parameter schema/capture, preview decoding and graphics presets. Full 1:1 parity remains incomplete. The original project and personal assets remain intact.
+
+## Companion reply and native integration checkpoint â€” 2026-11-13
+
+Structured chat replies now load an installed model before presenting a successful outfit change. Failures retain a truthful error, library requests open the searchable picker, and expression commands resolve existing labels. Automatic reply emotions use supported facial expressions, fade in and preserve manual-expression priority. Costume/mouth controls are excluded. Source-backed Teacher tasks expose a route into their native Agent review page.
+
+Room-description requests use a bounded 768-pixel JPEG from Unity's virtual stage and label it as a virtual room. Appearance questions can include the native avatar view when desktop screen sharing is already enabled. Ordinary greetings omit desktop vision. These captures do not include the app controls and do not require a physical camera. A real configured local-model request returned a short greeting successfully, with audio generation deferred.
+
+Focused action shortcuts and `.vtube.json` expression shortcuts are imported with manual bindings preserved. Native Live2D right-drag/rotation now rolls in the screen plane while retaining its camera-facing orientation. Its per-model physics cadence, legacy setting, movement bounds, blink/breath setup and alpha-edge correction have SDK-backed checks. A live Amika rig retained its authored sub-rigs, wind and gravity through cadence changes; temporary settings and profile bytes were restored afterwards.
+
+Agent uses the final reference blossom palette in both themes, outline navigation icons and a wrapping planning-model selector. Screenshot review caught icon/text overlap and added a layout assertion. The original backend suite passed 2,256 tests with two skips and 295 subtests. Twenty-one Unity bridge/tracking tests also passed. Native checks passed for Agent task create/propose/reject/cancel/delete, PMX editing, expression/emotion routing, window-slot limits, voice command parsing, stage isolation, output dimensions/compositing and first-run navigation.
+
+Additional windows receive independent backend settings and a fresh stage; the primary window retains its selected character and background. Shared model assets and their saved per-model edits remain available. The current Windows builds remain source-dependent development previews. Full 1:1 parity, the outstanding features listed above and hardware acceptance remain unfinished.
+
+
+## Built-player and native parity checkpoint â€” 2026-11-13
+
+The native plugin importer previously enabled `mmd_runtime_ffi.dll` only for the Editor: its serialized Windows target was not recognized by Unity. A real Windows preview reproduced the missing-library import failure. The importer now explicitly enables Win64/x86_64, and the Windows builder refuses to build if that prerequisite is disabled. Built-player model loading is checked separately from Editor imports.
+
+Material color and transparency presets are now reachable from both coloring panels and Expressions & hotkeys. They use stable model material identifiers, independent channels, finite bounds (including negative transparency), focused shortcuts and exact previous-value restoration. Real Ringo and Amika checks restored their original appearance/profile after temporary tests. VTube animation hotkeys now discover TriggerAnimation/StartAnimation as well as expression actions.
+
+Additional native integrations include Live2D input mappings, parameter-only authored motion playback, bounded motion3 recording, export-change watching, local library hover previews, stage-item motions/throwing, voice changing, audio-envelope lip sync and Windows DWM transparency with compact/Agent mode restoration. Tests cover supported semantics rather than asserting equivalence for unimplemented features. The three-window limit and fourth-window refusal were exercised in built VTuber players. Screenshots/recordings unpremultiply color correctly when encoding straight-alpha output; streaming buffers retain their expected representation.
+
+The original backend suite passed 2,256 tests (two skipped, 295 subtests), and the Unity bridge/tracking suite passed 22 tests. Physical microphone/phone/output receiver behavior and the outstanding features above remain open. This is a local development checkpoint, not a published release or a claim of complete parity.
+
+
+Built Windows acceptance passed after the importer correction: both editions connected to the original backend, listed 544 local characters and imported Ringo with no native-library error. Companion retained DWM transparency, forced Agent opacity, restored its compact geometry/transparency on return and kept the microphone off. VTuber stayed isolated when asked to switch to Companion. A compact layout check now guards panel/footer, chat/footer and button/microphone overlap; the final previews include the corrected spacing.
+
+Bug Hunter was installed into the local Codex skills directory. Its preflight and deterministic runtime-file triage ran; a complete canonical Bug Hunter audit has not been claimed or completed by this checkpoint.

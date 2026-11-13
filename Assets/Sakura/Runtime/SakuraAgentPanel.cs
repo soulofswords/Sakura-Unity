@@ -49,7 +49,11 @@ namespace Sakura.Unity
             Button("+ New task", NewTask, navigation).name = "agent-new-task";
             Button("Search sessions", () => SelectTab("Task history"), navigation);
             foreach (string name in new[] { "Tasks", "Local AI", "Connections", "Skills", "Memory & learning", "Automations", "Task history", "Browser" })
-            { string page = name; var button = Button(page, () => SelectTab(page), navigation); button.AddToClassList("agent-page"); pageButtons[page] = button; }
+            {
+                string page = name;
+                var button = Button(page, () => SelectTab(page), navigation);
+                button.AddToClassList("agent-page"); AddNavigationIcon(button, page); pageButtons[page] = button;
+            }
             Text("Recent tasks", navigation, "agent-sidebar-heading");
             taskList = new VisualElement { name = "agent-recent-tasks" }; navigation.Add(taskList);
             Button("Refresh connections & tasks", Refresh, navigation);
@@ -238,6 +242,7 @@ namespace Sakura.Unity
             backend.ReplyReceived += pendingReply;
             backend.SendChat(text, task);
         }
+        public void OpenTask(string id) { if (!alive || !ValidId(id)) return; SelectTab("Tasks"); LoadTask(id); }
         private void LoadTask(string id, bool render = true)
         {
             if (!ValidId(id) || !render && taskLoading) return;
@@ -266,7 +271,11 @@ namespace Sakura.Unity
             viewRevision++;
             content.Clear(); inspector.Clear();
             pageTitle.text = tab == "Tasks" ? "Sakura Agent" : tab;
-            foreach (var item in pageButtons) item.Value.EnableInClassList("agent-page-selected", item.Key == tab);
+            foreach (var item in pageButtons)
+            {
+                item.Value.EnableInClassList("agent-page-selected", item.Key == tab);
+                item.Value.Q(className: "agent-nav-icon")?.MarkDirtyRepaint();
+            }
             composer.style.display = tab == "Tasks" && !Archived ? DisplayStyle.Flex : DisplayStyle.None;
             UpdateInspectorVisibility();
             if (tab == "Browser") { BuildBrowser(); return; }
@@ -311,6 +320,17 @@ namespace Sakura.Unity
                 Text((string)step["reason"] ?? "",fold,"description");
                 Text(step["arguments"]?.ToString(Formatting.Indented) ?? "",fold,"agent-code");
                 Text(step["result"]?.ToString(Formatting.Indented) ?? (string)step["error"] ?? "",fold,"agent-code");
+                string pageUrl = ResultPageUrl(step["result"]);
+                if (!Archived && (string)step["status"] == "completed" && ValidPageUrl(pageUrl))
+                {
+                    bool alreadyOpen = (string)step["tool"] == "local_app.open" || (string)step["tool"] == "browser.open";
+                    Button("Open page inside Sakura", () =>
+                    {
+                        localBrowser = new Uri(pageUrl).IsLoopback;
+                        if (alreadyOpen) { SelectTab("Browser"); ReadPreview(); }
+                        else Propose(localBrowser ? "local_app.open" : "browser.open", new JObject { ["url"] = pageUrl });
+                    }, fold);
+                }
                 if(pending)
                 {
                     string id=(string)step["id"]; var choices=Row(fold);
@@ -388,8 +408,12 @@ namespace Sakura.Unity
             snapshot = null;
             var browserSteps = (selected["steps"] as JArray ?? new JArray()).Reverse().ToArray();
             var opened = browserSteps.FirstOrDefault(step => (string)step["status"] == "completed" && ((string)step["tool"] == "local_app.open" || (string)step["tool"] == "browser.open"));
+            var lastBrowser = browserSteps.FirstOrDefault(step => (string)step["status"] == "completed"
+                && (((string)step["tool"] ?? "").StartsWith("local_app.", StringComparison.Ordinal) || ((string)step["tool"] ?? "").StartsWith("browser.", StringComparison.Ordinal)));
+            if (((string)lastBrowser?["tool"] ?? "").EndsWith(".close", StringComparison.Ordinal)) { ClearBrowser(); opened = null; }
             if (opened != null) localBrowser = (string)opened["tool"] == "local_app.open";
-            var url=new TextField("Website address"); content.Add(url);
+            string currentUrl = ResultPageUrl(opened?["result"]) ?? (string)opened?["arguments"]?["url"] ?? "";
+            var url=new TextField("Website address") { value = currentUrl }; content.Add(url);
             var buttons=Row(content);
             Button("Open page",()=>
             { localBrowser=Uri.TryCreate(url.value,UriKind.Absolute,out var target)&&target.IsLoopback; Propose(localBrowser?"local_app.open":"browser.open",new JObject {["url"]=url.value}); },buttons);
@@ -411,6 +435,7 @@ namespace Sakura.Unity
                 if(((string)step["tool"] ?? "").StartsWith(localBrowser ? "local_app." : "browser.",StringComparison.Ordinal) && step["result"] is JObject result && result["snapshot"]!=null)
                 {snapshot=result; Text(result.ToString(Formatting.Indented),content,"description");break;}
             }
+            if (opened != null && preview == null) ReadPreview();
         }
         private void Propose(string tool,JObject arguments)
         {
@@ -431,6 +456,96 @@ namespace Sakura.Unity
             {if(!alive || (string)selected?["id"] != id || local != localBrowser){if(texture!=null)UnityEngine.Object.Destroy(texture);return;} if(error!=null){status.text=error;return;} if(preview!=null)UnityEngine.Object.Destroy(preview);preview=texture;browserImage.image=texture;});
         }
         public static bool ValidId(string id)=>id!=null&&System.Text.RegularExpressions.Regex.IsMatch(id,@"\A[a-zA-Z0-9_-]{1,80}\z");
+        public static bool ValidPageUrl(string url) => url != null && url.Length <= 2048 && Uri.TryCreate(url, UriKind.Absolute, out var parsed)
+            && (parsed.Scheme == "http" || parsed.Scheme == "https") && string.IsNullOrEmpty(parsed.UserInfo);
+        static string ResultPageUrl(JToken result)
+        {
+            var value = result is JObject record ? record["url"] ?? record["preview_url"] : null;
+            return value?.Type == JTokenType.String ? (string)value : null;
+        }
+        private static void AddNavigationIcon(Button button, string page)
+        {
+            var icon = new VisualElement { pickingMode = PickingMode.Ignore };
+            icon.AddToClassList("agent-nav-icon"); button.Insert(0, icon);
+            icon.generateVisualContent += context =>
+            {
+                var painter = context.painter2D;
+                const float scale = 17f / 24;
+                painter.strokeColor = button.resolvedStyle.color; painter.lineWidth = 1.7f * scale;
+                painter.lineCap = LineCap.Round; painter.lineJoin = LineJoin.Round;
+                Vector2 Point(float x, float y) => new Vector2(x * scale, y * scale);
+                void Path(params Vector2[] points)
+                {
+                    painter.BeginPath(); painter.MoveTo(points[0]);
+                    foreach (var point in points.Skip(1)) painter.LineTo(point);
+                    painter.Stroke();
+                }
+                void Box(float x, float y, float width, float height, float radius)
+                {
+                    float curve = radius * .552285f;
+                    painter.BeginPath(); painter.MoveTo(Point(x + radius, y)); painter.LineTo(Point(x + width - radius, y));
+                    painter.BezierCurveTo(Point(x + width - radius + curve, y), Point(x + width, y + radius - curve), Point(x + width, y + radius));
+                    painter.LineTo(Point(x + width, y + height - radius));
+                    painter.BezierCurveTo(Point(x + width, y + height - radius + curve), Point(x + width - radius + curve, y + height), Point(x + width - radius, y + height));
+                    painter.LineTo(Point(x + radius, y + height));
+                    painter.BezierCurveTo(Point(x + radius - curve, y + height), Point(x, y + height - radius + curve), Point(x, y + height - radius));
+                    painter.LineTo(Point(x, y + radius));
+                    painter.BezierCurveTo(Point(x, y + radius - curve), Point(x + radius - curve, y), Point(x + radius, y));
+                    painter.ClosePath(); painter.Stroke();
+                }
+                switch (page)
+                {
+                    case "Tasks":
+                        Path(Point(4, 4), Point(20, 4), Point(20, 20), Point(4, 20), Point(4, 4));
+                        Path(Point(8, 9), Point(16, 9)); Path(Point(8, 13), Point(14, 13)); Path(Point(8, 17), Point(12, 17));
+                        break;
+                    case "Local AI":
+                        Box(5, 5, 14, 14, 3);
+                        foreach (float pin in new[] { 9f, 15f })
+                        {
+                            Path(Point(pin, 1), Point(pin, 5)); Path(Point(pin, 19), Point(pin, 23));
+                            Path(Point(1, pin), Point(5, pin)); Path(Point(19, pin), Point(23, pin));
+                        }
+                        break;
+                    case "Connections":
+                        Path(Point(8, 12), Point(16, 12));
+                        Path(Point(9, 7), Point(9, 4), Point(4, 4), Point(4, 9), Point(7, 9));
+                        Path(Point(17, 9), Point(20, 9), Point(20, 4), Point(15, 4), Point(15, 7));
+                        Path(Point(7, 15), Point(4, 15), Point(4, 20), Point(9, 20), Point(9, 17));
+                        Path(Point(15, 17), Point(15, 20), Point(20, 20), Point(20, 15), Point(17, 15));
+                        break;
+                    case "Skills":
+                        Path(Point(5, 20), Point(9, 19), Point(20, 8), Point(16, 4), Point(5, 15), Point(5, 20));
+                        Path(Point(13, 7), Point(17, 11));
+                        break;
+                    case "Memory & learning":
+                        painter.BeginPath(); painter.MoveTo(Point(8, 4));
+                        painter.BezierCurveTo(Point(5, 3), Point(4, 6), Point(4, 8)); painter.LineTo(Point(4, 10));
+                        painter.BezierCurveTo(Point(1, 11), Point(1, 16), Point(4, 17));
+                        painter.BezierCurveTo(Point(4, 22), Point(12, 23), Point(12, 19)); painter.LineTo(Point(12, 6));
+                        painter.BezierCurveTo(Point(12, 3), Point(10, 2), Point(8, 4)); painter.ClosePath(); painter.Stroke();
+                        painter.BeginPath(); painter.MoveTo(Point(12, 6));
+                        painter.BezierCurveTo(Point(14, 2), Point(20, 4), Point(20, 8)); painter.LineTo(Point(20, 10));
+                        painter.BezierCurveTo(Point(23, 11), Point(23, 16), Point(20, 17));
+                        painter.BezierCurveTo(Point(20, 22), Point(12, 23), Point(12, 19)); painter.Stroke();
+                        Path(Point(8, 9), Point(8, 13)); Path(Point(16, 9), Point(16, 13));
+                        break;
+                    case "Automations":
+                        painter.BeginPath(); painter.Arc(Point(12, 12), 8 * scale, 0, 360); painter.Stroke();
+                        Path(Point(12, 7), Point(12, 12), Point(15, 14));
+                        Path(Point(4, 4), Point(2, 8)); Path(Point(20, 4), Point(22, 8));
+                        break;
+                    case "Task history":
+                        painter.BeginPath(); painter.Arc(Point(12, 12), 8 * scale, 180, 230, ArcDirection.CounterClockwise); painter.Stroke();
+                        Path(Point(4, 7), Point(4, 12), Point(9, 12)); Path(Point(12, 8), Point(12, 13), Point(15, 15));
+                        break;
+                    case "Browser":
+                        Box(3, 3, 18, 18, 3); Path(Point(3, 8), Point(21, 8));
+                        Path(Point(7, 5), Point(8, 5)); Path(Point(10, 5), Point(11, 5));
+                        break;
+                }
+            };
+        }
         private static VisualElement Row(VisualElement parent){var row=new VisualElement();row.AddToClassList("row");parent.Add(row);return row;}
         private static Label Text(string text,VisualElement parent,string style){var label=new Label(text??"");label.AddToClassList(style);parent.Add(label);return label;}
         private static Button Button(string text,Action clicked,VisualElement parent){var button=new Button(clicked){text=text};parent.Add(button);return button;}

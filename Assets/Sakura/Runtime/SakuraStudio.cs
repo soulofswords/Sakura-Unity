@@ -16,6 +16,7 @@ namespace Sakura.Unity
         private VisualElement root, panel, panelBody, dock;
         private Label badge, heading, status, stageMessage;
         private Label panelEdition;
+        private Label captureStatus;
         private VisualElement footer, chatPanel;
         private ScrollView messages;
         private SakuraBackend backend;
@@ -26,8 +27,12 @@ namespace Sakura.Unity
         private SakuraAvatarActions avatarActions;
         private SakuraWindow nativeWindow;
         private SakuraLiveChat liveChat;
+        private SakuraAgentPanel agentPanel;
         private Image appLogo;
         private Button microphoneButton;
+        private Button compactMicrophone, transparencyButton;
+        private Button positionLockButton;
+        private Label positionLockCaption;
         private CharacterEntry[] catalog = Array.Empty<CharacterEntry>();
         private string format = "PMX", search = "";
         private bool lightTheme;
@@ -35,6 +40,7 @@ namespace Sakura.Unity
         private bool initialCatalog = true;
         private bool propsLibrary;
         private float chatExpandedHeight = 440;
+        private int replyVisualRevision;
         private readonly Dictionary<string, Button> navigation = new Dictionary<string, Button>();
 
         private void OnEnable()
@@ -47,6 +53,7 @@ namespace Sakura.Unity
             }
             Application.targetFrameRate = 60;
             nativeWindow = GetComponent<SakuraWindow>() ?? gameObject.AddComponent<SakuraWindow>();
+            nativeWindow.Changed += UpdateWindowTransparency;
             Application.runInBackground = true;
             QualitySettings.vSyncCount = 0;
             var document = GetComponent<UIDocument>();
@@ -66,7 +73,7 @@ namespace Sakura.Unity
             var sheet = Resources.Load<StyleSheet>("Sakura/Studio");
             if (sheet != null) root.styleSheets.Add(sheet);
             backend = GetComponent<SakuraBackend>() ?? gameObject.AddComponent<SakuraBackend>();
-            vtuberEdition = Resources.Load<TextAsset>("Sakura/Edition")?.text.Trim() == "vtuber";
+            vtuberEdition = SakuraInstances.IsVtuber;
             backend.VtuberEdition = vtuberEdition;
             backend.CatalogReceived += ReceiveCatalog;
             backend.StatusChanged += SetStatus;
@@ -80,16 +87,23 @@ namespace Sakura.Unity
             Build();
             tracking = GetComponent<SakuraTracking>() ?? gameObject.AddComponent<SakuraTracking>();
             tracking.Initialize(backend, viewport);
+            _ = GetComponent<SakuraLipSync>() ?? gameObject.AddComponent<SakuraLipSync>();
+            (GetComponent<SakuraMotionRecorder>() ?? gameObject.AddComponent<SakuraMotionRecorder>()).Initialize(backend, viewport);
+            (GetComponent<SakuraExportWatch>() ?? gameObject.AddComponent<SakuraExportWatch>()).Initialize(backend, viewport);
+            (GetComponent<SakuraPluginBridge>() ?? gameObject.AddComponent<SakuraPluginBridge>()).Initialize(backend, viewport);
+            (GetComponent<SakuraParameterMappings>() ?? gameObject.AddComponent<SakuraParameterMappings>()).Initialize(backend, viewport);
+            (GetComponent<SakuraVmc>() ?? gameObject.AddComponent<SakuraVmc>()).Initialize(viewport);
             output = GetComponent<SakuraOutput>() ?? gameObject.AddComponent<SakuraOutput>();
             output.Initialize(backend, viewport);
             var stage = GetComponent<SakuraStage>() ?? gameObject.AddComponent<SakuraStage>();
-            stage.Initialize(backend.SourceFolder);
+            stage.Initialize(backend.SourceFolder, !SakuraInstances.IsSecondary);
             avatarActions = GetComponent<SakuraAvatarActions>() ?? gameObject.AddComponent<SakuraAvatarActions>();
             avatarActions.Viewport = viewport;
             avatarActions.Stage = stage;
             backend.ReplyDataReceived += ApplyAvatarReply;
             if (vtuberEdition) SwitchMode("VTuber");
             backend.RefreshCatalog();
+            SakuraSetupGuide.Attach(this, root);
         }
 
         private void Build()
@@ -123,6 +137,8 @@ namespace Sakura.Unity
             });
             viewport = GetComponent<SakuraAvatarViewport>() ?? gameObject.AddComponent<SakuraAvatarViewport>();
             viewport.Attach(stage);
+            var stageItems = GetComponent<SakuraStageItems>() ?? gameObject.AddComponent<SakuraStageItems>();
+            stageItems.Initialize(backend, viewport); stageItems.AttachStage(stage);
             (GetComponent<SakuraBackdrop>() ?? gameObject.AddComponent<SakuraBackdrop>()).Attach(stage);
             viewport.ModelChanged += ReceiveModelChanged;
             viewport.StatusChanged += text =>
@@ -140,6 +156,7 @@ namespace Sakura.Unity
             Label("Choose a PMX, VRM or Live2D character from your library.", "stage-note", stage);
 
             BuildChat(workspace);
+            BuildQuickControls(workspace);
 
             panel = Element("panel", workspace);
             panel.name = "companion-panel";
@@ -167,6 +184,7 @@ namespace Sakura.Unity
 
         private void BuildDock()
         {
+            positionLockButton = null; positionLockCaption = null;
             dock.Clear(); navigation.Clear();
             bool vtuber = CurrentMode == "VTuber";
             string[] keys = vtuber
@@ -205,6 +223,7 @@ namespace Sakura.Unity
                 modelLock.AddToClassList("dock-button");
                 var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/lock") }; icon.AddToClassList("dock-icon"); modelLock.Add(icon);
                 var caption = Label("Lock model", "dock-label", modelLock);
+                positionLockButton = modelLock; positionLockCaption = caption;
                 modelLock.clicked += () =>
                 {
                     viewport.PositionLocked = !viewport.PositionLocked;
@@ -229,7 +248,7 @@ namespace Sakura.Unity
             var minimize = Button("—", () => { chat.EnableInClassList("minimized", !chat.ClassListContains("minimized")); ResizeChat(); }, chatHeader);
             minimize.name = "chat-minimize";
             Button("▤", ConfirmClearMemory, chatHeader).tooltip = "Clear conversation memory";
-            Label("Screen off · Capture stopped", "capture-status", chat);
+            captureStatus = Label("Screen off · Capture stopped", "capture-status", chat);
             messages = new ScrollView(); messages.AddToClassList("messages"); chat.Add(messages);
             var composer = Element("composer", chat);
             var input = new TextField { multiline = false }; input.AddToClassList("chat-input"); composer.Add(input);
@@ -248,11 +267,30 @@ namespace Sakura.Unity
             input.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Return) { SendMessage(); evt.StopPropagation(); } });
 
         }
+        private void BuildQuickControls(VisualElement workspace)
+        {
+            var controls = Element("quick-controls", workspace);
+            transparencyButton = Button("◐", () => { nativeWindow.SetTransparent(!nativeWindow.TransparencyRequested); SetStatus(nativeWindow.Status); }, controls);
+            transparencyButton.name = "compact-transparency"; transparencyButton.tooltip = "Toggle transparent desktop stage";
+            compactMicrophone = Button("Mic", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); }, controls);
+            compactMicrophone.name = "compact-microphone";
+            var settings = Button("", () => ShowPanel("Settings"), workspace); settings.name = "compact-settings"; settings.AddToClassList("quick-settings"); settings.tooltip = "Settings";
+            var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/settings"), pickingMode = PickingMode.Ignore }; icon.style.width = icon.style.height = 20; settings.Add(icon);
+            UpdateMicrophone(voice.Listening);
+        }
+        private void UpdateWindowTransparency()
+        {
+            root?.EnableInClassList("window-transparent", nativeWindow.Transparent);
+            transparencyButton?.EnableInClassList("mode-active", nativeWindow.Transparent);
+        }
 
         public void SwitchMode(string mode)
         {
             if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Unknown mode");
             if (vtuberEdition && mode != "VTuber") return;
+            nativeWindow?.SetAgentMode(mode == "Agent");
+            replyVisualRevision++;
+            viewport?.Expressions?.StopReplyMood();
             PanelsHidden?.Invoke();
             CurrentMode = mode;
             if (liveChat.Active) liveChat.Disconnect();
@@ -273,7 +311,7 @@ namespace Sakura.Unity
             if (mode == "Agent")
             {
                 CurrentPanel = "Agent workspace";
-                new SakuraAgentPanel(backend, root.Q(className: "workspace"), () => SwitchMode("Companion"));
+                agentPanel = new SakuraAgentPanel(backend, root.Q(className: "workspace"), () => SwitchMode("Companion"));
             }
             else ShowPanel("Character");
         }
@@ -319,6 +357,7 @@ namespace Sakura.Unity
                     if (tracking.Source == SakuraTracking.InputSource.Phone) tracking.PhoneControl("hands", tracking.Hands);
                     hands.text = tracking.Hands ? "Hands on" : "Hands off";
                 };
+                Button("New instance", () => SetStatus(SakuraInstances.Open()), footer);
             }
         }
 
@@ -349,6 +388,7 @@ namespace Sakura.Unity
             else if (name == "Camera" || name == "Sakura Mobile")
             {
                 new SakuraTrackingPanel(tracking, panelBody, name == "Sakura Mobile");
+                if (name == "Camera") GetComponent<SakuraVmc>().BuildPanel(panelBody);
                 if (name == "Camera" && CurrentMode == "Companion") SakuraLiveChat.BuildPanel(liveChat, panelBody, false);
                 if (name == "Sakura Mobile") tracking.PhoneLink();
             }
@@ -376,6 +416,12 @@ namespace Sakura.Unity
             else if (name == "Model Settings")
             {
                 new SakuraModelPanel(viewport,backend,panelBody);
+            }
+            else if (name == "Plugins")
+            {
+                (GetComponent<SakuraPluginBridge>() ?? gameObject.AddComponent<SakuraPluginBridge>()).BuildPanel(panelBody);
+                SakuraCubismSync.BuildPanel(backend, viewport, panelBody);
+                GetComponent<SakuraExportWatch>().BuildPanel(panelBody);
             }
             else
             {
@@ -450,6 +496,8 @@ namespace Sakura.Unity
             }, actions);
             Button("Stop dance", avatarActions.Stop, actions);
             card = Element("card", panelBody);
+            (GetComponent<SakuraScreenFeatures>() ?? gameObject.AddComponent<SakuraScreenFeatures>()).BuildPanel(backend, card);
+            card = Element("card", panelBody);
             Label("Stage & extras", "card-title", card);
             var stages = Element("row", card);
             Button("3D stages", () => ShowStageLibrary(false), stages);
@@ -466,11 +514,19 @@ namespace Sakura.Unity
         private void Update()
         {
             if (avatarActions != null) avatarActions.TrackingOwnsMotion = tracking != null && tracking.Source != SakuraTracking.InputSource.Off;
+            var screen = GetComponent<SakuraScreenFeatures>();
+            if (captureStatus != null && screen != null) captureStatus.text = screen.Status;
+            if (positionLockButton != null && viewport != null)
+            {
+                positionLockButton.EnableInClassList("selected", viewport.PositionLocked);
+                positionLockCaption.text = viewport.PositionLocked ? "Unlock model" : "Lock model";
+            }
         }
 
         private void BuildSettings()
         {
             new SakuraSettingsPanel(backend, panelBody, ApplyTheme);
+            Button("Replay quick setup", () => SakuraSetupGuide.Attach(this, root).Open(), panelBody);
         }
 
         private void BuildCatalog()
@@ -562,6 +618,7 @@ namespace Sakura.Unity
             format = kind;
             var existing = root.Q("local-picker"); existing?.RemoveFromHierarchy();
             var overlay = Element("picker-overlay", root); overlay.name = "local-picker";
+            var previews = SakuraLocalPreviews.Attach(backend.SourceFolder, overlay);
             var window = Element("picker-window", overlay);
             var title = Element("row", window);
             Label(kind + " characters", "panel-title", title);
@@ -601,6 +658,7 @@ namespace Sakura.Unity
                         _ = viewport.LoadModel(backend.SourceFolder, entry.path);
                         overlay.RemoveFromHierarchy();
                     }, grid); button.AddToClassList("picker-item");
+                    previews.Bind(button, entry.path);
                 }
                 foreach (string child in folders.Reverse())
                 {
@@ -625,6 +683,7 @@ namespace Sakura.Unity
                 {
                     var settings = Newtonsoft.Json.Linq.JObject.Parse(json);
                     ApplyTheme((string)settings["ui_theme"] ?? "system");
+                    if (SakuraInstances.IsSecondary) return;
                     if (viewport.Loading || viewport.HasAvatar) return;
                     string preferred = PlayerPrefs.GetString("sakura-selected-model","");
                     string original = (string)settings["selected_model"] ?? "";
@@ -638,7 +697,7 @@ namespace Sakura.Unity
         }
         private void ReceiveModelChanged()
         {
-            PlayerPrefs.SetString("sakura-selected-model",viewport.LoadedModelPath); PlayerPrefs.Save();
+            if (!SakuraInstances.IsSecondary) { PlayerPrefs.SetString("sakura-selected-model",viewport.LoadedModelPath); PlayerPrefs.Save(); }
             if (CurrentPanel == "Character" || CurrentPanel == "Model Settings" || CurrentPanel == "Expressions & hotkeys") ShowPanel(CurrentPanel);
         }
         private void ReceiveImportedModel(string path) { _ = viewport.LoadModel(backend.SourceFolder, path); }
@@ -649,16 +708,55 @@ namespace Sakura.Unity
         {
             if (CurrentMode == "Companion" && avatarActions != null)
             {
+                int revision = ++replyVisualRevision;
+                string taskId = (string)reply["agent_task"]?["id"];
+                if (SakuraAgentPanel.ValidId(taskId))
+                {
+                    var taskControls = Element("row", messages.contentContainer);
+                    Button("Open task in Agent", () => { SwitchMode("Agent"); agentPanel?.OpenTask(taskId); }, taskControls);
+                    messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue));
+                }
+                var picker = reply["avatar_picker"];
+                if (picker?.Type == Newtonsoft.Json.Linq.JTokenType.Boolean && picker.ToObject<bool>()
+                    || picker?.Type == Newtonsoft.Json.Linq.JTokenType.String && !string.IsNullOrWhiteSpace((string)picker))
+                {
+                    search = reply.Value<string>("avatar_query") ?? (reply["avatar_picker"].Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)reply["avatar_picker"] : "");
+                    ShowPanel("Character");
+                    if (reply.Value<bool?>("avatar_cloud") == true)
+                    {
+                        var host = Element("cloud-library", panelBody); host.name = "cloud-library";
+                        new SakuraCloudLibrary(backend, host, format);
+                        panelBody.GetFirstAncestorOfType<ScrollView>()?.ScrollTo(host);
+                    }
+                }
+                if (reply["avatar_expression"] is Newtonsoft.Json.Linq.JObject expression
+                    && viewport.AvatarRoot?.GetComponent<SakuraAvatarExpressions>()?.ApplyByLabel(expression) != true)
+                    SetStatus("That expression is unavailable or has an ambiguous name. Choose one in Expressions & hotkeys.");
+                if (reply["avatar_expression"] == null && viewport.AvatarRoot != null)
+                {
+                    var model = viewport.AvatarRoot;
+                    backend.Api("/api/settings", null, (json, error) =>
+                    {
+                        if (error != null || this == null || CurrentMode != "Companion" || revision != replyVisualRevision || model != viewport.AvatarRoot) return;
+                        var settings = Newtonsoft.Json.Linq.JObject.Parse(json);
+                        string choice = settings.Value<string>("avatar_emotion") ?? "auto";
+                        model.GetComponent<SakuraAvatarExpressions>()?.SetReplyMood(choice == "auto" ? reply.Value<string>("emotion") : choice);
+                    });
+                }
                 avatarActions.TrackingOwnsMotion = tracking != null && tracking.Source != SakuraTracking.InputSource.Off;
                 avatarActions.Dispatch(reply);
             }
         }
         private void UpdateMicrophone(bool enabled)
         {
-            if (microphoneButton == null) return;
-            microphoneButton.text = enabled ? "●" : "♩";
-            microphoneButton.tooltip = enabled ? "Microphone ON · click to turn off" : "Microphone OFF · click to listen";
-            microphoneButton.style.borderTopColor = microphoneButton.style.borderBottomColor = microphoneButton.style.borderLeftColor = microphoneButton.style.borderRightColor = enabled ? new Color(1, .25f, .4f) : StyleKeyword.Null;
+            foreach (var button in new[] { microphoneButton, compactMicrophone })
+            {
+                if (button == null) continue;
+                button.text = button == compactMicrophone ? enabled ? "On" : "Mic" : enabled ? "●" : "♩";
+                button.tooltip = enabled ? "Microphone ON · click to turn off" : "Microphone OFF · click to listen";
+                button.style.borderTopColor = button.style.borderBottomColor = button.style.borderLeftColor = button.style.borderRightColor = enabled ? new Color(1, .25f, .4f) : StyleKeyword.Null;
+                button.EnableInClassList("microphone-active", enabled);
+            }
         }
         private static VisualElement Element(string css, VisualElement parent) { var element = new VisualElement(); element.AddToClassList(css); parent.Add(element); return element; }
         private static Label Label(string text, string css, VisualElement parent) { var label = new Label(text); label.AddToClassList(css); if (css == "panel-title" || css == "brand") label.style.unityFontDefinition = FontDefinition.FromFont(Resources.Load<Font>("Sakura/Fonts/BricolageGrotesque")); parent.Add(label); return label; }
@@ -666,6 +764,7 @@ namespace Sakura.Unity
 
         private void OnDisable()
         {
+            if (nativeWindow != null) nativeWindow.Changed -= UpdateWindowTransparency;
             PanelsHidden?.Invoke();
             if (backend == null) return;
             if (viewport != null) viewport.ModelChanged -= ReceiveModelChanged;

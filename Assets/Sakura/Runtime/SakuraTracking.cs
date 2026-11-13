@@ -42,6 +42,7 @@ namespace Sakura.Unity
         public bool Hands = true, Pose = true, Mouth = true;
         public float Smoothing = .07f;
         public string Status { get; private set; } = "Tracking off";
+        public bool FaceDetected => Source != InputSource.Off && Source != InputSource.Cursor && sample?["face"] is JObject && Time.unscaledTime - lastFrame < .6f;
         public string PhoneInfo { get; private set; } = "Phone link has not been read.";
         public JArray PhoneDevices { get; private set; } = new JArray();
         public event Action Changed;
@@ -56,6 +57,30 @@ namespace Sakura.Unity
         WebCamTexture camera;
         Texture2D cameraPixels;
         JObject sample;
+        public string[] InputNames => new[] { "FaceAngleX", "FaceAngleY", "FaceAngleZ", "MouseX", "MouseY" }
+            .Concat(sample?["face"]?["blendshapes"] is JObject scores ? scores.Properties().Select(property => property.Name)
+                : sample?["face"]?["blendshapes"] is JArray values ? values.OfType<JObject>().Select(value => value.Value<string>("categoryName")).Where(value => !string.IsNullOrEmpty(value)) : Enumerable.Empty<string>()).Distinct().Take(520).ToArray();
+        public bool GetInputValue(string name, out float value)
+        {
+            value = 0;
+            if (Source == InputSource.Off || rig == null) return false;
+            if (name == "MouseX" || name == "MouseY")
+            {
+                if (Source != InputSource.Cursor) return false;
+                value = name == "MouseX" ? rig.CursorValue.x : rig.CursorValue.y; return true;
+            }
+            if (name == "FaceAngleX" || name == "FaceAngleY" || name == "FaceAngleZ")
+            {
+                if (Source != InputSource.Cursor && !FaceDetected) return false;
+                var angles = rig.InputAngles;
+                value = name == "FaceAngleX" ? angles.y : name == "FaceAngleY" ? -angles.x : angles.z; return true;
+            }
+            if (!FaceDetected) return false;
+            var blend = sample?["face"]?["blendshapes"];
+            JToken score = blend is JObject map ? map[name] : (blend as JArray)?.OfType<JObject>().FirstOrDefault(row => row.Value<string>("categoryName") == name)?["score"];
+            if (score == null || score.Type != JTokenType.Float && score.Type != JTokenType.Integer) return false;
+            value = score.Value<float>(); return float.IsFinite(value);
+        }
         public void Initialize(SakuraBackend service, SakuraAvatarViewport avatars) { backend = service; viewport = avatars; }
         void Notify(string message) { Status = message; Changed?.Invoke(); }
         string Route(InputSource value) => value == InputSource.Webcam ? "/api/unity/tracking" : value == InputSource.NvidiaAR ? "/api/tracking/nvidia-ar" : value == InputSource.NvidiaExpressionApp ? "/api/tracking/nvidia-expressionapp" : "/api/tracking/vbridger";
@@ -141,7 +166,7 @@ namespace Sakura.Unity
             if (Source == InputSource.Cursor)
             {
                 var position = Mouse.current?.position.ReadValue() ?? new Vector2(Screen.width / 2f, Screen.height / 2f);
-                rig?.Cursor(new Vector2(Mathf.Clamp(position.x / Mathf.Max(1, Screen.width) * 2 - 1, -1, 1), Mathf.Clamp(position.y / Mathf.Max(1, Screen.height) * 2 - 1, -1, 1)));
+                rig?.Cursor(viewport.CursorDirection(position, rig.CursorOrigin));
                 return;
             }
             if (Time.unscaledTime - lastFrame > .6f) rig?.Accept(null);
@@ -221,6 +246,9 @@ namespace Sakura.Unity
         CubismModel cubism;
         Vrm10Instance vrm;
         Transform head, chest;
+        public Vector3? CursorOrigin => head == null ? null : head.position;
+        public Vector2 CursorValue => cursor;
+        public Vector3 InputAngles => new Vector3(Mathf.DeltaAngle(0, smooth.eulerAngles.x), Mathf.DeltaAngle(0, smooth.eulerAngles.y), Mathf.DeltaAngle(0, smooth.eulerAngles.z));
         Quaternion neutral = Quaternion.identity;
         bool calibrated;
         Vector2 cursor;

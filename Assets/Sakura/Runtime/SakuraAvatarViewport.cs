@@ -29,12 +29,14 @@ namespace Sakura.Unity
         private RenderTexture target;
         private CancellationTokenSource lifetime;
         private Image image;
-        private float yaw, zoom = 1, targetZoom = 1;
+        private float yaw, live2DRoll, zoom = 1, targetZoom = 1;
         private Vector3 framingOffset;
         public bool PositionLocked { get; set; }
         private Bounds? modelBounds;
+        private Bounds? framingBounds;
         private Action<int> pickedPart;
         private bool pickBone;
+        private int renderLimit = 1280, renderSamples = 2, viewportWidth = 1024, viewportHeight = 1024;
 
         public void BeginPartPick(bool bone, Action<int> completed) { pickBone = bone; pickedPart = completed; }
         public void CancelPartPick() { pickedPart = null; }
@@ -85,7 +87,7 @@ namespace Sakura.Unity
             stage.RegisterCallback<PointerDownEvent>(evt =>
             {
                 if (pickedPart != null || PositionLocked || evt.button > 1 || !Hit(stage.WorldToLocal(evt.position))) return;
-                dragStart = stage.WorldToLocal(evt.position); offsetStart = framingOffset; yawStart = yaw; dragButton = evt.button;
+                dragStart = stage.WorldToLocal(evt.position); offsetStart = framingOffset; yawStart = LoadedFormat == "Live2D" ? live2DRoll : yaw; dragButton = evt.button;
                 stage.CapturePointer(evt.pointerId); evt.StopPropagation();
             });
             stage.RegisterCallback<PointerMoveEvent>(evt =>
@@ -94,7 +96,9 @@ namespace Sakura.Unity
                 Vector2 delta = stage.WorldToLocal(evt.position) - dragStart;
                 if (dragButton == 1)
                 {
-                    yaw = yawStart + delta.x * .35f; avatar.transform.localRotation = Quaternion.Euler(0,yaw,0);
+                    if (LoadedFormat == "Live2D") live2DRoll = yawStart + delta.x * .35f;
+                    else yaw = yawStart + delta.x * .35f;
+                    ApplyRotation();
                 }
                 else
                 {
@@ -120,12 +124,21 @@ namespace Sakura.Unity
 
         private void Resize(int width, int height)
         {
-            width = Mathf.Clamp(width, 128, 1920); height = Mathf.Clamp(height, 128, 1920);
-            if (target != null && target.width == width && target.height == height) return;
+            viewportWidth = Mathf.Max(128, width); viewportHeight = Mathf.Max(128, height);
+            var dimensions = SakuraOutput.Dimensions(viewportWidth, viewportHeight, renderLimit);
+            width = dimensions.x; height = dimensions.y;
+            if (target != null && target.width == width && target.height == height && target.antiAliasing == renderSamples) return;
             if (target != null) { avatarCamera.targetTexture = null; target.Release(); Destroy(target); }
-            target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32) { antiAliasing = 2 };
+            target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32) { antiAliasing = renderSamples };
             target.Create(); avatarCamera.targetTexture = target; image.image = target;
             if (avatar != null) FrameAvatar();
+        }
+
+        public void SetRenderQuality(SakuraOutput.Quality quality)
+        {
+            renderLimit = quality == SakuraOutput.Quality.Low ? 960 : quality == SakuraOutput.Quality.High ? 1920 : 1280;
+            renderSamples = quality == SakuraOutput.Quality.Low ? 1 : quality == SakuraOutput.Quality.High ? 4 : 2;
+            if (avatarCamera != null) Resize(viewportWidth, viewportHeight);
         }
 
         public static string ResolveCharacterPath(string source, string relative)
@@ -140,6 +153,7 @@ namespace Sakura.Unity
 
         public GameObject AvatarRoot => avatar;
         public RenderTexture OutputTexture => target;
+        public Camera RenderCamera => avatarCamera;
         public float ZoomPercent => targetZoom * 100;
 
         public int PickPart(Vector2 normalized, bool bone)
@@ -193,7 +207,8 @@ namespace Sakura.Unity
 
         public void SetZoomPercent(float percent)
         {
-            targetZoom = Mathf.Clamp(percent / 100, .4f, 5);
+            if (!float.IsFinite(percent)) return;
+            targetZoom = Mathf.Clamp(percent / 100, LoadedFormat == "Live2D" ? .1f : .4f, LoadedFormat == "Live2D" ? 10 : 5);
         }
 
         public void UnloadModel()
@@ -206,13 +221,16 @@ namespace Sakura.Unity
             modelBounds = null;
         }
 
-        public async Task LoadModel(string source, string relative)
+        public async Task LoadModel(string source, string relative, CancellationToken cancellation = default)
         {
             if (Loading) { StatusChanged?.Invoke("A character is already loading. Please wait."); return; }
+            using var importLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, cancellation);
+            var importToken = importLifetime.Token;
             Loading = true;
             LastImportError = null;
             try
             {
+                importToken.ThrowIfCancellationRequested();
                 string path = ResolveCharacterPath(source, relative);
                 if (!File.Exists(path)) throw new FileNotFoundException("The selected model has moved or was removed.");
                 string format = path.EndsWith(".vrm", StringComparison.OrdinalIgnoreCase) ? "VRM" : path.EndsWith(".pmx", StringComparison.OrdinalIgnoreCase) ? "PMX" : "Live2D";
@@ -221,10 +239,10 @@ namespace Sakura.Unity
                 if (format == "VRM")
                 {
                     var instance = await Vrm10.LoadPathAsync(path, canLoadVrm0X: true,
-                        materialGenerator: new UrpVrm10MaterialDescriptorGenerator(), ct: lifetime.Token);
+                        materialGenerator: new UrpVrm10MaterialDescriptorGenerator(), ct: importToken);
                     loaded = instance == null ? null : instance.gameObject;
                 }
-                else if (format == "PMX") loaded = await SakuraModelImport.LoadPmx(path, lifetime.Token, text => { ImportDetails = text; StatusChanged?.Invoke(text); });
+                else if (format == "PMX") loaded = await SakuraModelImport.LoadPmx(path, importToken, text => { ImportDetails = text; StatusChanged?.Invoke(text); });
                 else loaded = SakuraModelImport.LoadLive2D(path);
                 if (loaded == null) throw new InvalidOperationException("The importer returned no model.");
                 try
@@ -232,10 +250,11 @@ namespace Sakura.Unity
                     var motion = loaded.AddComponent<SakuraIdleMotion>(); motion.Initialize(path);
                     loaded.AddComponent<SakuraAvatarExpressions>().Initialize(path, motion);
                     if (format != "PMX") SakuraModelTools.GetOrCreate(loaded, path);
+                    SakuraMaterialExpressions.GetOrCreate(loaded, path);
                     var studio = GetComponent<SakuraStudio>(); motion.Companion = studio == null || studio.CurrentMode == "Companion";
                 }
                 catch { Destroy(loaded); throw; }
-                if (lifetime.IsCancellationRequested) { Destroy(loaded); return; }
+                if (importToken.IsCancellationRequested) { Destroy(loaded); return; }
                 var previous = avatar;
                 avatar = loaded;
                 LoadedFormat = format;
@@ -243,8 +262,8 @@ namespace Sakura.Unity
                 avatarCamera.GetUniversalAdditionalCameraData().SetRenderer(format == "Live2D" ? 1 : -1);
                 avatar.transform.SetParent(transform, false);
                 avatar.transform.localPosition = Vector3.zero;
-                yaw = format == "Live2D" ? 180 : 0; zoom = targetZoom = 1; framingOffset = Vector3.zero;
-                avatar.transform.localRotation = Quaternion.Euler(0, yaw, 0);
+                yaw = format == "Live2D" ? 180 : 0; live2DRoll = 0; zoom = targetZoom = 1; framingOffset = Vector3.zero;
+                ApplyRotation();
                 foreach (var child in avatar.GetComponentsInChildren<Transform>(true)) child.gameObject.layer = 30;
                 modelBounds = null;
                 if (format == "PMX")
@@ -277,13 +296,82 @@ namespace Sakura.Unity
             var bounds = renderers[0].bounds;
             foreach (var renderer in renderers) bounds.Encapsulate(renderer.bounds);
             if (modelBounds.HasValue) bounds = modelBounds.Value;
+            framingBounds = bounds;
             float halfHeight = Mathf.Max(bounds.extents.y, bounds.extents.x / Mathf.Max(.1f, avatarCamera.aspect));
             float distance = halfHeight / Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f) * 1.12f / zoom;
             avatarCamera.transform.position = bounds.center + framingOffset + Vector3.forward * distance;
             avatarCamera.transform.LookAt(bounds.center + framingOffset);
         }
 
-        public void Rotate(float degrees) { if (avatar == null) return; yaw += degrees; avatar.transform.localRotation = Quaternion.Euler(0, yaw, 0); }
+        void ApplyRotation()
+        {
+            if (avatar == null) return;
+            avatar.transform.localRotation = LoadedFormat == "Live2D"
+                ? Quaternion.AngleAxis(live2DRoll, Vector3.forward) * Quaternion.Euler(0, 180, 0)
+                : Quaternion.Euler(0, yaw, 0);
+        }
+        public void Rotate(float degrees)
+        {
+            if (avatar == null || !float.IsFinite(degrees)) return;
+            if (LoadedFormat == "Live2D") live2DRoll += degrees; else yaw += degrees;
+            ApplyRotation();
+        }
+        public void ApplyLive2DLimits(SakuraLive2DSettings settings)
+        {
+            if (LoadedFormat != "Live2D" || avatar == null || avatarCamera == null || settings == null || !settings.limitMovement) return;
+            float previousTarget = targetZoom, previousZoom = zoom, previousRoll = live2DRoll;
+            Vector3 previousOffset = framingOffset;
+            targetZoom = Mathf.Clamp(targetZoom, settings.zoomMin / 100, settings.zoomMax / 100);
+            zoom = Mathf.Clamp(zoom, settings.zoomMin / 100, settings.zoomMax / 100);
+            live2DRoll = Mathf.Clamp(live2DRoll, settings.rotationMin, settings.rotationMax);
+            float distance = Mathf.Abs(Vector3.Dot(avatarCamera.transform.position - avatar.transform.position - framingOffset, avatarCamera.transform.forward));
+            float height = 2 * distance * Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f);
+            Vector3 right = avatarCamera.transform.right, up = avatarCamera.transform.up;
+            float horizontal = Vector3.Dot(framingOffset, right), vertical = Vector3.Dot(framingOffset, up);
+            framingOffset += right * (Mathf.Clamp(horizontal, -settings.xMax * height * avatarCamera.aspect / 100, -settings.xMin * height * avatarCamera.aspect / 100) - horizontal)
+                + up * (Mathf.Clamp(vertical, -settings.yMax * height / 100, -settings.yMin * height / 100) - vertical);
+            if (previousTarget != targetZoom || previousZoom != zoom || previousRoll != live2DRoll || previousOffset != framingOffset)
+            { ApplyRotation(); FrameAvatar(); }
+        }
+        public Newtonsoft.Json.Linq.JObject PluginMove(Newtonsoft.Json.Linq.JObject command)
+        {
+            if (avatar == null || Loading) throw new InvalidOperationException("Load a character first.");
+            if (command.Value<bool?>("relativeToCurrentModelPosition") == true)
+                throw new NotSupportedException("Relative plugin movement is not supported by this native build.");
+            float Number(string key, float fallback)
+            {
+                if (command[key] == null) return fallback;
+                if (command[key].Type != Newtonsoft.Json.Linq.JTokenType.Integer && command[key].Type != Newtonsoft.Json.Linq.JTokenType.Float)
+                    throw new ArgumentException("Plugin movement values must be finite numbers.");
+                float value = command.Value<float>(key);
+                if (!float.IsFinite(value)) throw new ArgumentException("Plugin movement values must be finite numbers.");
+                return value;
+            }
+            if (Number("timeInSeconds", 0) != 0) throw new NotSupportedException("Use timeInSeconds=0 for native plugin movement.");
+            var before = PluginPosition();
+            float requestedSize = Number("size", targetZoom);
+            float rotation = Mathf.Clamp(Number("rotation", LoadedFormat == "Live2D" ? live2DRoll : yaw), -180, 180);
+            float x = Mathf.Clamp(Number("positionX", before.Value<float>("positionX")), -2, 2), y = Mathf.Clamp(Number("positionY", before.Value<float>("positionY")), -2, 2);
+            SetZoomPercent(requestedSize * 100); zoom = targetZoom;
+            if (LoadedFormat == "Live2D") live2DRoll = rotation; else yaw = rotation;
+            ApplyRotation(); FrameAvatar();
+            float distance = Mathf.Abs(Vector3.Dot(avatarCamera.transform.position - (framingBounds?.center ?? avatar.transform.position) - framingOffset, avatarCamera.transform.forward));
+            float height = 2 * distance * Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f);
+            framingOffset = -avatarCamera.transform.right * x * height * avatarCamera.aspect / 2 - avatarCamera.transform.up * y * height / 2;
+            FrameAvatar();
+            if (LoadedFormat == "Live2D") ApplyLive2DLimits(avatar.GetComponent<SakuraModelTools>()?.Live2D);
+            return PluginPosition();
+        }
+        public Newtonsoft.Json.Linq.JObject PluginPosition()
+        {
+            if (avatar == null || avatarCamera == null) return new Newtonsoft.Json.Linq.JObject();
+            float distance = Mathf.Abs(Vector3.Dot(avatarCamera.transform.position - (framingBounds?.center ?? avatar.transform.position) - framingOffset, avatarCamera.transform.forward));
+            float height = Mathf.Max(.001f, 2 * distance * Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f));
+            return new Newtonsoft.Json.Linq.JObject {
+                ["positionX"] = -2 * Vector3.Dot(framingOffset, avatarCamera.transform.right) / (height * Mathf.Max(.1f, avatarCamera.aspect)),
+                ["positionY"] = -2 * Vector3.Dot(framingOffset, avatarCamera.transform.up) / height,
+                ["rotation"] = LoadedFormat == "Live2D" ? live2DRoll : yaw, ["size"] = targetZoom };
+        }
         public void Zoom(float factor) => SetZoomPercent(targetZoom * factor * 100);
         public void ResetFraming() { zoom = targetZoom = 1; framingOffset = Vector3.zero; if (avatar != null) FrameAvatar(); }
         private void Update()
@@ -345,6 +433,40 @@ namespace Sakura.Unity
             }
             finally { RenderTexture.active = previous; RenderTexture.ReleaseTemporary(temporary); Destroy(texture); }
         }
+
+        public string CaptureVisionFrame()
+        {
+            if (avatar == null || target == null || Loading) return null;
+            var size = SakuraOutput.Dimensions(target.width, target.height, 768);
+            var temporary = RenderTexture.GetTemporary(size.x, size.y, 0, RenderTextureFormat.ARGB32);
+            var previous = RenderTexture.active;
+            var pixels = new Texture2D(size.x, size.y, TextureFormat.RGB24, false);
+            try
+            {
+                Graphics.Blit(target, temporary); RenderTexture.active = temporary;
+                pixels.ReadPixels(new Rect(0, 0, size.x, size.y), 0, 0); pixels.Apply();
+                return Convert.ToBase64String(pixels.EncodeToJPG(85));
+            }
+            finally { RenderTexture.active = previous; RenderTexture.ReleaseTemporary(temporary); Destroy(pixels); }
+        }
+
+        public Vector2 CursorDirection(Vector2 pointer, Vector3? head)
+        {
+            if (avatar == null || avatarCamera == null || image == null) return Vector2.zero;
+            Vector3 origin = avatar.transform.position;
+            if (head.HasValue) origin = head.Value;
+            else
+            {
+                if (framingBounds is Bounds bounds) origin = bounds.center + Vector3.up * bounds.size.y * .3f;
+            }
+            Vector3 projected = avatarCamera.WorldToViewportPoint(origin);
+            Rect rect = image.worldBound;
+            var screenOrigin = new Vector2(rect.x + projected.x * rect.width, Screen.height - rect.y - (1 - projected.y) * rect.height);
+            return NormalizeCursor(pointer, screenOrigin, rect.size);
+        }
+        public static Vector2 NormalizeCursor(Vector2 pointer, Vector2 origin, Vector2 viewportSize) => new Vector2(
+            Mathf.Clamp((pointer.x - origin.x) / Mathf.Max(1, viewportSize.x * .5f), -1, 1),
+            Mathf.Clamp((pointer.y - origin.y) / Mathf.Max(1, viewportSize.y * .5f), -1, 1));
 
         private void OnDestroy()
         {

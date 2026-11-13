@@ -124,6 +124,7 @@ namespace Sakura.Unity
                     }
                 }
                 operation.RegisterValueChangedCallback(_ => RenderOperation()); RenderOperation();
+                viewport.AvatarRoot.GetComponent<SakuraMaterialExpressions>()?.BuildCapturePanel(body, () => part, () => operation.index == 0 ? "tint" : "opacity");
                 Text("PMX appearance"); Appearance();
             }
         }
