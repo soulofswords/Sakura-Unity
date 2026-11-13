@@ -42,6 +42,7 @@ namespace Sakura.Unity
         private float chatExpandedHeight = 440;
         private int replyVisualRevision;
         private readonly Dictionary<string, Button> navigation = new Dictionary<string, Button>();
+        public VisualElement StageElement { get; private set; }
 
         private void OnEnable()
         {
@@ -128,7 +129,8 @@ namespace Sakura.Unity
             dock = Element("dock", workspace);
             dock.name = "companion-dock";
             BuildDock();
-            var stage = Element("stage", workspace);
+            StageElement = Element("stage", workspace);
+            var stage = StageElement;
             stage.name = "avatar-stage";
             stage.SendToBack();
             stage.RegisterCallback<ClickEvent>(evt =>
