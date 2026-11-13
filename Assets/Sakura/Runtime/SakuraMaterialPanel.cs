@@ -229,14 +229,15 @@ namespace Sakura.Unity
             Color overlay = settings.overlayColor;
             var picker = new VisualElement(); body.Add(picker);
             var strength = new Slider("Overlay strength", 0, 100) { value = settings.overlayStrength * 100, showInputField = true }; body.Add(strength);
+            var outline = new Toggle("Model outline (3D)") { value = settings.outline }; outline.SetEnabled(viewport.LoadedFormat != "Live2D"); body.Add(outline);
             void Save()
             {
-                tools.SetEffects(new SakuraModelTools.EffectSettings { glow = glow.value / 100, saturation = saturation.value / 100, contrast = contrast.value / 100, overlayColor = overlay, overlayStrength = strength.value / 100 });
+                tools.SetEffects(new SakuraModelTools.EffectSettings { glow = glow.value / 100, saturation = saturation.value / 100, contrast = contrast.value / 100, overlayColor = overlay, overlayStrength = strength.value / 100, outline = outline.value });
                 status.text = "Effects applied to this model and saved.";
             }
             new SakuraColourPicker(picker, overlay, value => Run(() => { overlay = value; Save(); }));
             glow.RegisterValueChangedCallback(_ => Run(Save)); saturation.RegisterValueChangedCallback(_ => Run(Save));
-            contrast.RegisterValueChangedCallback(_ => Run(Save)); strength.RegisterValueChangedCallback(_ => Run(Save));
+            contrast.RegisterValueChangedCallback(_ => Run(Save)); strength.RegisterValueChangedCallback(_ => Run(Save)); outline.RegisterValueChangedCallback(_ => Run(Save));
             Button("Reset effects", () => { tools.SetEffects(new SakuraModelTools.EffectSettings()); body.Clear(); Effects(); status.text = "Original effects restored."; });
         }
     }

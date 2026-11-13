@@ -33,6 +33,7 @@ namespace Sakura.Unity
         {
             public float glow, saturation = 1, contrast = 1, overlayStrength;
             public Color overlayColor = Color.white;
+            public bool outline;
         }
         [Serializable] sealed class Profile
         {
@@ -119,6 +120,7 @@ namespace Sakura.Unity
             catch (ArgumentException) { profile.live2D = new SakuraLive2DSettings(); Warning = "Invalid saved Live2D limits were reset."; }
             try { ValidateEffects(profile.effects); }
             catch (ArgumentException) { profile.effects = new EffectSettings(); Warning = "Invalid saved effects were reset."; }
+            ApplyOutline(profile.effects.outline);
             profile.parts.RemoveAll(value => value == null); profile.parameters.RemoveAll(value => value == null);
             profile.parameters.RemoveAll(value => string.IsNullOrEmpty(value.id) || float.IsNaN(value.value) || float.IsInfinity(value.value) || float.IsNaN(value.smoothing) || float.IsInfinity(value.smoothing));
             foreach (var value in profile.parameters) value.smoothing = Mathf.Clamp(value.smoothing, 0, 100);
@@ -393,8 +395,16 @@ namespace Sakura.Unity
         {
             ValidateEffects(settings);
             var previous = profile.effects;
-            profile.effects = new EffectSettings { glow = settings.glow, saturation = settings.saturation, contrast = settings.contrast, overlayColor = settings.overlayColor, overlayStrength = settings.overlayStrength };
+            profile.effects = new EffectSettings { glow = settings.glow, saturation = settings.saturation, contrast = settings.contrast, overlayColor = settings.overlayColor, overlayStrength = settings.overlayStrength, outline = settings.outline };
             try { Save(); } catch { profile.effects = previous; throw; }
+            ApplyOutline(profile.effects.outline);
+        }
+        SakuraOutlineRenderer outlineRenderer;
+        void ApplyOutline(bool enabled)
+        {
+            if (!enabled && outlineRenderer == null) return;
+            outlineRenderer = outlineRenderer != null ? outlineRenderer : GetComponent<SakuraOutlineRenderer>() ?? gameObject.AddComponent<SakuraOutlineRenderer>();
+            outlineRenderer.SetEnabled(enabled);
         }
         public void ApplyEffects(RenderTexture source, RenderTexture destination)
         {
