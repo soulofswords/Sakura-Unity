@@ -19,8 +19,9 @@ namespace Sakura.Unity
         private string selected = "General";
         private bool saving, alive = true;
 
-        public SakuraSettingsPanel(SakuraBackend backend, VisualElement host, Action<string> applyTheme)
+        public SakuraSettingsPanel(SakuraBackend backend, VisualElement host, Action<string> applyTheme, string initialTab = "General")
         {
+            selected = initialTab;
             this.backend = backend; this.applyTheme = applyTheme;
             this.host = new VisualElement();
             this.host.AddToClassList("settings-content");
@@ -57,7 +58,7 @@ namespace Sakura.Unity
                 Select(card, "How Sakura addresses you", "user_address", new[] { "sir", "maam", "none" }, new[] { "Sir", "Ma’am", "No title" });
                 card = Card("Hands-free listening");
                 Field(card, "Wake phrase", "wake_word"); Check(card, "Listen for my wake phrase, including in the background", "wake_word_enabled");
-                Text("Microphone and wake-phrase capture need their native Unity input integration before this preference can drive listening.", "description", card);
+                Text("Enable the microphone in Voice & speech. Native listening currently checks the wake phrase after transcription; offline wake detection is still being migrated.", "description", card);
 #if UNITY_EDITOR
                 var dev = new Foldout { text = "Development backend", value = false }; body.Add(dev);
                 var source = new TextField("Preserved source folder") { value = backend.SourceFolder }; dev.Add(source);
@@ -92,7 +93,7 @@ namespace Sakura.Unity
                 var card = Card("Voice & speech"); Field(card, "Selected voice ID", "selected_voice");
                 Field(card, "Pitch", "tts_pitch"); Field(card, "Rate", "tts_rate");
                 card = Card("RVC voice changer"); Field(card, "RVC model", "rvc_model"); Field(card, "RVC index", "rvc_index"); Number(card, "RVC pitch", "rvc_pitch", -24, 24);
-                Text("Voice settings save through the original backend. Native playback and lip-sync are pending integration.", "description", card);
+                Text("Voice settings and native playback use the original backend. Lip-sync is still being migrated.", "description", card);
             }
             else if (selected == "Models")
             {

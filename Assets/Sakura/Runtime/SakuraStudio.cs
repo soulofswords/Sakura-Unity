@@ -19,9 +19,11 @@ namespace Sakura.Unity
         private ScrollView messages;
         private SakuraBackend backend;
         private SakuraAvatarViewport viewport;
+        private SakuraVoice voice;
+        private Button microphoneButton;
         private CharacterEntry[] catalog = Array.Empty<CharacterEntry>();
         private string format = "PMX", search = "";
-        private bool light;
+        private bool lightTheme;
         private readonly Dictionary<string, Button> navigation = new Dictionary<string, Button>();
 
         private void OnEnable()
@@ -33,9 +35,11 @@ namespace Sakura.Unity
             if (document == null) document = gameObject.AddComponent<UIDocument>();
             if (document.panelSettings == null)
             {
-                document.panelSettings = ScriptableObject.CreateInstance<PanelSettings>();
-                document.panelSettings.scaleMode = PanelScaleMode.ConstantPixelSize;
-                document.panelSettings.scale = 1;
+                var settings = ScriptableObject.CreateInstance<PanelSettings>();
+                settings.themeStyleSheet = Resources.Load<ThemeStyleSheet>("Sakura/StudioTheme");
+                settings.scaleMode = PanelScaleMode.ConstantPixelSize;
+                settings.scale = 1;
+                document.panelSettings = settings;
             }
             document.panelSettings.themeStyleSheet = Resources.Load<ThemeStyleSheet>("Sakura/StudioTheme");
             root = document.rootVisualElement;
@@ -48,6 +52,10 @@ namespace Sakura.Unity
             backend.StatusChanged += SetStatus;
             backend.ReplyReceived += ReceiveReply;
             backend.ModelImported += ReceiveImportedModel;
+            voice = GetComponent<SakuraVoice>() ?? gameObject.AddComponent<SakuraVoice>();
+            voice.TranscriptReceived += ReceiveTranscript;
+            voice.StatusChanged += SetStatus;
+            voice.ListeningChanged += UpdateMicrophone;
             Build();
             backend.RefreshCatalog();
         }
@@ -116,14 +124,13 @@ namespace Sakura.Unity
             Label("Screen off · Capture stopped", "capture-status", chat);
             messages = new ScrollView(); messages.AddToClassList("messages"); chat.Add(messages);
             var composer = Element("composer", chat);
-            var listen = Button("♩", () => SetStatus("Native Unity microphone migration is pending."), composer);
-            listen.tooltip = "Microphone";
+            microphoneButton = Button("♩", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); }, composer);
+            microphoneButton.tooltip = "Microphone OFF · click to listen";
             var input = new TextField { multiline = false }; input.AddToClassList("chat-input"); composer.Add(input);
             input.tooltip = "Type a message or use your mic…";
             Button("➤", () =>
             {
                 if (string.IsNullOrWhiteSpace(input.value) || backend.Busy) return;
-                if (!backend.Connected) { SetStatus("Connect the backend in Settings first."); return; }
                 Label(input.value, "user-message", messages.contentContainer);
                 backend.SendChat(input.value); input.value = "";
             }, composer);
@@ -155,6 +162,7 @@ namespace Sakura.Unity
         {
             if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Unknown mode");
             CurrentMode = mode;
+            backend.SetMode(mode);
             if (viewport != null && viewport.Idle != null) viewport.Idle.Companion = mode == "Companion";
             ControlsHidden = false;
             root.RemoveFromClassList("controls-hidden");
@@ -167,7 +175,7 @@ namespace Sakura.Unity
             ShowPanel(mode == "Agent" ? "Agent workspace" : "Character");
         }
 
-        public void ToggleTheme() { light = !light; root.EnableInClassList("light", light); RefreshIconColors(); }
+        public void ToggleTheme() { lightTheme = !lightTheme; root.EnableInClassList("light", lightTheme); RefreshIconColors(); }
 
         public void ToggleChrome()
         {
@@ -190,7 +198,7 @@ namespace Sakura.Unity
             foreach (var item in navigation)
             {
                 var icon = item.Value.Q<Image>();
-                ColorUtility.TryParseHtmlString(item.Value.ClassListContains("selected") ? (light ? "#a13464" : "#ff9ec8") : (light ? "#785f70" : "#ccb6c8"), out var color);
+                ColorUtility.TryParseHtmlString(item.Value.ClassListContains("selected") ? (lightTheme ? "#a13464" : "#ff9ec8") : (lightTheme ? "#785f70" : "#ccb6c8"), out var color);
                 if (icon != null) icon.tintColor = color;
             }
         }
@@ -205,6 +213,21 @@ namespace Sakura.Unity
             RefreshIconColors();
             if (name == "Character") BuildCatalog();
             else if (name == "Settings") BuildSettings();
+            else if (name == "Expressions & hotkeys") new SakuraExpressionPanel(viewport, panelBody);
+            else if (name == "Voice & speech")
+            {
+                Button(voice.Listening ? "Microphone ON · turn off" : "Microphone OFF · turn on", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); ShowPanel(name); }, panelBody);
+                Button("Stop speaking", voice.StopSpeaking, panelBody);
+                var devices = Microphone.devices.ToList();
+                if (devices.Count > 0)
+                {
+                    devices.Insert(0, "Default microphone");
+                    var device = new DropdownField("Microphone", devices, Math.Max(0, devices.IndexOf(voice.MicrophoneDevice)));
+                    device.RegisterValueChangedCallback(evt => { voice.StopListening(); voice.MicrophoneDevice = device.index == 0 ? "" : device.value; }); panelBody.Add(device);
+                }
+                Label("Speech recognition uses your saved language and recognised-voice settings. Hands-free wake gating currently uses transcription; the offline wake engine is still being migrated.", "description", panelBody);
+                new SakuraSettingsPanel(backend, panelBody, theme => { if ((theme == "light") != lightTheme) ToggleTheme(); }, "Voice");
+            }
             else if (name == "Model Settings")
             {
                 Label("Framing", "card-title", panelBody);
@@ -251,7 +274,7 @@ namespace Sakura.Unity
             new SakuraSettingsPanel(backend, panelBody, theme =>
             {
                 bool target = theme == "light";
-                if (target != light) ToggleTheme();
+                if (target != lightTheme) ToggleTheme();
             });
         }
 
@@ -385,6 +408,14 @@ namespace Sakura.Unity
         private void ReceiveImportedModel(string path) { _ = viewport.LoadModel(backend.SourceFolder, path); }
         private void SetStatus(string text) { if (status != null) status.text = text; }
         private void ReceiveReply(string text) { Label(text, "message", messages.contentContainer); messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue)); }
+        private void ReceiveTranscript(string text) { Label(text, "user-message", messages.contentContainer); }
+        private void UpdateMicrophone(bool enabled)
+        {
+            if (microphoneButton == null) return;
+            microphoneButton.text = enabled ? "●" : "♩";
+            microphoneButton.tooltip = enabled ? "Microphone ON · click to turn off" : "Microphone OFF · click to listen";
+            microphoneButton.style.borderTopColor = microphoneButton.style.borderBottomColor = microphoneButton.style.borderLeftColor = microphoneButton.style.borderRightColor = enabled ? new Color(1, .25f, .4f) : StyleKeyword.Null;
+        }
         private static VisualElement Element(string css, VisualElement parent) { var element = new VisualElement(); element.AddToClassList(css); parent.Add(element); return element; }
         private static Label Label(string text, string css, VisualElement parent) { var label = new Label(text); label.AddToClassList(css); if (css == "panel-title" || css == "brand") label.style.unityFontDefinition = FontDefinition.FromFont(Resources.Load<Font>("Sakura/Fonts/BricolageGrotesque")); parent.Add(label); return label; }
         private static Button Button(string text, Action action, VisualElement parent) { var button = new Button(action) { text = text }; button.style.unityFontDefinition = FontDefinition.FromFont(Resources.Load<Font>("Sakura/Fonts/DMSans-Semibold")); button.style.unityFontStyleAndWeight = FontStyle.Normal; parent.Add(button); return button; }
@@ -396,6 +427,7 @@ namespace Sakura.Unity
             backend.StatusChanged -= SetStatus;
             backend.ReplyReceived -= ReceiveReply;
             backend.ModelImported -= ReceiveImportedModel;
+            if (voice != null) { voice.TranscriptReceived -= ReceiveTranscript; voice.StatusChanged -= SetStatus; voice.ListeningChanged -= UpdateMicrophone; }
         }
     }
 }

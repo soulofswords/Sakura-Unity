@@ -91,7 +91,11 @@ def import_selected(source, kind, selection=None):
 def install_unity_lifecycle(module):
     """Account/model UI starts without loading AI, audio, camera or automations."""
     service_context = None
+    original_lifetime = module.app.router.lifespan_context
     service_lock = asyncio.Lock()
+    mode = 'Companion'
+    revision = 0
+    from starlette.responses import JSONResponse
 
     @asynccontextmanager
     async def lifetime(app):
@@ -104,15 +108,47 @@ def install_unity_lifecycle(module):
 
     @module.app.get('/api/unity/status')
     async def service_status():
-        return {'services_started': service_context is not None}
+        return {'services_started': service_context is not None, 'mode': mode,
+                'tracking_only': getattr(module.app.state, 'tracking_only', False)}
+
+    @module.app.post('/api/unity/mode')
+    async def set_mode(payload: dict):
+        nonlocal mode, revision
+        requested, sequence = payload.get('mode'), payload.get('revision')
+        if requested not in ('Companion', 'VTuber', 'Agent') or type(sequence) is not int or sequence < 1:
+            return JSONResponse({'error': 'Choose a valid mode and revision.'}, 400)
+        async with service_lock:
+            if sequence <= revision:
+                return {'ok': True, 'mode': mode, 'stale': True}
+            revision = sequence
+            if service_context is not None:
+                result = await module.set_tracking_mode({'enabled': requested == 'VTuber'})
+                if getattr(result, 'status_code', 200) >= 400:
+                    return result
+            else:
+                module.app.state.tracking_only = requested == 'VTuber'
+                module.app.state.ai_unloaded = requested == 'VTuber'
+            mode = requested
+            return {'ok': True, 'mode': mode, 'tracking_only': requested == 'VTuber'}
 
     @module.app.post('/api/unity/start-services')
     async def start_services():
         nonlocal service_context
         async with service_lock:
+            if mode == 'VTuber':
+                return JSONResponse({'error': 'AI conversation stays off in VTuber mode.'}, 409)
             if service_context is None:
-                candidate = module.lifespan(module.app)
-                await candidate.__aenter__()
+                candidate = original_lifetime(module.app)
+                # Reuse the saved provider without inheriting the reference app's last tracking-only session.
+                previous = os.environ.get('SAKURA_START_MODE')
+                os.environ['SAKURA_START_MODE'] = 'agent'
+                try:
+                    await candidate.__aenter__()
+                finally:
+                    if previous is None:
+                        os.environ.pop('SAKURA_START_MODE', None)
+                    else:
+                        os.environ['SAKURA_START_MODE'] = previous
                 service_context = candidate
         return {'ok': True}
 

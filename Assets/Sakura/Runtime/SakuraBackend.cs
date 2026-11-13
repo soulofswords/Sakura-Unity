@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -12,9 +13,10 @@ namespace Sakura.Unity
     [Serializable] public class CharacterEntry { public string name; public string path; public string format; }
     [Serializable] public class CharacterCatalog { public CharacterEntry[] items; public string error; }
     [Serializable] internal class BridgeIdentity { public int port; public string token; }
-    [Serializable] internal class ChatRequest { public string text; }
-    [Serializable] internal class ChatResponse { public string reply; public string error; }
+    [Serializable] internal class ChatRequest { public string text; public bool defer_audio = true; public string surface; }
+    [Serializable] internal class ChatResponse { public string reply; public string speech_reply; public string error; }
     [Serializable] internal class ModelImportReply { public string[] models; public string error; public bool cancelled; }
+    [Serializable] internal class ModeRequest { public string mode; public int revision; }
     [Serializable] public class ApiReply { public bool ok; public bool configured; public bool confirmation_required; public string error; public string message; public string url; }
 
     public sealed class SakuraBackend : MonoBehaviour
@@ -24,8 +26,13 @@ namespace Sakura.Unity
         public event Action<string> StatusChanged;
         public event Action<string> ReplyReceived;
         public event Action<string> ModelImported;
+        public event Action<string> AudioReplyReceived;
         public bool Connected { get; private set; }
         public bool Busy { get; private set; }
+        public string Mode { get; private set; } = "Companion";
+        private int modeRevision;
+        private int chatGeneration;
+        private UnityWebRequest activeChat;
         private Process server;
         private Process catalogProcess;
         private Process importProcess;
@@ -210,7 +217,19 @@ namespace Sakura.Unity
                 yield return request.SendWebRequest();
                 Connected = request.result == UnityWebRequest.Result.Success;
                 StatusChanged?.Invoke(Connected ? "Connected to Sakura’s authenticated local backend." : "Backend is unavailable. " + request.error);
+                if (Connected) SetMode(Mode);
             }
+        }
+
+        public void SetMode(string mode)
+        {
+            if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Invalid mode.");
+            if (Mode != mode) chatGeneration++;
+            Mode = mode; modeRevision++;
+            activeChat?.Abort();
+            if (!Connected) return;
+            Api("/api/unity/mode", JsonUtility.ToJson(new ModeRequest { mode = mode, revision = modeRevision }), (json, error) =>
+            { if (error != null) StatusChanged?.Invoke(error); });
         }
 
         public void Api(string route, string body, Action<string, string> completed)
@@ -242,41 +261,131 @@ namespace Sakura.Unity
                 string json = request.downloadHandler.text;
                 if (request.result == UnityWebRequest.Result.Success) { completed(json, null); yield break; }
                 string error = "Sakura could not complete this request. " + request.error;
-                try { var reply = JsonUtility.FromJson<ApiReply>(json); if (!string.IsNullOrEmpty(reply.error)) error = reply.error; }
-                catch (ArgumentException) { }
-                completed(null, error);
+                completed(null, ResponseError(json, error));
             }
         }
 
         public void SendChat(string text)
         {
             if (Busy || string.IsNullOrWhiteSpace(text)) return;
-            if (!Connected) { StatusChanged?.Invoke("Use Connect backend before sending a message."); return; }
+            if (Mode == "VTuber") { StatusChanged?.Invoke("AI conversation stays off in VTuber mode."); return; }
             Busy = true;
-            Api("/api/unity/start-services", "{}", (json, error) =>
+            StatusChanged?.Invoke("Starting AI for your reply…");
+            string mode = Mode; int revision = ++modeRevision;
+            int generation = chatGeneration;
+            Api("/api/unity/mode", JsonUtility.ToJson(new ModeRequest { mode = mode, revision = revision }), (modeJson, modeError) =>
             {
-                Busy = false;
-                if (error != null) { StatusChanged?.Invoke(error); return; }
-                StartCoroutine(Chat(text));
+                if (modeError != null || mode != Mode || generation != chatGeneration) { Busy = false; if (modeError != null) ChatError(modeError); return; }
+                Api("/api/unity/start-services", "{}", (json, error) =>
+                {
+                    if (error != null || mode != Mode || generation != chatGeneration) { Busy = false; if (error != null) ChatError(error); return; }
+                    StartCoroutine(Chat(text, mode, generation));
+                });
             });
         }
 
-        private IEnumerator Chat(string text)
+        private void ChatError(string error) { StatusChanged?.Invoke(error); ReplyReceived?.Invoke("I could not reply: " + error); }
+
+        public void UploadAudio(byte[] wav, Action<string, string> completed)
+        {
+            if (Mode != "Companion") { completed(null, "Voice conversation is available in Companion mode."); return; }
+            if (wav == null || wav.Length < 44 || wav.Length > 20 * 1024 * 1024) { completed(null, "Audio must be a nonempty WAV under 20 MB."); return; }
+            int generation = chatGeneration;
+            Api("/api/unity/start-services", "{}", (_, error) =>
+            {
+                if (error != null) completed(null, error);
+                else if (Mode != "Companion" || generation != chatGeneration) completed(null, "Mode changed before recognition.");
+                else StartCoroutine(RecognizeAudio(wav, completed));
+            });
+        }
+
+        private IEnumerator RecognizeAudio(byte[] wav, Action<string, string> completed)
+        {
+            var form = new WWWForm(); form.AddBinaryData("audio", wav, "speech.wav", "audio/wav");
+            using (var request = Request("/api/stt"))
+            {
+                request.method = "POST"; request.uploadHandler = new UploadHandlerRaw(form.data);
+                foreach (var header in form.headers) request.SetRequestHeader(header.Key, header.Value);
+                yield return request.SendWebRequest();
+                if (request.result == UnityWebRequest.Result.Success) completed(request.downloadHandler.text, null);
+                else
+                {
+                    completed(null, ResponseError(request.downloadHandler?.text, request.error));
+                }
+            }
+        }
+
+        public static bool ValidAudioPath(string relative) => relative != null && Regex.IsMatch(relative, @"\A/audio/[A-Za-z0-9_-]+\.(?:wav|mp3|ogg)\z", RegexOptions.IgnoreCase);
+
+        public static string ResponseError(string json, string fallback)
+        {
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                try
+                {
+                    var reply = JsonUtility.FromJson<ApiReply>(json);
+                    if (!string.IsNullOrWhiteSpace(reply?.error)) return reply.error;
+                }
+                catch (ArgumentException) { }
+            }
+            return string.IsNullOrWhiteSpace(fallback) ? "The backend returned no response. Check the selected model and retry." : fallback;
+        }
+
+        public void DownloadAudio(string relative, Action<AudioClip, string> completed)
+        {
+            if (!Connected || !ValidAudioPath(relative)) { completed(null, "Speech must come from Sakura’s local audio folder."); return; }
+            StartCoroutine(GetSpeechAudio(relative, completed));
+        }
+
+        private IEnumerator GetSpeechAudio(string relative, Action<AudioClip, string> completed)
+        {
+            AudioType type = relative.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) ? AudioType.MPEG : relative.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase) ? AudioType.OGGVORBIS : AudioType.WAV;
+            using (var request = UnityWebRequestMultimedia.GetAudioClip("http://127.0.0.1:" + identity.port + relative, type))
+            {
+                request.redirectLimit = 0; request.timeout = 120;
+                request.SetRequestHeader("X-Sakura-Desktop", identity.token);
+                request.SetRequestHeader("Origin", "http://127.0.0.1:" + identity.port);
+                yield return request.SendWebRequest();
+                if (request.result != UnityWebRequest.Result.Success) completed(null, request.error);
+                else completed(DownloadHandlerAudioClip.GetContent(request), null);
+            }
+        }
+
+        private IEnumerator Chat(string text, string mode, int generation)
         {
             Busy = true;
             StatusChanged?.Invoke("Preparing reply…");
             using (var request = Request("/api/chat"))
             {
+                activeChat = request;
                 request.method = "POST";
-                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(new ChatRequest { text = text })));
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(new ChatRequest { text = text, surface = mode == "Agent" ? "agent" : "companion" })));
                 request.SetRequestHeader("Content-Type", "application/json");
                 yield return request.SendWebRequest();
+                activeChat = null;
                 Busy = false;
+                if (Mode != mode || generation != chatGeneration) yield break;
                 if (request.result != UnityWebRequest.Result.Success)
-                { StatusChanged?.Invoke("Reply failed. " + request.error); yield break; }
-                var response = JsonUtility.FromJson<ChatResponse>(request.downloadHandler.text);
-                if (!string.IsNullOrEmpty(response.error)) StatusChanged?.Invoke(response.error);
-                else { ReplyReceived?.Invoke(response.reply ?? "No reply returned."); StatusChanged?.Invoke("Ready"); }
+                {
+                    ChatError(ResponseError(request.downloadHandler?.text, request.error)); yield break;
+                }
+                ChatResponse response = null;
+                try { response = JsonUtility.FromJson<ChatResponse>(request.downloadHandler.text); }
+                catch (ArgumentException) { }
+                if (response == null) ChatError("The backend returned an invalid response.");
+                else if (!string.IsNullOrWhiteSpace(response.error)) ChatError(response.error);
+                else if (string.IsNullOrWhiteSpace(response.reply)) ChatError("The selected model returned an empty reply.");
+                else
+                {
+                    ReplyReceived?.Invoke(response.reply); StatusChanged?.Invoke("Ready");
+                    Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = response.speech_reply ?? response.reply }), (json, error) =>
+                    {
+                        if (mode != Mode || generation != chatGeneration) return;
+                        if (error != null) { StatusChanged?.Invoke("Reply ready; speech unavailable: " + error); return; }
+                        try { var audio = Newtonsoft.Json.Linq.JObject.Parse(json).Value<string>("audio"); if (ValidAudioPath(audio)) AudioReplyReceived?.Invoke(audio); }
+                        catch (Exception) { StatusChanged?.Invoke("Reply ready; invalid speech response."); }
+                    });
+                }
             }
         }
 

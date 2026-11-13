@@ -47,6 +47,7 @@ class BridgeTests(unittest.TestCase):
             calls.append('stop')
 
         module = types.SimpleNamespace(app=FastAPI(), lifespan=service_lifetime)
+        module.app.router.lifespan_context = service_lifetime
         self.bridge.install_unity_lifecycle(module)
         self.assertEqual(calls, [])
 
@@ -61,6 +62,37 @@ class BridgeTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_lazy_start_keeps_included_router_lifespans(self):
+        import asyncio
+        import httpx
+        from fastapi import APIRouter, FastAPI
+        calls = []
+
+        @asynccontextmanager
+        async def app_lifetime(app):
+            calls.append('app start')
+            yield
+            calls.append('app stop')
+
+        @asynccontextmanager
+        async def router_lifetime(app):
+            calls.append('router start')
+            yield
+            calls.append('router stop')
+
+        app = FastAPI(lifespan=app_lifetime)
+        app.include_router(APIRouter(lifespan=router_lifetime))
+        self.bridge.install_unity_lifecycle(types.SimpleNamespace(app=app, lifespan=app_lifetime))
+
+        async def run():
+            async with app.router.lifespan_context(app):
+                self.assertEqual(calls, [])
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                    self.assertEqual((await client.post('/api/unity/start-services')).status_code, 200)
+                    self.assertEqual(calls, ['app start', 'router start'])
+            self.assertEqual(calls, ['app start', 'router start', 'router stop', 'app stop'])
+        asyncio.run(run())
+
     def test_package_files_retain_hierarchy_and_reject_links(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -70,6 +102,43 @@ class BridgeTests(unittest.TestCase):
             records = list(self.bridge.package_files(root, 100, 10))
             self.assertEqual({name for name, _ in records}, {'model.pmx', 'textures/body.png'})
             self.assertEqual(list(self.bridge.package_files(root / 'model.pmx', 100, 10)), [('model.pmx', b'PMX ')])
+
+    def test_mode_switching_does_not_start_ai_in_vtuber(self):
+        import asyncio
+        import httpx
+        from fastapi import FastAPI
+        calls = []
+        app = FastAPI()
+        @asynccontextmanager
+        async def lifetime(app):
+            calls.append('start')
+            yield
+            calls.append('stop')
+        async def set_mode(payload):
+            calls.append(('tracking', payload['enabled']))
+            app.state.tracking_only = payload['enabled']
+            return {'ok': True}
+        module = types.SimpleNamespace(app=app, lifespan=lifetime, set_tracking_mode=set_mode)
+        app.router.lifespan_context = lifetime
+        self.bridge.install_unity_lifecycle(module)
+        async def run():
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                    self.assertEqual((await client.post('/api/unity/mode', json={'mode': 'VTuber', 'revision': 2})).status_code, 200)
+                    self.assertTrue(app.state.tracking_only)
+                    self.assertEqual((await client.post('/api/unity/start-services')).status_code, 409)
+                    self.assertEqual(calls, [])
+                    await client.post('/api/unity/mode', json={'mode': 'Companion', 'revision': 3})
+                    await client.post('/api/unity/start-services')
+                    await client.post('/api/unity/mode', json={'mode': 'VTuber', 'revision': 4})
+                    await client.post('/api/unity/mode', json={'mode': 'Agent', 'revision': 5})
+                    await client.post('/api/unity/mode', json={'mode': 'VTuber', 'revision': 1})
+                    status = (await client.get('/api/unity/status')).json()
+                    self.assertEqual(status['mode'], 'Agent')
+                    self.assertFalse(app.state.tracking_only)
+                    self.assertEqual(calls, ['start', ('tracking', True), ('tracking', False)])
+                    self.assertEqual((await client.post('/api/unity/mode', json={'mode': 'invalid', 'revision': 6})).status_code, 400)
+        asyncio.run(run())
 
     def test_package_size_and_count_are_bounded(self):
         with tempfile.TemporaryDirectory() as folder:

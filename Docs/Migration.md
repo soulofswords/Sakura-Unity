@@ -33,14 +33,14 @@ The Unity client owns the interface, avatar rendering, animation and eventually 
 |---|---|
 | Existing app checkpoint | Committed locally |
 | Native Unity shell | Running in Editor Play mode, navigation and theme switching verified |
-| Local catalog | 544 real references discovered; eight bridge unit tests passing |
+| Local catalog | 544 real references discovered; ten bridge unit tests passing |
 | Authenticated backend | Loopback bridge and authorization probe verified. AI services start lazily. Chat generation remains unverified |
 | Avatar rendering | Native PMX (Ringo, Killer Luka), Live2D (DeepSeek, Amika) and VRM (ArisuMaid) import/render/switching verified |
 | Idle motion | Native breathing and blinking verified. Six original 3D idle poses ported; authored Live2D Idle groups load when supplied. Exact motion parity and live tracking priority remain under verification |
 | PMX editing | Native independent colour/transparency, diffuse replacement, texture diagnostics/confirmed path repair, indexed bone freezing and eight appearance controls implemented. Editor reference matching tested. Pick-on-model, automatic rig diagnosis, material-expression presets and migration of old browser overrides remain pending. Existing package textures.json overrides are read at import |
-| Tracking, expressions and physics | Tracking, expression UI/hotkeys and physics parity pending |
-| Voice and microphone | Pending |
-| Backend mode gating | Native mode navigation is present; source service pausing/edition packaging still needs native integration verification |
+| Tracking, expressions and physics | Native expressions and expandable UI implemented for PMX, VRM and Live2D. Strength, preview, toggles, rename and focused shortcut persistence pass native tests. Tracking, global/action hotkeys and complete physics parity remain pending |
+| Voice and microphone | Native microphone/VAD, source-language STT, recognised-voice rejection, wake transcript gate and local TTS playback wired. PCM, VAD and wake-boundary checks pass. Physical conversation, lip-sync, interruption and offline wake parity remain pending |
+| Backend mode gating | Live cold-start VTuber rejection and return to Companion verified. Ten bridge tests cover lifecycle, included-router startup/shutdown, stale revisions and import boundaries. Warmed-service transitions and edition packaging remain pending |
 | Agent and browser | Pending |
 | Cloud library and mobile | Native library sign-in, registration, recovery and download controls wired to existing routes. Live account/download verification and mobile integration pending |
 | Double-click clean stage | Unity event tests verify Companion chat remains visible, VTuber hides controls, repeated double-click restores the previous panel state |
@@ -76,7 +76,7 @@ Double-click the background or avatar to hide controls. Companion retains its ch
 
 The native Settings tabs reuse the existing settings API. Camera, microphone, renderer-specific physics and other partially migrated preferences still require their corresponding native integrations. Visible controls and saved preferences do not establish full feature parity.
 
-## Native PMX and idle checkpoint — 2026-11-12
+## Native PMX and idle checkpoint â€” 2026-11-12
 
 PMX controls now keep independent per-model overrides under Application.persistentDataPath/pmx-overrides. They do not edit the PMX, original textures or original app's browser storage. Stored native settings use replacement writes. Original browser colour/texture/expression overrides are not yet migrated into the native profile.
 
@@ -90,4 +90,14 @@ No installer, APK or published update is produced by this checkpoint. Full nativ
 
 The eight native appearance sliders use the same ranges as the reference app. Automatic matching searches the original .3/.12/.05 steps, retains directional shading and checks whole-model plus up to six measurable material references. After snapshots wait for a fresh frame, so they cannot accidentally show the final isolated reference material.
 
-The native local model picker remembers its last folder separately for PMX, VRM and Live2D, including across reopening. A live Ringo-folder reopen check passed. SDK example scenes remain local owner-imported files and are excluded from this code checkpoint; SDK runtime, editor support, renderer assets and licenses are committed. The owner’s Unity cloud-connect preference is not changed or committed.
+The native local model picker remembers its last folder separately for PMX, VRM and Live2D, including across reopening. A live Ringo-folder reopen check passed. SDK example scenes remain local owner-imported files and are excluded from this code checkpoint; SDK runtime, editor support, renderer assets and licenses are committed. The ownerâ€™s Unity cloud-connect preference is not changed or committed.
+
+## Native voice and expressions checkpoint â€” 2026-11-13
+
+The runtime assembly explicitly references Unity.InputSystem for focused expression shortcuts. A normal editor restart rebuilt the dependency graph and cleared the Safe Mode compilation errors. The obsolete duplicate mcs.rsp was removed; csc.rsp retains the unsafe setting required by the imported SDK. Voice settings open on the Voice tab, and the native microphone starts off.
+
+Live tests exercised Ringo's 22 expressions plus a disposable synthetic mesh for strength, clearing, preview, rename and shortcut persistence. Voice checks cover PCM16/WAV clipping, RMS, VAD silence/click rejection, Unicode wake boundaries and Hindi transcript preservation without opening the microphone. These checks do not establish physical microphone quality or conversational parity.
+
+The bridge captures the application's merged router lifespan rather than only the root lifespan, preserving Agent router lifecycle handlers when services start lazily. Native chat and speech retain mode-generation checks and desktop authentication; audio downloads accept only the owned /audio filename route. Tokens remain in memory and are not written into verification reports.
+
+A real local-model greeting attempt timed out after 120 seconds. That exposed an empty-error-body NullReferenceException in the native chat transport. The transport now reports a visible failure and clears Busy; a live isolated HTTP 503 regression test confirms it. Successful local generation and physical speech remain unverified. No model/provider setting was changed to conceal the failure.

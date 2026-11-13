@@ -21,6 +21,7 @@ namespace Sakura.Unity
         public string LoadedModelPath { get; private set; }
         public SakuraPmxModel Pmx => avatar == null ? null : avatar.GetComponent<SakuraPmxModel>();
         public SakuraIdleMotion Idle => avatar == null ? null : avatar.GetComponent<SakuraIdleMotion>();
+        public SakuraAvatarExpressions Expressions => avatar == null ? null : avatar.GetComponent<SakuraAvatarExpressions>();
         private GameObject avatar;
         private Camera avatarCamera;
         private RenderTexture target;
@@ -100,6 +101,7 @@ namespace Sakura.Unity
                 try
                 {
                     var motion = loaded.AddComponent<SakuraIdleMotion>(); motion.Initialize(path);
+                    loaded.AddComponent<SakuraAvatarExpressions>().Initialize(path, motion);
                     var studio = GetComponent<SakuraStudio>(); motion.Companion = studio == null || studio.CurrentMode == "Companion";
                 }
                 catch { Destroy(loaded); throw; }
