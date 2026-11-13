@@ -31,6 +31,8 @@ namespace Sakura.Unity
         CancellationTokenSource lifetime;
         ClientWebSocket socket;
         readonly ConcurrentQueue<Action> main = new ConcurrentQueue<Action>();
+        readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
+        bool lastFace, faceKnown;
         readonly Dictionary<CubismParameter, float> injected = new Dictionary<CubismParameter, float>();
         readonly Dictionary<CubismParameter, (float before, float after)> writes = new Dictionary<CubismParameter, (float, float)>();
         readonly Dictionary<string, float> customValues = new Dictionary<string, float>();
@@ -112,7 +114,7 @@ namespace Sakura.Unity
                     await viewport.LoadModel(backend.SourceFolder, model.path, cancellation);
                     cancellation.ThrowIfCancellationRequested();
                     if (!viewport.HasAvatar || viewport.LoadedModelPath != model.path || !string.IsNullOrEmpty(viewport.LastImportError)) throw new InvalidOperationException(viewport.LastImportError ?? "The model could not be loaded.");
-                    return Ok(State());
+                    var loadedState = State(); Emit("ModelLoadedEvent", loadedState); return Ok(loadedState);
                 case "vts_model_move": NeedModel(); return Ok(new JObject { ["modelPosition"] = viewport.PluginMove(args) });
                 case "get_status":
                     NeedModel(); return Ok(new JObject { ["model_name"] = Path.GetFileName(viewport.LoadedModelPath), ["motion_groups"] = new JArray(), ["expressions"] = new JArray(Expressions().Entries.Where(entry => !entry.Id.StartsWith("parameter:", StringComparison.Ordinal)).Select(entry => entry.Name).Distinct()), ["idle"] = new JObject { ["idle"] = "", ["lost"] = "" } });
@@ -180,7 +182,8 @@ namespace Sakura.Unity
                 case "vts_item_anim": return Ok(AnimateItem(args));
                 case "vts_artmesh_select": return Ok(SelectArtMeshes(args));
                 case "vts_tint": return Ok(Tint(args));
-                case "vts_model_url": return Ok(await LoadModelFromUrl(args, cancellation));
+                case "vts_model_url":
+                    var urlState = await LoadModelFromUrl(args, cancellation); Emit("ModelLoadedEvent", urlState); return Ok(urlState);
                 case "vts_ndi": return Ok(ConfigureNdi(args));
                 default: throw new NotSupportedException("Unsupported native plugin command: " + command);
             }
@@ -267,13 +270,14 @@ namespace Sakura.Unity
             else throw new ArgumentException("Send a data:image item or a Live2D .model3.json item. File paths are not read by the API.");
             cancellation.ThrowIfCancellationRequested();
             stage.Configure(id, x, y, size, rotation, above, follow, locked);
+            Emit("ItemEvent", new JObject { ["itemEventType"] = "ItemAdded", ["itemInstanceID"] = id });
             return ItemSnapshot(stage.Items.First(item => item.id == id));
         }
         JObject UnloadItem(JObject args)
         {
             var stage = StageItems(); string id = args.Value<string>("itemInstanceID") ?? throw new ArgumentException("itemInstanceID is required.");
             if (!stage.Items.Any(item => item.id == id)) throw new ArgumentException("Unknown itemInstanceID: " + id);
-            stage.Remove(id); return new JObject { ["itemInstanceID"] = id };
+            stage.Remove(id); Emit("ItemEvent", new JObject { ["itemEventType"] = "ItemRemoved", ["itemInstanceID"] = id }); return new JObject { ["itemInstanceID"] = id };
         }
         JObject MoveItem(JObject args)
         {
@@ -452,6 +456,21 @@ namespace Sakura.Unity
             tools.SetEffects(next); return EffectsInfo(args);
         }
 
+        public void Emit(string name, JObject data = null)
+        {
+            if (!Connected || string.IsNullOrEmpty(name)) return;
+            _ = SendEvent(new JObject { ["type"] = "event", ["event"] = name, ["data"] = data ?? new JObject() });
+        }
+        async Task SendEvent(JObject message)
+        {
+            try
+            {
+                await sendLock.WaitAsync();
+                try { var ws = socket; if (ws != null && ws.State == WebSocketState.Open) { var bytes = Encoding.UTF8.GetBytes(message.ToString(Formatting.None)); await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None); } }
+                finally { sendLock.Release(); }
+            }
+            catch (Exception) { }
+        }
         public void Configure(bool enabled, int requestedPort)
         {
             if (backend == null) throw new InvalidOperationException("Initialize the native plugin bridge first.");
@@ -484,6 +503,8 @@ namespace Sakura.Unity
             physics.Tick(viewport);
             for (int index = 0; index < 4 && main.TryDequeue(out var action); index++) action();
             if (externalEnabled && desiredEnabled && backend != null && backend.Connected && !running && Time.realtimeSinceStartupAsDouble >= retryAfter) _ = Session();
+            if (Connected) { bool face = GetComponent<SakuraTracking>()?.FaceDetected == true; if (!faceKnown || face != lastFace) { faceKnown = true; lastFace = face; Emit("TrackingStatusChangedEvent", new JObject { ["faceFound"] = face }); } }
+            else faceKnown = false;
         }
         async Task Session()
         {
@@ -522,7 +543,9 @@ namespace Sakura.Unity
                             });
                             var response = await answer.Task; byte[] payload = Encoding.UTF8.GetBytes(response.ToString(Formatting.None));
                             if (payload.Length > 512 * 1024) payload = Encoding.UTF8.GetBytes(new JObject { ["id"] = message.Value<string>("id"), ["ok"] = false, ["error"] = "Native plugin response exceeds 512 KB." }.ToString(Formatting.None));
-                            await socket.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true, cancel);
+                            await sendLock.WaitAsync(cancel);
+                    try { await socket.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true, cancel); }
+                    finally { sendLock.Release(); }
                         }
                     }
                 }

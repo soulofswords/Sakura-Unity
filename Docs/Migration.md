@@ -190,4 +190,6 @@ Stage items now pin to a specific Live2D ArtMesh or 3D bone instead of only the 
 
 PMX bone diagnosis reports missing standard humanoid bones, duplicate names and non-finite transforms on demand. It does not repair a rig or migrate browser-stored overrides.
 
+The native VTS bridge now emits `ModelLoadedEvent`, `ItemEvent` and `TrackingStatusChangedEvent` lifecycle messages to subscribed plugin clients, and the global Hotkeys list matches the reference actions including show/hide stage items and model movement in four directions.
+
 `SakuraNativeCollabChecks` covers relay URL/room validation, package path rejection, pose bounds, pinned-attachment rotation/round-trip and pin-field validation. The Unity runtime compiles with the collab, stage-item, PMX and plugin changes. Existing stage-item, tracking and plugin bridge checks still pass. Physical multi-machine WebRTC, remote microphone/video, cloud-account previews and external receivers remain unverified; embedded Agent browsing and installer/update preservation remain open.

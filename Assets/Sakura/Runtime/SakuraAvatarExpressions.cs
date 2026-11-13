@@ -174,6 +174,16 @@ namespace Sakura.Unity
             AddAction("toggle-blink", "Toggle auto blinking", () => ToggleMotion("blink"));
             AddAction("toggle-idle", "Toggle idle motions", () => ToggleMotion("idle"));
             AddAction("toggle-model-lock", "Lock / unlock model position", () => { var viewport = Viewport(); viewport.PositionLocked = !viewport.PositionLocked; });
+            AddAction("toggle-items", "Show / hide stage items", () => { var stage = Viewport().GetComponent<SakuraStageItems>() ?? throw new InvalidOperationException("Stage items are unavailable."); stage.SetHidden(!stage.Hidden); });
+            void Nudge(float dx, float dy)
+            {
+                var viewport = Viewport(); var position = viewport.PluginPosition();
+                viewport.PluginMove(new JObject { ["positionX"] = position.Value<float>("positionX") + dx, ["positionY"] = position.Value<float>("positionY") + dy, ["size"] = position.Value<float>("size"), ["rotation"] = position.Value<float>("rotation") });
+            }
+            AddAction("model-left", "Move model left", () => Nudge(-.02f, 0));
+            AddAction("model-right", "Move model right", () => Nudge(.02f, 0));
+            AddAction("model-up", "Move model up", () => Nudge(0, -.02f));
+            AddAction("model-down", "Move model down", () => Nudge(0, .02f));
             AddAction("model-bigger", "Make model bigger", () => { var viewport = Viewport(); viewport.SetZoomPercent(viewport.ZoomPercent * 1.05f); });
             AddAction("model-smaller", "Make model smaller", () => { var viewport = Viewport(); viewport.SetZoomPercent(viewport.ZoomPercent * .95f); });
             void Rotate(float angle)
