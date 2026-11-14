@@ -160,6 +160,13 @@ namespace Sakura.Unity
                 });
             }
             Button("Refresh Telegram status", RefreshTelegram, telegram);
+            Button("Refresh Discord / Slack / WhatsApp status", () => Request("/api/agent/gateways", null, data =>
+            {
+                var rows = (data as JArray ?? new JArray()).OfType<JObject>().ToList();
+                telegramStatus.text = rows.Count == 0 ? "No messaging gateways reported." : string.Join(" · ", rows.Select(row =>
+                    ((string)row["provider"] ?? "gateway") + ": " + (row.Value<bool?>("enabled") == true ? (row.Value<bool?>("running") == true ? "running" : "enabled, stopped") : "off") +
+                    ((string)row["last_error"] is string error && error.Length > 0 ? " — " + error : "")));
+            }), telegram);
             Button("Save Telegram settings", () =>
             {
                 var ids = (telegramChats.value ?? "").Split(',').Select(id => id.Trim()).Where(id => id.Length > 0).ToArray();
