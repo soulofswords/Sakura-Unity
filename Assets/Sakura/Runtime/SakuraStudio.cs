@@ -174,6 +174,7 @@ namespace Sakura.Unity
             Button("×", ClosePanel, panelHeader).AddToClassList("close");
             var scroll = new ScrollView(); scroll.AddToClassList("panel-scroll"); panel.Add(scroll);
             panelBody = scroll.contentContainer;
+            panelBody.name = "companion-panel-body";
             SakuraPanelResize.Attach(panel);
 
             footer = Element("footer", root); footer.name = "companion-statusbar";
@@ -400,7 +401,11 @@ namespace Sakura.Unity
             else if (name == "Streaming & output")
             {
                 new SakuraOutputPanel(output, panelBody);
-                if (CurrentMode == "VTuber") SakuraLiveChat.BuildPanel(liveChat, panelBody, true);
+                if (CurrentMode == "VTuber")
+                {
+                    SakuraLiveChat.BuildPanel(liveChat, panelBody, true);
+                    (GetComponent<SakuraVoiceChanger>() ?? gameObject.AddComponent<SakuraVoiceChanger>()).BuildPanel(panelBody);
+                }
             }
             else if (name == "Background") new SakuraStagePanel(backend, viewport, panelBody, propsLibrary);
             else if (name == "Collab") GetComponent<SakuraNativeCollab>().BuildPanel(panelBody);
