@@ -42,6 +42,7 @@ namespace Sakura.Unity
         private Process modelToolProcess;
         private BridgeIdentity identity;
         private string serverStartupError;
+        private bool startupGreetingRequested;
         private readonly ConcurrentQueue<Action> pending = new ConcurrentQueue<Action>();
 
         private void Awake()
@@ -282,7 +283,24 @@ namespace Sakura.Unity
                 Connected = request.result == UnityWebRequest.Result.Success;
                 StatusChanged?.Invoke(Connected ? "Connected to Sakura’s authenticated local backend." : "Backend is unavailable. " + request.error);
                 if (Connected) SetMode(Mode);
+                if (Connected && !startupGreetingRequested) { startupGreetingRequested = true; StartCoroutine(StartupGreeting()); }
             }
+        }
+
+        private System.Collections.IEnumerator StartupGreeting()
+        {
+            yield return new WaitForSeconds(1f);
+            if (!Connected || Mode != "Companion") yield break;
+            Api("/api/assistant/greeting", "{}", (json, error) =>
+            {
+                if (error != null || !Connected || Mode != "Companion") return;
+                try
+                {
+                    string reply = Newtonsoft.Json.Linq.JObject.Parse(json).Value<string>("reply");
+                    if (!string.IsNullOrWhiteSpace(reply)) ReplyReceived?.Invoke(reply);
+                }
+                catch (Newtonsoft.Json.JsonException) { }
+            });
         }
 
         public void SetMode(string mode)
