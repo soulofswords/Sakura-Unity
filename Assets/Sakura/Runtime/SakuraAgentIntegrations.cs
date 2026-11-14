@@ -18,6 +18,7 @@ namespace Sakura.Unity
             var calendarStatus = new Label(); calendarStatus.style.whiteSpace = WhiteSpace.Normal; calendar.Add(calendarStatus);
             var calendarClient = new TextField("Google OAuth client ID") { value = "" }; calendar.Add(calendarClient);
             var calendarSecret = new TextField("Google OAuth client secret") { isPasswordField = true }; calendar.Add(calendarSecret);
+            string When(JToken value) => value == null ? "" : value.Type == JTokenType.String ? (string)value : (string)value["dateTime"] ?? (string)value["date"] ?? "";
             void LoadCalendar()
             {
                 Request("/api/agent/calendar/status", null, data =>
@@ -46,7 +47,7 @@ namespace Sakura.Unity
             {
                 var events = (data["events"] as JArray ?? new JArray()).OfType<JObject>().ToList();
                 calendarStatus.text = events.Count == 0 ? "No events in the next 7 days." : string.Join(" | ", events.Take(10).Select(item =>
-                    ((string)item["summary"] ?? "Event") + " · " + ((string)item["start"] ?? "") + (string.IsNullOrEmpty((string)item["start"]) ? "" : " → " + ((string)item["end"] ?? ""))));
+                    ((string)item["summary"] ?? "Event") + " · " + When(item["start"]) + (string.IsNullOrEmpty(When(item["start"])) ? "" : " → " + When(item["end"]))));
             }), calendar);
             LoadCalendar();
 
