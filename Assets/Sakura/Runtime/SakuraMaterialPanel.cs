@@ -56,6 +56,8 @@ namespace Sakura.Unity
             var picker = new DropdownField(viewport.LoadedFormat == "Live2D" ? "ArtMesh" : "Texture / material", tools.Parts.Select((part, index) => index + " · " + part.Name).ToList(), selected); body.Add(picker);
             picker.RegisterValueChangedCallback(_ => { selected = picker.index; Render(); });
             Text(viewport.LoadedFormat == "Live2D" ? "Choose a Live2D ArtMesh to tint. Names come from the imported rig. Tint preserves its masks and transparency." : "Choose a material for hair, clothing or another part. Coloring preserves texture detail and transparency.");
+            var visible = new Toggle("Show this material") { value = !tools.Parts[selected].Settings.hidden }; body.Add(visible);
+            visible.RegisterValueChangedCallback(evt => Run(() => tools.SetPartVisible(selected, evt.newValue)));
             var operation = new DropdownField("What would you like to change?", new List<string> { "Change color", "Change transparency" }, 0); body.Add(operation);
             if (viewport.LoadedFormat != "Live2D") Button("Pick part on model", () =>
             {
@@ -214,6 +216,18 @@ namespace Sakura.Unity
             if (!tools.HasLive2DPhysics) box.Add(new Label("No authored physics rig is available for this model."));
             var bounds = new Toggle("Bound position, zoom & rotation") { value = settings.limitMovement }; box.Add(bounds);
             var hint = new Label("Move freely inside these bounds. Use the padlock to freeze placement. Position limits use percent of the window, scale uses percent, and rotation uses degrees."); hint.AddToClassList("description"); box.Add(hint);
+            if (tools.HasVrmSprings)
+            {
+                var springCard = new VisualElement(); springCard.AddToClassList("card"); body.Add(springCard);
+                var springTitle = new Label("VRM spring bones"); springTitle.AddToClassList("card-title"); springCard.Add(springTitle);
+                var current = tools.VrmSprings;
+                var stiffness = new Slider("Stiffness", 0, 200) { value = current.stiffness * 100, showInputField = true }; springCard.Add(stiffness);
+                var gravity = new Slider("Gravity", 0, 200) { value = current.gravity * 100, showInputField = true }; springCard.Add(gravity);
+                var drag = new Slider("Damping", 0, 200) { value = current.drag * 100, showInputField = true }; springCard.Add(drag);
+                void ApplySprings() => Run(() => { tools.SetVrmSprings(stiffness.value / 100, gravity.value / 100, drag.value / 100); status.text = "Saved VRM spring tuning."; });
+                stiffness.RegisterValueChangedCallback(_ => ApplySprings()); gravity.RegisterValueChangedCallback(_ => ApplySprings()); drag.RegisterValueChangedCallback(_ => ApplySprings());
+                Button("Restore authored springs", () => { stiffness.value = 100; gravity.value = 100; drag.value = 100; ApplySprings(); }, springCard);
+            }
             void Save(Action<SakuraLive2DSettings> change)
             {
                 var next = tools.Live2D.Copy(); change(next); tools.SetLive2DSettings(next); status.text = tools.Warning ?? "Saved for this model.";

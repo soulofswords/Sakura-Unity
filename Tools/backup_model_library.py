@@ -349,6 +349,9 @@ def plan_cli(args):
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", action="append", default=[], help="Library root as label=folder; repeat for Jio account roots.")
     parser.add_argument("--folder", default=DEFAULT_FOLDER, help="Google Drive folder ID or shared-folder URL.")

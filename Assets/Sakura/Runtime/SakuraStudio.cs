@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -87,6 +88,7 @@ namespace Sakura.Unity
             voice.ListeningChanged += UpdateMicrophone;
             liveChat = GetComponent<SakuraLiveChat>() ?? gameObject.AddComponent<SakuraLiveChat>();
             Build();
+            (GetComponent<SakuraReminders>() ?? gameObject.AddComponent<SakuraReminders>()).Initialize(backend, root);
             tracking = GetComponent<SakuraTracking>() ?? gameObject.AddComponent<SakuraTracking>();
             tracking.Initialize(backend, viewport);
             tracking.PhoneModelRequested += OpenPhoneModelPicker;
@@ -774,9 +776,47 @@ namespace Sakura.Unity
         private void ReceiveImportedModel(string path) { _ = viewport.LoadModel(backend.SourceFolder, path); }
         private void SetStatus(string text) { if (status != null) status.text = text; }
         private void ReceiveReply(string text) { Label(text, "message", messages.contentContainer); SetStatus(text); messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue)); }
+        private void ShowEvidence(JObject reply)
+        {
+            if (reply == null || reply.Value<string>("response_kind") == "conversation") return;
+            var statements = reply["statements"] as JArray ?? new JArray();
+            var sources = reply["sources"] as JArray ?? new JArray();
+            if (statements.Count == 0 && sources.Count == 0) return;
+            var labels = new List<string>();
+            foreach (var statement in statements.OfType<JObject>())
+            {
+                string classification = statement.Value<string>("classification");
+                if (!string.IsNullOrEmpty(classification) && !labels.Contains(classification)) labels.Add(classification);
+            }
+            var details = new Foldout { text = "Evidence · " + (labels.Count == 0 ? "Unknown" : string.Join(" · ", labels)), value = false };
+            details.AddToClassList("response-evidence");
+            foreach (var statement in statements.OfType<JObject>())
+            {
+                string classification = statement.Value<string>("classification");
+                var row = new Label((string.IsNullOrEmpty(classification) ? "Unknown" : classification) + ": " + (statement.Value<string>("text") ?? ""));
+                row.style.whiteSpace = WhiteSpace.Normal; details.Add(row);
+            }
+            foreach (var source in sources.OfType<JObject>())
+            {
+                string kind = source.Value<string>("kind"), title = source.Value<string>("title"), url = source.Value<string>("url");
+                if (kind == "tool")
+                {
+                    var receipt = new Label("Source: " + (title ?? "Local tool") + (string.IsNullOrEmpty(url) ? "" : " (" + url + ")"));
+                    receipt.style.whiteSpace = WhiteSpace.Normal; details.Add(receipt);
+                }
+                else if (kind == "external" && Uri.TryCreate(url ?? "", UriKind.Absolute, out var uri) && uri.Scheme == "https")
+                {
+                    var link = new Button(() => Application.OpenURL(uri.AbsoluteUri)) { text = string.IsNullOrEmpty(title) ? uri.Host : title };
+                    details.Add(link);
+                }
+            }
+            messages.contentContainer.Add(details);
+            messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue));
+        }
         private void ReceiveTranscript(string text) { Label(text, "user-message", messages.contentContainer); }
         private void ApplyAvatarReply(Newtonsoft.Json.Linq.JObject reply)
         {
+            ShowEvidence(reply);
             if (CurrentMode == "Companion" && avatarActions != null)
             {
                 int revision = ++replyVisualRevision;

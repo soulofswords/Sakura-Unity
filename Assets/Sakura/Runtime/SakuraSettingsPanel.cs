@@ -96,7 +96,10 @@ namespace Sakura.Unity
                 Text("Keep the password safe. Sakura cannot recover it.", "description", card);
                 card = Card("Google Drive model backup");
                 Text("Back up the local model library to the shared “Sakura AI assistant.” Drive folder. Create a Google Desktop OAuth client JSON once, keep it outside this project, then sign in. The token stays in your Windows AppData folder. The tool uploads models only; it never deletes local files.", "description", card);
-                var driveClient = new TextField("OAuth client JSON") { value = PlayerPrefs.GetString("sakura-drive-oauth-client", "") }; card.Add(driveClient);
+                string driveProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Sakura", "DriveBackup");
+                string savedClient = PlayerPrefs.GetString("sakura-drive-oauth-client", "");
+                if (string.IsNullOrWhiteSpace(savedClient)) savedClient = Environment.GetEnvironmentVariable("SAKURA_DRIVE_OAUTH_CLIENT") ?? Path.Combine(driveProfile, "google-desktop-client.json");
+                var driveClient = new TextField("OAuth client JSON") { value = savedClient }; card.Add(driveClient);
                 var driveStatus = new Label(); driveStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(driveStatus);
                 void RunDrive(string arguments, string starting)
                 {
@@ -105,10 +108,14 @@ namespace Sakura.Unity
                         string python = SakuraBackend.PythonExecutable(backend.SourceFolder);
                         string tool = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Tools", "backup_model_library.py"));
                         if (!File.Exists(tool)) throw new FileNotFoundException("The Drive backup tool is missing. Repair this installation.");
-                        if (arguments.Contains("\"")) throw new ArgumentException("Paths cannot contain quotes.");
+                        if (driveClient.value.Trim().Trim('"').Contains("\"") || backend.SourceFolder.Contains("\"")) throw new ArgumentException("Paths cannot contain embedded quotes.");
                         PlayerPrefs.SetString("sakura-drive-oauth-client", driveClient.value.Trim().Trim('"')); PlayerPrefs.Save();
                         var info = new ProcessStartInfo(python, "-u \"" + tool + "\" " + arguments)
                         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8 };
+                        info.EnvironmentVariables["SAKURA_DRIVE_OAUTH_CLIENT"] = driveClient.value.Trim().Trim('"');
+                        string savedToken = Path.Combine(driveProfile, "drive-backup-token.json");
+                        if (string.IsNullOrEmpty(info.EnvironmentVariables["SAKURA_DRIVE_TOKEN_FILE"]) && File.Exists(savedToken))
+                            info.EnvironmentVariables["SAKURA_DRIVE_TOKEN_FILE"] = savedToken;
                         info.EnvironmentVariables["PYTHONUTF8"] = "1";
                         var process = new Process { StartInfo = info, EnableRaisingEvents = true };
                         driveStatus.text = starting;
@@ -136,6 +143,8 @@ namespace Sakura.Unity
                     string models = Path.Combine(backend.SourceFolder, "models");
                     RunDrive("--source \"models=" + models + "\" --dry-run", "Planning the Drive upload without changing anything…");
                 }, card);
+                var extras = new Foldout { text = "More Sakura features", value = false }; body.Add(extras);
+                SakuraExtrasPanel.Build(extras, backend, () => alive);
                 card = Card("Assistant identity");
                 Field(card, "Assistant name", "assistant_name"); Field(card, "VTuber name", "vtuber_name");
                 Select(card, "Avatar presentation", "avatar_presentation", new[] { "auto", "feminine", "masculine", "neutral" }, new[] { "Automatic", "Feminine", "Masculine", "Neutral" });
@@ -362,6 +371,27 @@ namespace Sakura.Unity
                     AddButton("Stop microphone", voice.StopListening, card);
                     Text("Microphone starts off. Use the chat microphone to enable listening. Spoken stop/wait checks run only after you enable listening.", "description", card);
                 }
+                card = Card("Screen audio listening");
+                var screenAudio = new Toggle("Listen to PC audio while screen sharing") { value = false }; card.Add(screenAudio);
+                var screenAudioStatus = new Label("Screen audio is optional and only runs while screen sharing is active."); screenAudioStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(screenAudioStatus);
+                backend.Api("/api/screen-audio/sources", null, (json, error) =>
+                {
+                    if (!alive) return;
+                    if (error != null) { screenAudioStatus.text = "Audio sources unavailable: " + error; screenAudio.SetEnabled(false); return; }
+                    try
+                    {
+                        var sources = (JObject.Parse(json)["sources"] as JArray ?? new JArray()).OfType<JObject>().Select(item => (string)item["name"]).Where(name => !string.IsNullOrEmpty(name)).ToList();
+                        screenAudioStatus.text = sources.Count == 0 ? "No audio sources were reported." : "Available: " + string.Join(", ", sources.Take(6)) + ".";
+                    }
+                    catch (Exception) { screenAudioStatus.text = "The audio service returned an unreadable response."; }
+                });
+                screenAudio.RegisterValueChangedCallback(evt => backend.Api("/api/screen-audio", new JObject { ["enabled"] = evt.newValue, ["sources"] = new JArray("default-output"), ["computer_only"] = false, ["paused"] = false }.ToString(), (json, error) =>
+                {
+                    if (!alive) return;
+                    if (error != null) { screenAudio.SetValueWithoutNotify(!evt.newValue); screenAudioStatus.text = error; return; }
+                    try { var data = JObject.Parse(json); screenAudioStatus.text = (string)data["message"] ?? (evt.newValue ? "Screen audio listening on." : "Screen audio listening off."); }
+                    catch (Exception) { screenAudioStatus.text = evt.newValue ? "Screen audio listening on." : "Screen audio listening off."; }
+                }));
             }
             else if (selected == "Assistant")
             {

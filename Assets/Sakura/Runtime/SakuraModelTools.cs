@@ -20,6 +20,7 @@ namespace Sakura.Unity
             public string id, replacement;
             public Color color = Color.white;
             public float strength, transparency;
+            public bool hidden;
         }
         [Serializable] public sealed class ParameterSettings
         {
@@ -44,8 +45,10 @@ namespace Sakura.Unity
             public float strength, opacity;
             public byte[] textureBytes;
         }
+        [Serializable] public sealed class VrmSpringSettings { public float stiffness = 1, gravity = 1, drag = 1; }
         [Serializable] sealed class Profile
         {
+            public VrmSpringSettings vrmSprings = new VrmSpringSettings();
             public List<PartSettings> parts = new List<PartSettings>();
             public List<string> frozen = new List<string>();
             public List<ParameterSettings> parameters = new List<ParameterSettings>();
@@ -78,6 +81,7 @@ namespace Sakura.Unity
         SakuraIdleMotion idle;
         UniVRM10.Vrm10Instance vrm;
         List<UniVRM10.Vrm10InstanceSpringBone.Spring> authoredSprings;
+        readonly Dictionary<UniVRM10.VRM10SpringBoneJoint, (float stiffness, float gravity, float drag)> vrmSpringBase = new Dictionary<UniVRM10.VRM10SpringBoneJoint, (float, float, float)>();
         bool springsDirty;
         bool physicsEnabled = true;
         public bool PhysicsEnabled => physicsEnabled;
@@ -114,7 +118,12 @@ namespace Sakura.Unity
             if (storage != null) throw new InvalidOperationException("Model tools already initialized.");
             storage = ProfilePath(modelKey); cubism = GetComponent<CubismModel>(); idle = GetComponent<SakuraIdleMotion>();
             vrm = GetComponent<UniVRM10.Vrm10Instance>();
-            if (vrm != null) authoredSprings = vrm.SpringBone.Springs.ToList();
+            if (vrm != null)
+            {
+                authoredSprings = vrm.SpringBone.Springs.ToList();
+                foreach (var joint in GetComponentsInChildren<UniVRM10.VRM10SpringBoneJoint>(true))
+                    vrmSpringBase[joint] = (joint.m_stiffnessForce, joint.m_gravityPower, joint.m_dragForce);
+            }
             if (File.Exists(storage))
             {
                 try
@@ -126,6 +135,8 @@ namespace Sakura.Unity
             }
             profile.parts ??= new List<PartSettings>(); profile.frozen ??= new List<string>(); profile.parameters ??= new List<ParameterSettings>();
             profile.effects ??= new EffectSettings();
+            profile.vrmSprings ??= new VrmSpringSettings();
+            ApplyVrmSprings();
             profile.live2D ??= new SakuraLive2DSettings();
             try { profile.live2D.Validate(); }
             catch (ArgumentException) { profile.live2D = new SakuraLive2DSettings(); Warning = "Invalid saved Live2D limits were reset."; }
@@ -280,6 +291,31 @@ namespace Sakura.Unity
             foreach (var part in parts) if (part.ArtMesh != null && (selected.Count == 0 || selected.Contains(part.Name) || selected.Contains(part.Id)))
                 { var tint = part.originalColor * color; tint.a = part.originalColor.a; part.ArtMesh.Color = tint; painted++; }
             return painted;
+        }
+        public bool HasVrmSprings => vrm != null && vrmSpringBase.Count > 0;
+        public VrmSpringSettings VrmSprings => profile.vrmSprings;
+        public void SetVrmSprings(float stiffness, float gravity, float drag)
+        {
+            Finite(stiffness); Finite(gravity); Finite(drag);
+            profile.vrmSprings = new VrmSpringSettings { stiffness = Mathf.Clamp(stiffness, 0, 2), gravity = Mathf.Clamp(gravity, 0, 2), drag = Mathf.Clamp(drag, 0, 2) };
+            ApplyVrmSprings(); Save();
+        }
+        void ApplyVrmSprings()
+        {
+            if (vrm == null) return;
+            var settings = profile.vrmSprings ?? new VrmSpringSettings();
+            foreach (var pair in vrmSpringBase)
+            {
+                var joint = pair.Key; if (joint == null) continue;
+                joint.m_stiffnessForce = pair.Value.stiffness * settings.stiffness;
+                joint.m_gravityPower = pair.Value.gravity * settings.gravity;
+                joint.m_dragForce = Mathf.Clamp01(pair.Value.drag * settings.drag);
+            }
+        }
+        public void SetPartVisible(int index, bool visible)
+        {
+            if (index < 0 || index >= parts.Count) throw new ArgumentException("Choose a model part.");
+            var part = parts[index]; part.Settings.hidden = !visible; ApplyPart(part); Save();
         }
         public void SetTransparency(int index, float transparency)
         {
@@ -542,6 +578,8 @@ namespace Sakura.Unity
         void ApplyPart(Part part)
         {
             var settings = part.Settings; var source = SourceTexture(part);
+            if (part.Renderer != null) part.Renderer.enabled = !settings.hidden;
+            if (part.ArtMesh != null) part.ArtMesh.enabled = !settings.hidden;
             float opacity = 1 - settings.transparency; Texture2D generated = null;
             if (source != null && ((part.ArtMesh == null && settings.strength > 0) || opacity > 1))
             {
