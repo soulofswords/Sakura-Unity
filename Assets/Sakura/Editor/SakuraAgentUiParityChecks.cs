@@ -77,7 +77,8 @@ namespace Sakura.Unity.Editor
             Submit(pages[0]);
             await Task.Delay(150);
             if (composer.resolvedStyle.display != DisplayStyle.Flex || goal.value != "Unsent UI verification draft") throw new Exception("Agent task composer did not return with its draft.");
-            if (composer.worldBound.yMax > owner.worldBound.yMax + 2 || composer.worldBound.height < 80) throw new Exception("Agent composer is clipped or collapsed.");
+            if (composer.worldBound.yMax > owner.worldBound.yMax + 2 || composer.worldBound.height < 80)
+                throw new Exception("Agent composer is clipped or collapsed: composer=" + composer.worldBound + "; workspace=" + owner.worldBound + "; root=" + root.worldBound);
             if (owner.worldBound.xMin < root.worldBound.width * .20f) throw new Exception("Agent workspace covers the reserved avatar area.");
             goal.value = "";
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-agent-parity.png");

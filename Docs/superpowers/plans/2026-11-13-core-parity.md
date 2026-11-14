@@ -23,3 +23,7 @@
 Python suite: 45 run, one skipped; focused packaging suite: four passed. Unity batch compile and rig monitor passed. These checks do not establish hardware, account or visual parity.
 
 Preserve the original project and assets. Large verification/build outputs belong on C:. The model picker will host a **Converter** tab for VRM ↔ PMX; conversion quality and format losses must be stated rather than treated as 1:1.
+
+## Independent follow-up — 2026-11-14
+
+Baseline `9122c79` was checked against the DeepAI/Qoder report. See `Docs/2026-11-14-review-followup.md` for verified claims, the edition-specific updater registry fix, Windows SQLite handle/space fixes, backup-route tests and Drive dry-run checks. Focused checks: 56 passed, 1 skipped; compiled updater edition selector passed. Fresh Editor compile and all 11 parity-sweep checks passed using a fixed 1440 x 900 desktop viewport plus separate compact checks. Startup model imports are awaited before loading the shell fixture. No physical/account acceptance boxes above are closed by this sweep. The existing update archives predate the backup fixes and require refreshing before publication.

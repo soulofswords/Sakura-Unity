@@ -126,6 +126,14 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .resize-left { left:0; }
 .resize-right { right:0; }
 .cloud-library TextField { flex-direction:column; }
+.cloud-library { min-width:0; flex-shrink:1; }
+.cloud-library .description, .cloud-library Label { white-space:normal; overflow:visible; }
+.cloud-library .unity-foldout__toggle { min-width:0; white-space:normal; }
+.cloud-library .unity-foldout__text { min-width:0; flex-shrink:1; white-space:normal; overflow:visible; }
+.cloud-library .cloud-toggle { flex-direction:row; align-items:flex-start; min-width:0; white-space:normal; }
+.cloud-library .cloud-toggle .unity-toggle__text { min-width:0; flex-shrink:1; white-space:normal; overflow:visible; }
+.cloud-library .row { min-width:0; flex-wrap:wrap; }
+.cloud-library Button { flex-shrink:1; white-space:normal; }
 .cloud-library .unity-text-field__label { margin-bottom:6px; }
 .cloud-library .unity-text-field__input { min-height:36px; }
 .settings-tabs { flex-shrink:0; margin-bottom:14px; }

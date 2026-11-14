@@ -36,15 +36,16 @@ namespace Sakura.Unity
         public SakuraCloudLibrary(SakuraBackend backend, VisualElement host, string format, Action<string> installed = null)
         {
             this.backend = backend; this.format = format.ToLowerInvariant(); this.installed = installed;
-            root = new VisualElement(); root.AddToClassList("card"); host.Add(root);
+            root = new VisualElement(); root.AddToClassList("card"); root.AddToClassList("cloud-library"); host.Add(root);
+            root.style.minWidth = 0; root.style.flexShrink = 1;
             root.RegisterCallback<DetachFromPanelEvent>(args => { alive = false; catalogGeneration++; password.value = ""; });
             AddText("Cloud import " + format, "card-title", root);
             AddText("Downloaded models install into models/" + this.format + "/ and appear in their format selector. Your existing models are kept.", "description", root);
-            account = new Foldout { text = "Sign in or create a Sakura account", value = true }; root.Add(account);
+            account = new Foldout { text = "Sign in or create a Sakura account", value = true }; account.AddToClassList("cloud-account"); root.Add(account);
             AddText("Enter your email and choose a password to create your Sakura account. You will receive a verification email.", "description", account);
             email = new TextField("Email"); email.name = "library-email"; account.Add(email);
             password = new TextField("Password") { isPasswordField = true }; password.name = "library-password"; account.Add(password);
-            var reveal = new Toggle { text = "Show password" }; reveal.RegisterValueChangedCallback(args => password.isPasswordField = !args.newValue); account.Add(reveal);
+            var reveal = new Toggle { text = "Show password" }; reveal.AddToClassList("cloud-toggle"); reveal.RegisterValueChangedCallback(args => password.isPasswordField = !args.newValue); account.Add(reveal);
             var buttons = new VisualElement(); buttons.AddToClassList("row"); account.Add(buttons);
             accountButtons.Add(AddButton("Sign in", () => Submit("signin"), buttons));
             accountButtons.Add(AddButton("Create account", () => Submit("signup"), buttons));

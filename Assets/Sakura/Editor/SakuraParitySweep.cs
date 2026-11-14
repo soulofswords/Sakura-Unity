@@ -50,6 +50,8 @@ namespace Sakura.Unity.Editor
         static async void Run()
         {
             var results = new JArray();
+            UnityEngine.UIElements.PanelSettings panelSettings = null;
+            RenderTexture previousTarget = null, desktopTarget = null;
             string previousModel = PlayerPrefs.GetString("sakura-selected-model", "");
             async Task Check(string name, Func<Task> action)
             {
@@ -74,6 +76,13 @@ namespace Sakura.Unity.Editor
                 }
                 while ((backend == null || !backend.Connected) && DateTime.UtcNow < deadline);
                 if (backend == null || !backend.Connected) throw new Exception("Backend did not connect within 90 seconds.");
+                // The docked Editor Game view can be smaller than a supported app window.
+                // Desktop checks use a fixed viewport; compact-layout checks supply their own.
+                panelSettings = backend.GetComponent<UnityEngine.UIElements.UIDocument>().panelSettings;
+                previousTarget = panelSettings.targetTexture;
+                desktopTarget = new RenderTexture(1440, 900, 24);
+                desktopTarget.Create(); panelSettings.targetTexture = desktopTarget;
+                await Task.Delay(250);
                 await Check("desktop-shell", SakuraUiParityChecks.VerifyShell);
                 await Check("compact-layout", SakuraUiParityChecks.VerifyCompactLayout);
                 await Check("model-settings", SakuraUiParityChecks.VerifyModelSettings);
@@ -89,6 +98,8 @@ namespace Sakura.Unity.Editor
             catch (Exception error) { results.Add(new JObject { ["check"] = "startup", ["status"] = "failed", ["error"] = error.ToString() }); }
             finally
             {
+                if (panelSettings != null) panelSettings.targetTexture = previousTarget;
+                if (desktopTarget != null) { desktopTarget.Release(); UnityEngine.Object.Destroy(desktopTarget); }
                 File.WriteAllText(Result, results.ToString());
                 PlayerPrefs.SetString("sakura-selected-model", previousModel); PlayerPrefs.Save();
                 Debug.Log("Desktop parity sweep finished: " + Result);

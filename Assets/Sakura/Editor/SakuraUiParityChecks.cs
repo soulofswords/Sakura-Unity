@@ -14,6 +14,12 @@ namespace Sakura.Unity.Editor
             if (studio == null || !Application.isPlaying) throw new InvalidOperationException("Enter Studio Play mode first.");
             var root = studio.GetComponent<UIDocument>().rootVisualElement;
             studio.SwitchMode("Companion");
+            var fixtureViewport = studio.GetComponent<SakuraAvatarViewport>();
+            var importDeadline = DateTime.UtcNow.AddSeconds(90);
+            while (fixtureViewport.Loading && DateTime.UtcNow < importDeadline) await Task.Delay(100);
+            if (fixtureViewport.Loading) throw new Exception("Startup model import did not finish within 90 seconds.");
+            await fixtureViewport.LoadModel(studio.GetComponent<SakuraBackend>().SourceFolder, "pmx/Ringo/Ringo.pmx");
+            if (fixtureViewport.Pmx == null) throw new Exception(fixtureViewport.LastImportError ?? "Shell check requires the Ringo PMX fixture.");
             studio.ApplyTheme("dark");
             Submit(root.Q<Button>("chat-minimize"));
             await Task.Delay(150);

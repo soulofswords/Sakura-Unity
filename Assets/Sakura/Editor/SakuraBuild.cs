@@ -9,6 +9,12 @@ namespace Sakura.Unity.Editor
 {
     public static class SakuraBuild
     {
+        public static void BuildBothWindows()
+        {
+            BuildWindows("companion");
+            BuildWindows("vtuber");
+        }
+
         public static string BuildAndroid()
         {
             if (EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before building.");
@@ -78,6 +84,9 @@ namespace Sakura.Unity.Editor
                 File.WriteAllText(editionFile, edition);
                 AssetDatabase.ImportAsset(editionFile, ImportAssetOptions.ForceSynchronousImport);
                 PlayerSettings.productName = edition == "vtuber" ? "Sakura VTuber" : "Sakura Companion";
+                var icon = Resources.Load<Texture2D>(edition == "vtuber" ? "Sakura/VTuberLogo" : "Sakura/CompanionLogo");
+                if (icon == null) throw new FileNotFoundException("The Sakura edition icon is missing from Resources.");
+                PlayerSettings.SetIcons(UnityEditor.Build.NamedBuildTarget.Standalone, new[] { icon }, IconKind.Application);
                 string executable = Path.Combine(destination, PlayerSettings.productName + ".exe");
                 var pmxPlugin = AssetImporter.GetAtPath("Packages/com.yohawing.mmd-loader/Runtime/Plugins/x86_64/mmd_runtime_ffi.dll") as PluginImporter;
                 if (pmxPlugin == null || !pmxPlugin.GetCompatibleWithPlatform(BuildTarget.StandaloneWindows64))
