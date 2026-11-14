@@ -98,6 +98,7 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .short .dock-icon, .compact .dock-icon { width:20px; height:20px; }
 .short .panel { top:13px; }
 .compact .panel { width:auto; left:84px; right:10px; bottom:180px; }
+.compact.panel-open .stage { display:none; }
 .compact .chat { left:74px; width:270px; bottom:170px; }
 .compact .footer { left:74px; right:12px; bottom:70px; flex-wrap:wrap; }
 .compact .footer .status { width:100%; flex-basis:100%; max-height:34px; margin-bottom:6px; white-space:nowrap; text-overflow:ellipsis; }

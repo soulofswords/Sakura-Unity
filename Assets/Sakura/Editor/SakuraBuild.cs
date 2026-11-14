@@ -86,7 +86,11 @@ namespace Sakura.Unity.Editor
                 PlayerSettings.productName = edition == "vtuber" ? "Sakura VTuber" : "Sakura Companion";
                 var icon = Resources.Load<Texture2D>(edition == "vtuber" ? "Sakura/VTuberLogo" : "Sakura/CompanionLogo");
                 if (icon == null) throw new FileNotFoundException("The Sakura edition icon is missing from Resources.");
-                PlayerSettings.SetIcons(UnityEditor.Build.NamedBuildTarget.Standalone, new[] { icon }, IconKind.Application);
+                // Unity expects one entry per icon slot; a one-element array is ignored on Windows.
+                var iconSlots = PlayerSettings.GetIcons(UnityEditor.Build.NamedBuildTarget.Standalone, IconKind.Application).Length;
+                var icons = new Texture2D[Math.Max(1, iconSlots)];
+                for (int slot = 0; slot < icons.Length; slot++) icons[slot] = icon;
+                PlayerSettings.SetIcons(UnityEditor.Build.NamedBuildTarget.Standalone, icons, IconKind.Application);
                 string executable = Path.Combine(destination, PlayerSettings.productName + ".exe");
                 var pmxPlugin = AssetImporter.GetAtPath("Packages/com.yohawing.mmd-loader/Runtime/Plugins/x86_64/mmd_runtime_ffi.dll") as PluginImporter;
                 if (pmxPlugin == null || !pmxPlugin.GetCompatibleWithPlatform(BuildTarget.StandaloneWindows64))

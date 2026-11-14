@@ -377,15 +377,19 @@ namespace Sakura.Unity
             ControlsHidden = !ControlsHidden;
             if (ControlsHidden) PanelsHidden?.Invoke();
             root.EnableInClassList("controls-hidden", ControlsHidden);
+            root.EnableInClassList("panel-open", !ControlsHidden && panel != null && !panel.ClassListContains("panel-closed"));
         }
 
         private void BuildFooter()
         {
             footer.Clear();
             status = Label(CurrentMode == "VTuber" ? "AI paused · choose your camera and start face, shoulder and arm tracking" : "Talk to Sakura…", "status", footer);
-            if (CurrentMode != "Companion" && !vtuberEdition) Button("Companion mode", () => SwitchMode("Companion"), footer);
-            if (CurrentMode != "VTuber") Button("VTuber mode", () => SwitchMode("VTuber"), footer);
-            if (CurrentMode != "Agent" && !vtuberEdition) Button("Agent mode", () => SwitchMode("Agent"), footer);
+            if (!vtuberEdition)
+            {
+                var companion = Button("Companion mode", () => SwitchMode("Companion"), footer); companion.SetEnabled(CurrentMode != "Companion"); companion.EnableInClassList("mode-active", CurrentMode == "Companion");
+                var vtuber = Button("VTuber mode", () => SwitchMode("VTuber"), footer); vtuber.SetEnabled(CurrentMode != "VTuber"); vtuber.EnableInClassList("mode-active", CurrentMode == "VTuber");
+                var agent = Button("Agent mode", () => SwitchMode("Agent"), footer); agent.SetEnabled(CurrentMode != "Agent"); agent.EnableInClassList("mode-active", CurrentMode == "Agent");
+            }
             if (CurrentMode == "VTuber")
             {
                 Button("Start tracking", () => tracking.StartTracking(), footer);
@@ -421,6 +425,7 @@ namespace Sakura.Unity
         {
             CurrentPanel = name;
             panel.RemoveFromClassList("panel-closed");
+            if (root != null) root.EnableInClassList("panel-open", true);
             bool modelSettings = name == "Model Settings" || name == "Expressions & hotkeys";
             heading.text = modelSettings ? "Model Settings" : name == "Character" ? "Models" : name == "Camera" ? "Camera & tracking" : name == "Background" ? "Background & stage items" : name;
             panelEdition.style.display = modelSettings || name == "Settings" ? DisplayStyle.None : DisplayStyle.Flex;
@@ -486,6 +491,7 @@ namespace Sakura.Unity
         {
             PanelsHidden?.Invoke();
             panel.AddToClassList("panel-closed");
+            if (root != null) root.EnableInClassList("panel-open", false);
             foreach (var button in navigation.Values) button.RemoveFromClassList("selected");
             RefreshIconColors();
         }

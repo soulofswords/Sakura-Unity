@@ -10,6 +10,11 @@
     "Unity.RenderPipelines.Universal.Runtime",
     "Unity.InputSystem",
     "Unity.WebRTC",
+    "System.Text.Encoding.CodePages",
+    "System.Memory",
+    "System.Buffers",
+    "System.Numerics.Vectors",
+    "System.Runtime.CompilerServices.Unsafe",
     "WebViewToolkit.Runtime",
     "WebViewToolkit.UIToolkit"
   ],

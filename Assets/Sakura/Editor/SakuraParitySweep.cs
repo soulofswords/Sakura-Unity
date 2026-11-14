@@ -83,6 +83,7 @@ namespace Sakura.Unity.Editor
                 desktopTarget = new RenderTexture(1440, 900, 24);
                 desktopTarget.Create(); panelSettings.targetTexture = desktopTarget;
                 await Task.Delay(250);
+                await Check("shift-jis-encoding", () => { SakuraEncodingChecks.Verify(); return Task.CompletedTask; });
                 await Check("desktop-shell", SakuraUiParityChecks.VerifyShell);
                 await Check("compact-layout", SakuraUiParityChecks.VerifyCompactLayout);
                 await Check("model-settings", SakuraUiParityChecks.VerifyModelSettings);
