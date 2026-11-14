@@ -187,6 +187,32 @@ namespace Sakura.Unity
                 Number(card, "Context tokens", "ollama_context", 1024, 8192); Number(card, "Wait for local reply (seconds)", "local_timeout", 5, 120);
                 Check(card, "Allow cloud fallback", "gemini_fallback_enabled"); Check(card, "Automatically use cloud under game VRAM pressure", "game_cloud_auto_enabled");
                 card = Card("Web search"); Check(card, "Allow web search", "web_search_enabled"); Field(card, "Brave Search API key", "brave_key", true);
+                card = Card("ComfyUI image generation");
+                var comfyStatus = new Label("Checking the optional ComfyUI installer…"); comfyStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(comfyStatus);
+                void LoadComfy()
+                {
+                    backend.Api("/api/comfy/install", null, (json, error) =>
+                    {
+                        if (!alive) return;
+                        if (error != null) { comfyStatus.text = error; return; }
+                        try
+                        {
+                            var data = JObject.Parse(json); var plan = data["plan"] as JObject ?? new JObject(); var state = data["state"] as JObject ?? new JObject();
+                            string phase = (string)state["phase"] ?? "idle", message = (string)state["message"] ?? "";
+                            if (plan.Value<bool?>("already") == true) comfyStatus.text = "ComfyUI is already installed at " + string.Join(", ", (plan["roots"] as JArray ?? new JArray()).Values<string>()) + ".";
+                            else comfyStatus.text = "ComfyUI is not installed. " + ((string)plan["note"] ?? "About 2 GB download and 7 GB unpacked.") + (plan["problems"] is JArray problems && problems.Count > 0 ? " " + string.Join(" ", problems.Values<string>()) : "") + (phase == "idle" ? "" : " · " + phase + (message.Length > 0 ? ": " + message : ""));
+                        }
+                        catch (Exception) { comfyStatus.text = "The ComfyUI installer returned an unreadable response."; }
+                    });
+                }
+                AddButton("Check ComfyUI installer", LoadComfy, card);
+                AddButton("Install ComfyUI (about 2 GB)", () => backend.Api("/api/comfy/install", new JObject { ["consent"] = true }.ToString(), (json, error) =>
+                {
+                    if (!alive) return;
+                    comfyStatus.text = error ?? "ComfyUI download started. Progress is checked by refreshing this card.";
+                }), card);
+                AddButton("Cancel ComfyUI download", () => backend.Api("/api/comfy/install/cancel", "{}", (json, error) => { if (alive) comfyStatus.text = error ?? "ComfyUI install cancelled. Partial files are kept for resume."; }), card);
+                LoadComfy();
             }
             else if (selected == "Voice")
             {
