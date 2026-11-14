@@ -227,6 +227,26 @@ namespace Sakura.Unity
             Button("Preview memory consolidation",() => Request("/api/agent/memory-workbench/consolidate",new JObject { ["approved"] = false },result => Text(result.ToString(Formatting.Indented),content,"description")),content);
             var query = Input("Search entity hints");
             Button("Search linked memories",() => Request("/api/agent/memory-workbench/graph?query=" + Uri.EscapeDataString(query.value ?? ""),null,result => Text(result.ToString(Formatting.Indented),content,"description")),content);
+            var routing = new Foldout { text = "Measured model routing", value = false }; content.Add(routing);
+            var routingEnabled = new Toggle("Choose a measured model for each coding task") { value = false }; routing.Add(routingEnabled);
+            var routingCloud = new Toggle("Allow measured cloud models") { value = false }; routing.Add(routingCloud);
+            var routingStatus = new Label(); routingStatus.style.whiteSpace = WhiteSpace.Normal; routing.Add(routingStatus);
+            void RefreshRouting()
+            {
+                Request("/api/agent/model-routing", null, data =>
+                {
+                    routingEnabled.SetValueWithoutNotify(data.Value<bool?>("enabled") == true);
+                    routingCloud.SetValueWithoutNotify(data.Value<bool?>("allow_cloud") == true);
+                    int profiles = (data["profiles"] as JArray ?? new JArray()).Count;
+                    routingStatus.text = "Routing " + (data.Value<bool?>("enabled") == true ? "enabled" : "off") + " · " + profiles + " measured profile(s). Benchmarks are small synthetic checks, not a general intelligence score.";
+                });
+            }
+            Button("Refresh routing status", RefreshRouting, routing);
+            Button("Save routing settings", () => Request("/api/agent/model-routing", new JObject { ["enabled"] = routingEnabled.value, ["allow_cloud"] = routingCloud.value }, result =>
+            {
+                routingStatus.text = "Routing settings saved."; RefreshRouting();
+            }), routing);
+            RefreshRouting();
         }
 
         private void BuildAutomations()
