@@ -34,6 +34,9 @@ namespace Sakura.Unity.Editor
                 while (server.Requests == 0 && DateTime.UtcNow < deadline) await Task.Delay(100);
                 if (server.Requests == 0) throw new Exception("Embedded browser did not load the loopback page.");
                 await Task.Delay(2500);
+                deadline = DateTime.UtcNow.AddSeconds(10);
+                while (message != "ready" && DateTime.UtcNow < deadline) await Task.Delay(100);
+                if (message != "ready") throw new Exception("Loopback document loaded but its ready/message handshake did not arrive.");
                 deadline = DateTime.UtcNow.AddSeconds(15);
                 while (preview.Texture == null && DateTime.UtcNow < deadline) await Task.Delay(100);
                 if (preview.Texture == null) throw new Exception("Browser returned no preview: " + preview.LastError);
@@ -52,12 +55,19 @@ namespace Sakura.Unity.Editor
                 }
                 finally { RenderTexture.active = previous; RenderTexture.ReleaseTemporary(target); UnityEngine.Object.Destroy(pixels); }
                 var native = view.WebView;
+                message = null;
+                if (!native.ExecuteScript("document.getElementById('test').click();"))
+                    throw new Exception("Native browser rejected a DOM script before pointer testing.");
+                deadline = DateTime.UtcNow.AddSeconds(5);
+                while (message == null && DateTime.UtcNow < deadline) await Task.Delay(100);
+                if (message != "clicked") throw new Exception("DOM script ran but its JavaScript message did not return.");
+                message = null;
                 if (!native.SendMouseEvent(WebViewToolkit.Native.MouseEventType.Down, WebViewToolkit.Native.MouseButton.Left, .5f, .5f)
                     || !native.SendMouseEvent(WebViewToolkit.Native.MouseEventType.Up, WebViewToolkit.Native.MouseButton.Left, .5f, .5f))
                     throw new Exception("Native browser rejected pointer interaction.");
                 deadline = DateTime.UtcNow.AddSeconds(10);
                 while (message == null && DateTime.UtcNow < deadline) await Task.Delay(100);
-                if (message == null || !message.Contains("clicked")) throw new Exception("Browser DOM interaction did not return its message.");
+                if (message != "clicked") throw new Exception("DOM messaging passed, but injected pointer input did not activate the page control.");
                 message = null;
                 view.WebView.ExecuteScript("const field=document.createElement('input');field.id='typing';field.style='position:absolute;top:0;left:0';field.oninput=()=>window.chrome.webview.postMessage('typed:'+field.value);document.body.append(field);field.focus();");
                 await Task.Delay(300);
@@ -96,7 +106,7 @@ namespace Sakura.Unity.Editor
                             var buffer = new byte[4096]; int count = stream.Read(buffer, 0, buffer.Length);
                             if (count == 0) continue;
                             Interlocked.Increment(ref Requests);
-                            byte[] body = Encoding.UTF8.GetBytes("<html><body style='margin:0;background:#ff0088'><button id='test' style='width:480px;height:320px' onclick=\"window.chrome.webview.postMessage('clicked')\">Sakura browser interaction check</button></body></html>");
+                            byte[] body = Encoding.UTF8.GetBytes("<html><body style='margin:0;background:#ff0088'><button id='test' style='width:480px;height:320px' onclick=\"window.chrome.webview.postMessage('clicked')\">Sakura browser interaction check</button><script>window.addEventListener('load',()=>window.chrome.webview.postMessage('ready'))</script></body></html>");
                             byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + body.Length + "\r\nConnection: close\r\n\r\n");
                             stream.Write(header, 0, header.Length); stream.Write(body, 0, body.Length);
                         }

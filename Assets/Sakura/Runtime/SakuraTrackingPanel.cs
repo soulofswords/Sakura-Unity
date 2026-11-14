@@ -49,7 +49,7 @@ namespace Sakura.Unity
             AddButton("Existing devices", () => tracking.PhoneLink(), phoneActions);
             AddButton("New device", () => tracking.PhoneLink("{\"new\":true}"), phoneActions);
             AddButton("Turn off phone connection", () => tracking.PhoneLink("{\"enabled\":false}"), phone);
-            Description("On Sakura Mobile, choose this PC from the list and enter the pairing code. Both devices must be on the same Wi-Fi. Compare the certificate fingerprint when pairing.", phone);
+            Description("On Sakura Mobile, choose this PC from the list and enter the pairing code. Both devices must be on the same Wi-Fi. Compare the certificate fingerprint when pairing. When you tap Add model on the phone, Sakura opens this PC library so you can choose a PMX, VRM or Live2D model to send.", phone);
             var remembered = new VisualElement(); phone.Add(remembered);
             void Refresh()
             {

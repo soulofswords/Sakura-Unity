@@ -46,6 +46,7 @@ namespace Sakura.Unity
         public string PhoneInfo { get; private set; } = "Phone link has not been read.";
         public JArray PhoneDevices { get; private set; } = new JArray();
         public event Action Changed;
+        public event Action<string> PhoneModelRequested;
         private InputSource selectedSource = InputSource.Webcam;
         private string selectedCamera;
         SakuraBackend backend;
@@ -54,7 +55,9 @@ namespace Sakura.Unity
         int generation;
         bool pending, uploadPending;
         bool phoneTrackingEnabled;
+        bool phoneLinkEnabled, phoneCommandPending;
         float nextPoll, lastFrame = -100, nextCamera;
+        float nextPhoneCommandPoll;
         WebCamTexture camera;
         Texture2D cameraPixels;
         JObject sample;
@@ -91,6 +94,19 @@ namespace Sakura.Unity
             if (kind == "tracking-stop" || kind == "companion-tracking-stop" || kind == "camera-start") return false;
             return null;
         }
+        public static string PhoneDeckPoseForCommand(string name)
+        {
+            if (name == "stop") return name;
+            return new[] { "greeting_wave", "hands_both", "hand_left", "hand_right", "groove", "step", "wave", "twist", "disco", "march" }
+                .Contains(name) ? name : null;
+        }
+        public static string PhoneModelUrlForPath(string relative)
+        {
+            if (string.IsNullOrWhiteSpace(relative) || relative.StartsWith("/", StringComparison.Ordinal) || relative.Contains("\\")) return null;
+            var parts = relative.Split('/');
+            if (parts.Any(part => string.IsNullOrWhiteSpace(part) || part == "." || part == "..")) return null;
+            return "/models/" + string.Join("/", parts.Select(Uri.EscapeDataString));
+        }
         public void SetSource(InputSource value)
         {
             if (value != InputSource.Off) selectedSource = value;
@@ -116,8 +132,29 @@ namespace Sakura.Unity
         public void SetHandsTracking(bool enabled)
         {
             if (Hands == enabled) return;
+            if (Source == InputSource.Phone)
+            {
+                if (backend == null)
+                {
+                    Notify("Phone hand tracking unavailable: PC backend is not connected.");
+                    return;
+                }
+                bool previous = Hands;
+                Hands = enabled;
+                Notify("Sending hand-tracking setting to Sakura Mobile…");
+                backend.Api("/api/mobile/tracking-control", new JObject { ["action"] = "hands", ["enabled"] = enabled }.ToString(), (_, error) =>
+                {
+                    if (error != null)
+                    {
+                        Hands = previous;
+                        Notify("Phone hand-tracking change failed; previous setting restored. " + error);
+                        return;
+                    }
+                    Notify(enabled ? "Phone hand tracking on." : "Phone hand tracking off; face and body tracking remain active.");
+                });
+                return;
+            }
             Hands = enabled;
-            if (Source == InputSource.Phone) PhoneControl("hands", enabled);
             Notify(enabled ? "Hand tracking on." : "Hand tracking off; face and body tracking remain active.");
         }
         public void PhoneLink(string body = null)
@@ -130,6 +167,7 @@ namespace Sakura.Unity
                     try
                     {
                         var info = JObject.Parse(json);
+                        phoneLinkEnabled = info.Value<bool>("enabled");
                         PhoneDevices = info["devices"] as JArray ?? new JArray();
                         PhoneInfo = info.Value<bool>("enabled")
                             ? "Choose this PC in Sakura Mobile: " + (info.Value<string>("name") ?? Environment.MachineName)
@@ -227,6 +265,7 @@ namespace Sakura.Unity
                 rig.Active = Source != InputSource.Off && (Source != InputSource.Phone || phoneTrackingEnabled);
                 if (viewport.Idle != null) viewport.Idle.MotionOwned = rig.Active || GetComponent<SakuraAvatarActions>()?.Active == true;
             }
+            if (Source != InputSource.Phone) PollPhoneCommands();
             if (Source == InputSource.Off) return;
             if (Source == InputSource.Cursor)
             {
@@ -263,10 +302,33 @@ namespace Sakura.Unity
                 catch (Exception exception) { Notify("Invalid tracking response: " + exception.Message); }
             });
         }
-        JObject PhoneState() => new JObject { ["edition"] = backend.Mode == "VTuber" ? "vtuber" : "companion", ["tracking"] = phoneTrackingEnabled, ["model"] = viewport.LoadedModelPath ?? "", ["expressions"] = new JArray(viewport.Expressions?.Entries.Select(entry => entry.Name) ?? Enumerable.Empty<string>()), ["active_expressions"] = new JArray(viewport.Expressions?.Entries.Where(entry => entry.Active).Select(entry => entry.Name) ?? Enumerable.Empty<string>()) };
+        JObject PhoneState() => new JObject { ["edition"] = backend.Mode == "VTuber" ? "vtuber" : "companion", ["tracking"] = Source == InputSource.Phone && phoneTrackingEnabled, ["model"] = viewport.LoadedModelPath ?? "", ["expressions"] = new JArray(viewport.Expressions?.Entries.Select(entry => entry.Name) ?? Enumerable.Empty<string>()), ["active_expressions"] = new JArray(viewport.Expressions?.Entries.Where(entry => entry.Active).Select(entry => entry.Name) ?? Enumerable.Empty<string>()) };
+        void PollPhoneCommands()
+        {
+            if (!phoneLinkEnabled || backend == null || phoneCommandPending || Time.unscaledTime < nextPhoneCommandPoll) return;
+            phoneCommandPending = true; nextPhoneCommandPoll = Time.unscaledTime + .25f;
+            backend.Api("/api/mobile/poll", PhoneState().ToString(), (json, error) =>
+            {
+                phoneCommandPending = false;
+                if (error != null || string.IsNullOrEmpty(json)) return;
+                try
+                {
+                    var data = JObject.Parse(json);
+                    foreach (var command in (data["commands"] as JArray ?? new JArray()).OfType<JObject>()) PhoneCommand(command);
+                }
+                catch (Exception exception) { Notify("Invalid phone command response: " + exception.Message); }
+            });
+        }
         void PhoneCommand(JObject command)
         {
             string kind = command.Value<string>("type");
+            if (kind == "request-model")
+            {
+                string requestId = command.Value<string>("request_id");
+                if (ValidPhoneRequestId(requestId)) { Notify("Sakura Mobile requested a model. Choose one from the PC library."); PhoneModelRequested?.Invoke(requestId); }
+                else Notify("Rejected a phone model request with an invalid id.");
+                return;
+            }
             bool? trackingState = PhoneTrackingStateForCommand(kind);
             if (trackingState.HasValue)
             {
@@ -282,7 +344,50 @@ namespace Sakura.Unity
                 var entry = viewport.Expressions.Entries.FirstOrDefault(item => item.Name == command.Value<string>("name"));
                 if (entry != null) { if (command.Value<bool?>("enabled") != false) viewport.Expressions.Clear(); viewport.Expressions.SetActive(entry.Id, command.Value<bool?>("enabled") != false); }
             }
+            else if (kind == "deck-pose")
+            {
+                string pose = PhoneDeckPoseForCommand(command.Value<string>("name"));
+                var actions = GetComponent<SakuraAvatarActions>();
+                if (pose == "stop") actions?.Dispatch(new JObject { ["avatar_motion"] = "stop" });
+                else if (pose != null && actions != null && actions.Gesture(pose)) Notify("Phone hotkey · " + pose.Replace('_', ' '));
+                else Notify("This phone pose needs a compatible 3D character with tracking stopped.");
+            }
             else if (kind != "tracking-start" && kind != "companion-tracking-start" && kind != "tracking-stop" && kind != "companion-tracking-stop" && kind != "camera-start") Notify("Phone command not yet migrated: " + kind);
+        }
+        public static bool ValidPhoneRequestId(string value) => value != null && value.Length == 32 && value.All(character => character >= '0' && character <= '9' || character >= 'a' && character <= 'f');
+        public void StageModelForPhone(string path, string requestId, Action<bool, string> completed = null)
+        {
+            string url = PhoneModelUrlForPath(path);
+            if (!ValidPhoneRequestId(requestId) || url == null || backend == null)
+            { completed?.Invoke(false, "This phone model request is invalid or expired."); return; }
+            backend.Api("/api/mobile/model", new JObject { ["model"] = url, ["request_id"] = requestId }.ToString(), (json, error) =>
+            {
+                if (error != null) { Notify(error); completed?.Invoke(false, error); return; }
+                try
+                {
+                    var response = JObject.Parse(json);
+                    string name = (string)response["model"]?["name"] ?? System.IO.Path.GetFileName(path);
+                    Notify("Model ready for Sakura Mobile · " + name); completed?.Invoke(true, name);
+                }
+                catch (Exception exception) { Notify("Phone transfer could not be confirmed: " + exception.Message); completed?.Invoke(false, exception.Message); }
+            });
+        }
+        public void SendCurrentModelToPhone()
+        {
+            if (backend == null || viewport == null || string.IsNullOrWhiteSpace(viewport.LoadedModelPath))
+            { Notify("Load a model and connect the PC backend first."); return; }
+            string url = PhoneModelUrlForPath(viewport.LoadedModelPath);
+            if (url == null) { Notify("The selected model path is invalid for phone transfer."); return; }
+            backend.Api("/api/mobile/model", new JObject { ["model"] = url }.ToString(), (json, error) =>
+            {
+                if (error != null) { Notify(error); return; }
+                try
+                {
+                    var response = JObject.Parse(json);
+                    Notify("Model ready for Sakura Mobile · " + (response["model"]?.Value<string>("name") ?? System.IO.Path.GetFileName(viewport.LoadedModelPath)));
+                }
+                catch (Exception exception) { Notify("Phone transfer could not be confirmed: " + exception.Message); }
+            });
         }
         public void Receive(JObject frame)
         {

@@ -41,6 +41,7 @@ namespace Sakura.Unity
         private Process importProcess;
         private Process modelToolProcess;
         private BridgeIdentity identity;
+        private string serverStartupError;
         private readonly ConcurrentQueue<Action> pending = new ConcurrentQueue<Action>();
 
         private void Awake()
@@ -216,10 +217,22 @@ namespace Sakura.Unity
             try
             {
                 StatusChanged?.Invoke("Starting the existing Sakura services…");
+                serverStartupError = null;
                 server = new Process { StartInfo = Command(true), EnableRaisingEvents = true };
                 server.OutputDataReceived += (_, args) =>
                 {
-                    if (args.Data == null || !args.Data.StartsWith("SAKURA_BRIDGE ", StringComparison.Ordinal)) return;
+                    if (args.Data == null) return;
+                    if (!args.Data.StartsWith("SAKURA_BRIDGE ", StringComparison.Ordinal))
+                    {
+                        try
+                        {
+                            var failure = JsonUtility.FromJson<ApiReply>(args.Data);
+                            if (!string.IsNullOrWhiteSpace(failure.error))
+                                serverStartupError = failure.error.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                        }
+                        catch (ArgumentException) { }
+                        return;
+                    }
                     string json = args.Data.Substring(14);
                     pending.Enqueue(() =>
                     {
@@ -227,12 +240,22 @@ namespace Sakura.Unity
                         StartCoroutine(CheckConnection());
                     });
                 };
-                server.ErrorDataReceived += (_, args) => { };
+                server.ErrorDataReceived += (_, args) =>
+                {
+                    if (string.IsNullOrWhiteSpace(args.Data)) return;
+                    // Keep diagnostics useful without copying arbitrary backend logs into the chat/status UI.
+                    if (serverStartupError == null) serverStartupError = "The backend exited before it became ready (" + args.Data.Length + " characters of diagnostic output).";
+                };
                 server.Exited += (_, args) => pending.Enqueue(() =>
                 {
+                    int exitCode = -1;
+                    try { exitCode = server?.ExitCode ?? -1; } catch (InvalidOperationException) { }
+                    string failure = serverStartupError;
                     Connected = false; Busy = false; identity = null; agentToken = null;
                     server?.Dispose(); server = null;
-                    StatusChanged?.Invoke("Backend stopped. Connect again to retry.");
+                    StatusChanged?.Invoke(!string.IsNullOrWhiteSpace(failure)
+                        ? "Backend failed to start: " + failure
+                        : "Backend stopped (exit " + exitCode + "). Connect again to retry.");
                 });
                 server.Start(); server.BeginOutputReadLine(); server.BeginErrorReadLine();
             }

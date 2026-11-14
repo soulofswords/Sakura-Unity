@@ -82,6 +82,14 @@ namespace Sakura.Unity.Editor
                 throw new Exception("VTuber footer hand-tracking toggle did not update its state and label.");
             Submit(root.Q<Button>("footer-hands-toggle"));
             if (tracking.Hands != handsEnabled) throw new Exception("VTuber footer hand-tracking toggle did not restore its original state.");
+            studio.ShowPanel("Streaming & output");
+            var streaming = root.Q("companion-panel-body");
+            if (streaming == null || !streaming.Query<Label>().ToList().Any(label => label.text == "Microphone voice changer") ||
+                !streaming.Query<Button>().ToList().Any(button => button.text == "Start microphone voice changer"))
+                throw new Exception("VTuber Streaming & voice is missing the microphone voice-changer controls.");
+            if (streaming.Query<Button>().ToList().Any(button => button.text == "Start microphone voice changer") &&
+                streaming.Query<Label>().ToList().All(label => label.text != "Converted audio plays through Unity’s current Windows output device. To send it to OBS or a call app, select your virtual cable as Sakura’s output in Windows Volume mixer, then select the cable’s recording endpoint in that app. Use headphones to avoid speaker feedback."))
+                throw new Exception("Voice-changer routing guidance is missing.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-vtuber-parity.png");
             studio.ShowPanel("Settings");
             if (root.Query<Button>(className:"settings-tab").ToList().Any(button => button.text == "AI & LLM" || button.text == "Assistant"))

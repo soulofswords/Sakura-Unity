@@ -89,6 +89,8 @@ namespace Sakura.Unity
             Build();
             tracking = GetComponent<SakuraTracking>() ?? gameObject.AddComponent<SakuraTracking>();
             tracking.Initialize(backend, viewport);
+            tracking.PhoneModelRequested += OpenPhoneModelPicker;
+            tracking.PhoneLink();
             _ = GetComponent<SakuraLipSync>() ?? gameObject.AddComponent<SakuraLipSync>();
             (GetComponent<SakuraMotionRecorder>() ?? gameObject.AddComponent<SakuraMotionRecorder>()).Initialize(backend, viewport);
             (GetComponent<SakuraExportWatch>() ?? gameObject.AddComponent<SakuraExportWatch>()).Initialize(backend, viewport);
@@ -632,7 +634,9 @@ namespace Sakura.Unity
             populateSearch();
         }
 
-        private void ShowLocalPicker(string kind)
+        private void OpenPhoneModelPicker(string requestId) => ShowLocalPicker("PMX", requestId);
+
+        private void ShowLocalPicker(string kind, string phoneRequestId = null)
         {
             format = kind;
             var existing = root.Q("local-picker"); existing?.RemoveFromHierarchy();
@@ -640,8 +644,15 @@ namespace Sakura.Unity
             var previews = SakuraLocalPreviews.Attach(backend.SourceFolder, overlay);
             var window = Element("picker-window", overlay);
             var title = Element("row", window);
-            Label(kind + " characters", "panel-title", title);
+            Label(phoneRequestId == null ? kind + " characters" : "Choose a model for Sakura Mobile", "panel-title", title);
             Button("×", () => overlay.RemoveFromHierarchy(), title);
+            if (phoneRequestId != null)
+            {
+                var formats = Element("row", window);
+                foreach (string type in new[] { "PMX", "VRM", "Live2D" })
+                { string selectedType = type; var tab = Button(type, () => ShowLocalPicker(selectedType, phoneRequestId), formats); if (selectedType == kind) tab.AddToClassList("selected"); }
+                Label("Select a PC model to package for your phone. This does not change the model on the PC.", "description", window);
+            }
             var find = new TextField(); find.textEdition.placeholder = "Search all folders by character name…"; window.Add(find);
             var breadcrumb = Element("row", window);
             var scroll = new ScrollView(); window.Add(scroll); scroll.AddToClassList("picker-results");
@@ -670,8 +681,19 @@ namespace Sakura.Unity
                         string relative = path.Substring(prefix.Length); int slash = relative.IndexOf('/');
                         if (slash >= 0) { folders.Add(relative.Substring(0, slash)); continue; }
                     }
-                    var button = Button(entry.name, () =>
+                    Button button = null;
+                    button = Button(entry.name, () =>
                     {
+                        if (phoneRequestId != null)
+                        {
+                            button?.SetEnabled(false);
+                            tracking.StageModelForPhone(entry.path, phoneRequestId, (success, _) =>
+                            {
+                                if (this == null || overlay == null) return;
+                                if (success) overlay.RemoveFromHierarchy(); else button?.SetEnabled(true);
+                            });
+                            return;
+                        }
                         int slash = path.LastIndexOf('/');
                         PlayerPrefs.SetString(preference, slash < 0 ? "" : path.Substring(0, slash)); PlayerPrefs.Save();
                         _ = viewport.LoadModel(backend.SourceFolder, entry.path);
@@ -806,6 +828,7 @@ namespace Sakura.Unity
             backend.ReplyReceived -= ReceiveReply;
             backend.ModelImported -= ReceiveImportedModel;
             backend.ReplyDataReceived -= ApplyAvatarReply;
+            if (tracking != null) tracking.PhoneModelRequested -= OpenPhoneModelPicker;
             if (voice != null) { voice.TranscriptReceived -= ReceiveTranscript; voice.StatusChanged -= SetStatus; voice.ListeningChanged -= UpdateMicrophone; }
         }
     }

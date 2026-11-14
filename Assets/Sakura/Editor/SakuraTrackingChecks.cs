@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -30,6 +31,15 @@ namespace Sakura.Unity.Editor
             Check(SakuraTracking.PhoneTrackingStateForCommand("companion-tracking-stop") == false, "Phone companion stop command disables tracking");
             Check(SakuraTracking.PhoneTrackingStateForCommand("camera-start") == false, "Starting the phone camera stops face tracking");
             Check(SakuraTracking.PhoneTrackingStateForCommand("camera-stop") == null, "Stopping the phone camera does not restart face tracking");
+            Check(SakuraTracking.PhoneDeckPoseForCommand("wave") == "wave", "Phone deck wave maps to a supported avatar pose");
+            Check(SakuraTracking.PhoneDeckPoseForCommand("greeting_wave") == "greeting_wave", "Phone deck greeting maps to the authored gesture");
+            Check(SakuraTracking.PhoneDeckPoseForCommand("stop") == "stop", "Phone deck stop maps to motion stop");
+            Check(SakuraTracking.PhoneDeckPoseForCommand("run arbitrary command") == null, "Phone deck rejects unknown commands");
+            Check(SakuraTracking.PhoneModelUrlForPath("category/My Model.pmx") == "/models/category/My%20Model.pmx", "Phone transfer URL encodes each path segment safely");
+            Check(SakuraTracking.PhoneModelUrlForPath("../outside.pmx") == null, "Phone transfer rejects paths outside the model library");
+            Check(SakuraTracking.ValidPhoneRequestId("0123456789abcdef0123456789abcdef"), "Accept server-generated phone transfer request id");
+            Check(!SakuraTracking.ValidPhoneRequestId("../0123456789abcdef0123456789abcdef"), "Reject malformed phone transfer request id");
+            Check(!SakuraTracking.ValidPhoneRequestId("0123456789ABCDEF0123456789ABCDEF"), "Reject non-canonical phone transfer request id");
             var root = new GameObject("Synthetic tracking check"); var mesh = new Mesh();
             try
             {
@@ -37,8 +47,13 @@ namespace Sakura.Unity.Editor
                 tracking.StartSelectedTracking("Sakura Mobile");
                 Check(tracking.Source == SakuraTracking.InputSource.Phone, "Start tracking selects the Sakura Mobile source");
                 Check(tracking.Status == "PC backend is unavailable.", "Start tracking requests the phone backend and reports when it is unavailable");
+                var backendField = typeof(SakuraTracking).GetField("backend", BindingFlags.Instance | BindingFlags.NonPublic);
+                Check(backendField != null, "Tracking backend field is available for isolated offline check");
+                var previousHands = tracking.Hands;
+                backendField.SetValue(tracking, null);
                 tracking.SetHandsTracking(!tracking.Hands);
-                Check(tracking.Status == "PC backend is unavailable.", "Phone hand toggle handles a missing backend without losing its status");
+                Check(tracking.Status == "Phone hand tracking unavailable: PC backend is not connected.", "Phone hand toggle reports that the remote change was not sent when the backend is unavailable");
+                Check(tracking.Hands == previousHands, "Unavailable phone hand control does not change the reported tracking state");
                 tracking.StopTracking();
                 Check(tracking.Status == "PC backend is unavailable.", "Stop tracking preserves the missing-backend status");
                 mesh.vertices = new[] { Vector3.zero, Vector3.up, Vector3.right }; mesh.triangles = new[] { 0, 1, 2 };

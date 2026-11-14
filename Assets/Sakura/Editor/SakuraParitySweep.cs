@@ -80,6 +80,7 @@ namespace Sakura.Unity.Editor
                 await Check("agent-shell", SakuraAgentUiParityChecks.VerifyShell);
                 await Check("guide-navigation", SakuraSetupGuideChecks.VerifyNavigation);
                 await Check("rig-monitor", () => { SakuraRigMonitorChecks.Validate(); return Task.CompletedTask; });
+                await Check("phone-transfer", () => { SakuraTrackingChecks.Verify(); return Task.CompletedTask; });
                 await Check("collab-boundaries", () => { SakuraNativeCollabChecks.Verify(); return Task.CompletedTask; });
                 await Check("stage-profile", () => { SakuraStageItemChecks.Validate(); return Task.CompletedTask; });
                 await Check("vmc-packets", () => { SakuraVmcChecks.Verify(); return Task.CompletedTask; });
