@@ -247,6 +247,38 @@ namespace Sakura.Unity
                 routingStatus.text = "Routing settings saved."; RefreshRouting();
             }), routing);
             RefreshRouting();
+            var expenses = new Foldout { text = "Expense ledger", value = false }; content.Add(expenses);
+            var expenseMonth = Input("Month (YYYY-MM, blank for all)", parent: expenses);
+            var expenseStatus = new Label(); expenseStatus.style.whiteSpace = WhiteSpace.Normal; expenses.Add(expenseStatus);
+            void RefreshExpenses()
+            {
+                Request("/api/agent/expenses?month=" + Uri.EscapeDataString((expenseMonth.value ?? "").Trim()), null, data =>
+                {
+                    var rows = (data["items"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                    var totals = data["totals_by_currency"] as JObject ?? new JObject();
+                    expenseStatus.text = rows.Count == 0 ? "No expenses recorded." : rows.Count + " expense(s). Totals: " + string.Join(", ", totals.Properties().Select(property => property.Name + " " + property.Value)) + ". Returned rows only; no exchange-rate conversion or bank connection.";
+                });
+            }
+            Button("Refresh expenses", RefreshExpenses, expenses);
+            var expenseDate = Input("Date (YYYY-MM-DD)", parent: expenses);
+            var expenseAmount = Input("Amount", parent: expenses);
+            var expenseCurrency = Input("Currency (three letters, e.g. INR)", parent: expenses);
+            var expenseCategory = Input("Category", parent: expenses);
+            var expenseNote = Input("Note", parent: expenses);
+            Button("Add expense", () => Request("/api/agent/expenses", new JObject
+            {
+                ["day"] = (expenseDate.value ?? "").Trim(),
+                ["amount"] = (expenseAmount.value ?? "").Trim(),
+                ["currency"] = (expenseCurrency.value ?? "").Trim().ToUpperInvariant(),
+                ["category"] = (expenseCategory.value ?? "").Trim(),
+                ["note"] = (expenseNote.value ?? "").Trim()
+            }, result =>
+            {
+                expenseStatus.text = "Expense added.";
+                expenseAmount.SetValueWithoutNotify(""); expenseNote.SetValueWithoutNotify("");
+                RefreshExpenses();
+            }), expenses);
+            RefreshExpenses();
         }
 
         private void BuildAutomations()
