@@ -33,6 +33,8 @@ namespace Sakura.Unity
         string action, location = "home";
         bool looping, wasSleeping;
         int roamIndex;
+        GameObject greetedRoot;
+        float greetAt;
         static readonly string[] RoomActions = { "home", "desk", "mirror", "bed", "sit", "walk", "roam", "explore", "nod", "shake_head", "stretch" };
         static readonly string[] Gestures = { "groove", "step", "wave", "twist", "disco", "march", "hands_both", "hand_left", "hand_right", "greeting_wave", "chest_tap", "laugh", "laugh_bend" };
 
@@ -153,7 +155,14 @@ namespace Sakura.Unity
         }
         static float Smooth(float v) => Mathf.SmoothStep(0, 1, Mathf.Clamp01(v));
         void Rotate(string key, float x = 0, float y = 0, float z = 0) { if (bones.TryGetValue(key, out var bone) && rest.TryGetValue(bone, out var rotation)) bone.localRotation = rotation * Quaternion.Euler(x * Mathf.Rad2Deg, y * Mathf.Rad2Deg, z * Mathf.Rad2Deg); }
-        void LateUpdate() { Tick(Mathf.Clamp(Time.deltaTime, 0, .05f)); }
+        void LateUpdate()
+        {
+            var root = Viewport == null ? null : Viewport.AvatarRoot;
+            if (root != greetedRoot) { greetedRoot = root; greetAt = root == null ? 0 : Time.unscaledTime + .8f; }
+            if (root != null && greetAt > 0 && Time.unscaledTime >= greetAt && !TrackingOwnsMotion && !Active)
+            { greetAt = 0; Gesture("greeting_wave"); }
+            Tick(Mathf.Clamp(Time.deltaTime, 0, .05f));
+        }
         public void Tick(float delta)
         {
             if (avatar != null && (Viewport == null || avatar != Viewport.AvatarRoot || TrackingOwnsMotion)) { DisableRoom(); avatar = null; return; }
