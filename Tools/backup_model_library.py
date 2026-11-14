@@ -416,7 +416,7 @@ def main(argv=None):
                     if os.path.exists(tmp_name): os.unlink(tmp_name)
             print(f"Restore complete: {restored} restored, {skipped} already existed; no local files were deleted.")
             return 0
-        target_info = client.check_target(target, require_write=True)
+        target_info = client.check_target(target, require_write=not args.dry_run)
         remote = {}
         for file in client.list_target(target):
             props = file.get("appProperties") or {}
@@ -424,6 +424,11 @@ def main(argv=None):
                 remote[(props["sakuraPath"], props["sakuraSha256"])] = file
         pending = plan_uploads(entries, remote)
         print(f"Drive backup: {len(pending)} new/changed of {len(entries)} files ({sum(x['size'] for x in pending):,} bytes).")
+        if args.dry_run:
+            print(json.dumps({"dry_run": True, "folder_id": target, "folder": target_info.get("name", target),
+                              "pending_files": len(pending), "pending_bytes": sum(x["size"] for x in pending),
+                              "files": [x["path"] for x in pending]}, indent=2))
+            return 0
         for index, entry in enumerate(pending, 1):
             print(f"[{index}/{len(pending)}] {entry['path']}")
             client.upload_resumable(target, entry)
