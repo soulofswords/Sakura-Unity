@@ -403,6 +403,32 @@ namespace Sakura.Unity
                 var name = Input("Model name",parent:import);
                 var isProjector = new Toggle("Vision projector"); import.Add(isProjector);
                 Button("Add model",()=>Request("/api/agent/local-ai/import",new JObject { ["path"] = path.value, ["name"] = name.value, ["projector"] = isProjector.value },_=> { viewRevision++; Render(); }),import);
+                var search = Input("Search Hugging Face GGUF models", parent: import);
+                var searchResults = new VisualElement(); import.Add(searchResults);
+                Button("Search model repositories", () => Request("/api/agent/local-ai/search?q=" + Uri.EscapeDataString((search.value ?? "").Trim()), null, data =>
+                {
+                    searchResults.Clear();
+                    foreach (var repo in (data["models"] as JArray ?? new JArray()).OfType<JObject>())
+                    {
+                        string id = (string)repo["repo"];
+                        if (string.IsNullOrWhiteSpace(id)) continue;
+                        var row = new VisualElement(); row.style.flexDirection = FlexDirection.Row; searchResults.Add(row);
+                        var label = new Label(id + " · " + (repo["downloads"] ?? 0) + " downloads"); label.style.flexGrow = 1; row.Add(label);
+                        row.Add(new Button(() => Request("/api/agent/local-ai/files?repo=" + Uri.EscapeDataString(id), null, detail =>
+                        {
+                            var files = (detail["files"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                            var fileList = new VisualElement(); searchResults.Add(fileList);
+                            foreach (var file in files)
+                            {
+                                string filename = (string)file["file"];
+                                if (string.IsNullOrWhiteSpace(filename)) continue;
+                                var fileRow = new VisualElement(); fileRow.style.flexDirection = FlexDirection.Row; fileList.Add(fileRow);
+                                var fileLabel = new Label(filename + " · " + (((double?)file["bytes"] ?? 0) / 1e9).ToString("0.0") + " GB" + (file.Value<bool?>("projector") == true ? " · vision projector" : "")); fileLabel.style.flexGrow = 1; fileRow.Add(fileLabel);
+                                fileRow.Add(new Button(() => Request("/api/agent/local-ai/download", new JObject { ["repo"] = id, ["file"] = filename }, _ => status.text = "Model download started. Refresh Local AI to check progress.")) { text = "Download" });
+                            }
+                        })) { text = "Show files" });
+                    }
+                }), import);
             });
         }
         private void BuildBrowser()
