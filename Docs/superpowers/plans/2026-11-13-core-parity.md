@@ -27,3 +27,13 @@ Preserve the original project and assets. Large verification/build outputs belon
 ## Independent follow-up — 2026-11-14
 
 Baseline `9122c79` was checked against the DeepAI/Qoder report. See `Docs/2026-11-14-review-followup.md` for verified claims, the edition-specific updater registry fix, Windows SQLite handle/space fixes, backup-route tests and Drive dry-run checks. Focused checks: 56 passed, 1 skipped; compiled updater edition selector passed. Fresh Editor compile and all 11 parity-sweep checks passed using a fixed 1440 x 900 desktop viewport plus separate compact checks. Startup model imports are awaited before loading the shell fixture. No physical/account acceptance boxes above are closed by this sweep. The existing update archives predate the backup fixes and require refreshing before publication.
+
+## Desktop parity refresh — 2026-11-14
+
+- [x] Replace incompatible .NET Framework CodePages/Unsafe dependencies with pinned .NET Standard assemblies; add and pass a CP932 round-trip regression check.
+- [x] Fresh Unity Editor compile and 12/12 Play-mode checks, recorded at `C:/AI/Unity-Verification/parity-sweep.json`.
+- [x] Rebuild Companion and VTuber Windows players; refresh standalone package staging after both builds.
+- [x] Run the complete Unity bridge/tool suite: 50 passed, 1 skipped (symlink support unavailable on this Windows host).
+- [ ] Complete live parity acceptance: real Android/backend integration, physical mic/wake/device behavior, real external output receivers, Cubism Editor live round trip, broad model/shader visual comparison, cloud/account use, converter rig fidelity, and actual installer upgrade preservation.
+
+The code-level sweep and desktop package staging pass; this does not close the live acceptance items or establish full 1:1 parity.

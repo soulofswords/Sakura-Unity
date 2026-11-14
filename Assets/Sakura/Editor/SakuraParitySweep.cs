@@ -90,6 +90,7 @@ namespace Sakura.Unity.Editor
                 await Check("agent-shell", SakuraAgentUiParityChecks.VerifyShell);
                 await Check("guide-navigation", SakuraSetupGuideChecks.VerifyNavigation);
                 await Check("rig-monitor", () => { SakuraRigMonitorChecks.Validate(); return Task.CompletedTask; });
+                await Check("native-origin-route", VerifyNativeOriginRoute);
                 await Check("phone-transfer", () => { SakuraTrackingChecks.Verify(); return Task.CompletedTask; });
                 await Check("collab-boundaries", () => { SakuraNativeCollabChecks.Verify(); return Task.CompletedTask; });
                 await Check("stage-profile", () => { SakuraStageItemChecks.Validate(); return Task.CompletedTask; });
@@ -106,6 +107,18 @@ namespace Sakura.Unity.Editor
                 Debug.Log("Desktop parity sweep finished: " + Result);
                 running = false;
             }
+        }
+
+        static async Task VerifyNativeOriginRoute()
+        {
+            var backend = UnityEngine.Object.FindFirstObjectByType<SakuraBackend>();
+            if (backend == null || !backend.Connected) throw new Exception("Authenticated Unity backend is unavailable.");
+            var completion = new TaskCompletionSource<string>();
+            backend.Api("/api/mobile/link", null, (_, error) => completion.TrySetResult(error));
+            var finished = await Task.WhenAny(completion.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+            if (finished != completion.Task) throw new TimeoutException("Unity's read-only phone-link route did not respond.");
+            string error = await completion.Task;
+            if (!string.IsNullOrEmpty(error)) throw new Exception("Unity's native request was rejected by the local-origin guard: " + error);
         }
     }
 }
