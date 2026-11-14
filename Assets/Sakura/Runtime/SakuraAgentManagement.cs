@@ -142,6 +142,41 @@ namespace Sakura.Unity
                     }), entry);
                 }
             }), store).name = "agent-extension-store";
+            var telegram = new Foldout { text = "Telegram gateway", value = false }; content.Add(telegram);
+            var telegramEnabled = new Toggle("Enable Telegram replies"); telegram.Add(telegramEnabled);
+            var telegramChats = Input("Allowed chat IDs (comma-separated)", parent: telegram);
+            var telegramToken = Input("Bot token (blank keeps the saved token)", parent: telegram); telegramToken.isPasswordField = true;
+            var telegramVoice = new Toggle("Answer voice memos"); telegram.Add(telegramVoice);
+            var telegramStatus = new Label(); telegramStatus.style.whiteSpace = WhiteSpace.Normal; telegram.Add(telegramStatus);
+            void RefreshTelegram()
+            {
+                Request("/api/agent/telegram", null, data =>
+                {
+                    telegramEnabled.SetValueWithoutNotify(data.Value<bool?>("enabled") == true);
+                    telegramVoice.SetValueWithoutNotify(data.Value<bool?>("voice_enabled") == true);
+                    telegramChats.SetValueWithoutNotify(string.Join(",", (data["chat_ids"] as JArray ?? new JArray()).Values<string>()));
+                    telegramStatus.text = "Telegram " + (data.Value<bool?>("enabled") == true ? "enabled" : "off") + " · token " + (data.Value<bool?>("token_set") == true ? "saved" : "missing") +
+                        (data.Value<int?>("received") is int received ? " · " + received + " messages received" : "") + ((string)data["last_error"] is string last && last.Length > 0 ? " · " + last : "");
+                });
+            }
+            Button("Refresh Telegram status", RefreshTelegram, telegram);
+            Button("Save Telegram settings", () =>
+            {
+                var ids = (telegramChats.value ?? "").Split(',').Select(id => id.Trim()).Where(id => id.Length > 0).ToArray();
+                Request("/api/agent/telegram", new JObject
+                {
+                    ["enabled"] = telegramEnabled.value,
+                    ["chat_ids"] = new JArray(ids),
+                    ["token"] = (telegramToken.value ?? "").Trim(),
+                    ["voice_enabled"] = telegramVoice.value
+                }, result =>
+                {
+                    telegramToken.SetValueWithoutNotify("");
+                    telegramStatus.text = "Telegram settings saved.";
+                    RefreshTelegram();
+                });
+            }, telegram);
+            RefreshTelegram();
         }
 
         private void BuildSkills()
