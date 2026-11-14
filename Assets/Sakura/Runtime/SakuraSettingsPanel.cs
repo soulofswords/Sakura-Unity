@@ -171,12 +171,55 @@ namespace Sakura.Unity
             else if (selected == "Theme")
             {
                 var card = Card("Appearance");
-                Select(card, "Theme", "ui_theme", new[] { "system", "light", "dark" }, new[] { "System", "Light", "Dark" });
-                card = Card("Computer access"); Check(card, "Enable computer access", "computer_control_enabled");
-                Select(card, "Access level", "computer_access_level", new[] { "restricted", "full" }, new[] { "Restricted", "Full access" });
-                Text("Actions continue through Sakura’s existing approval checks.", "description", card);
-                card = Card("About Sakura"); Text("Current version · 2.2", "description", card);
-                Text("Unity client migration · " + Application.unityVersion, "description", card);
+                string[] themeIds = { "system", "light", "dark" };
+                var theme = new DropdownField("Theme", new List<string> { "System", "Light", "Dark" }, Math.Max(0, Array.IndexOf(themeIds, (string)Value("ui_theme")))); card.Add(theme);
+                theme.name = "ui_theme";
+                // The web app persists the appearance choice immediately so the native startup dialog can read it.
+                theme.RegisterValueChangedCallback(evt =>
+                {
+                    string choice = themeIds[theme.index];
+                    applyTheme(choice);
+                    backend.Api("/api/settings", new JObject { ["ui_theme"] = choice }.ToString(), (json, error) =>
+                    {
+                        if (!alive) return;
+                        if (error != null) { status.text = error; return; }
+                        values["ui_theme"] = choice; changes.Remove("ui_theme");
+                    });
+                });
+                Text("System follows your device’s light or dark appearance.", "description", card);
+                card = Card("About Sakura");
+                var version = Text("Reading installed version…", "description", card);
+                backend.Api("/api/version", null, (json, error) =>
+                {
+                    if (!alive || version.panel == null) return;
+                    if (error != null) { version.text = "Version unavailable. Restart Sakura and try again."; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        version.text = (string)data["product"] + " · Version " + (string)data["version"];
+                    }
+                    catch (JsonException) { version.text = "Version unavailable. Restart Sakura and try again."; }
+                });
+                AddButton("Sakura website: guides, features and setup", () => Application.OpenURL("https://soulofswords.github.io/Sakura-website/"), card);
+                AddButton("Release history and downloads", () => Application.OpenURL("https://github.com/soulofswords/Sakura-Downloads/releases"), card);
+                card = Card("Graphics");
+                var output = backend.GetComponent<SakuraOutput>();
+                if (output != null)
+                {
+                    var quality = new DropdownField("Rendering quality", new List<string> { "Low · lower GPU usage", "Balanced", "High · sharper output" }, (int)output.Preset); card.Add(quality);
+                    quality.RegisterValueChangedCallback(evt =>
+                    {
+                        output.SetQuality((SakuraOutput.Quality)quality.index);
+                        quality.SetValueWithoutNotify(output.Preset == SakuraOutput.Quality.Low ? "Low · lower GPU usage" : output.Preset == SakuraOutput.Quality.High ? "High · sharper output" : "Balanced");
+                    });
+                }
+                Text("Controls character and stage rendering quality. Higher quality uses more GPU memory. Changes save automatically.", "description", card);
+                if (backend.Mode != "VTuber")
+                {
+                    card = Card("Computer access"); Check(card, "Enable computer access", "computer_control_enabled");
+                    Select(card, "Access level", "computer_access_level", new[] { "restricted", "full" }, new[] { "Restricted", "Full access" });
+                    Text("Actions continue through Sakura’s existing approval checks.", "description", card);
+                }
             }
             else if (selected == "AI & LLM")
             {

@@ -32,8 +32,8 @@ namespace Sakura.Unity
         private Image appLogo;
         private Button microphoneButton;
         private Button compactMicrophone, transparencyButton;
-        private Button positionLockButton, handsButton;
-        private Label positionLockCaption;
+        private Button positionLockButton, handsButton, hideControlsButton;
+        private Label dockHoverLabel;
         private CharacterEntry[] catalog = Array.Empty<CharacterEntry>();
         private string format = "PMX", search = "";
         private string catalogView = "Library";
@@ -192,9 +192,16 @@ namespace Sakura.Unity
             });
         }
 
+        private static readonly Dictionary<string, string> DockInks = new Dictionary<string, string>
+        {
+            ["pink"] = "#b7688d", ["blue"] = "#3888b3", ["green"] = "#76a85c", ["indigo"] = "#6480b5",
+            ["orange"] = "#b9894a", ["purple"] = "#8d6abb", ["slate"] = "#5a76a8", ["periwinkle"] = "#797cb0",
+            ["lock"] = "#9c7a16", ["hide"] = "#61718c"
+        };
+
         private void BuildDock()
         {
-            positionLockButton = null; positionLockCaption = null;
+            positionLockButton = null; hideControlsButton = null;
             dock.Clear(); navigation.Clear();
             bool vtuber = CurrentMode == "VTuber";
             string[] keys = vtuber
@@ -202,10 +209,12 @@ namespace Sakura.Unity
                 : new[] { "Character", "Camera", "Voice & speech", "Model Settings", "Background", "Streaming & output", "Sakura Mobile", "Memory & privacy", "Settings" };
             string[] labels = { "Models", "Camera &\ntracking", "Voice &\nspeech", "Model\nSettings", "Background\n& stage\nitems", "Streaming &\noutput", "Sakura\nMobile", "Memory &\nprivacy", "Settings" };
             string[] icons = { "character", "camera", "voice", "tools", "background", "output", "phone", "memory", "settings" };
+            string[] tints = { "pink", "blue", "blue", "green", "green", "indigo", "orange", "purple", "pink" };
             if (vtuber)
             {
                 labels = new[] { "Models", "Camera &\ntracking", "Expressions &\nhotkeys", "Background", "Streaming &\nvoice", "Plugins", "Sakura\nMobile", "Settings", "Collab" };
                 icons = new[] { "character", "camera", "expressions", "background", "output", "plugins", "phone", "settings", "collab" };
+                tints = new[] { "pink", "blue", "purple", "green", "indigo", "slate", "orange", "pink", "periwinkle" };
             }
             var scroll = new ScrollView(ScrollViewMode.Vertical)
             {
@@ -224,27 +233,49 @@ namespace Sakura.Unity
                 button.tooltip = labels[index].Replace("\n", " ");
                 var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/" + icons[index]) };
                 icon.AddToClassList("dock-icon"); button.Add(icon);
-                Label(labels[index], "dock-label", button);
-                button.AddToClassList("dock-button"); navigation[key] = button;
+                button.AddToClassList("dock-button"); button.AddToClassList("dock-tint-" + tints[index]);
+                button.userData = tints[index];
+                RegisterDockHover(button);
+                navigation[key] = button;
             }
             if (vtuber)
             {
                 var modelLock = Button("", () => {}, scroll.contentContainer); modelLock.name = "model-position-lock";
-                modelLock.AddToClassList("dock-button");
+                modelLock.AddToClassList("dock-button"); modelLock.AddToClassList("dock-tint-lock"); modelLock.AddToClassList("dock-lock");
+                modelLock.userData = "lock";
                 var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/lock") }; icon.AddToClassList("dock-icon"); modelLock.Add(icon);
-                var caption = Label("Lock model", "dock-label", modelLock);
-                positionLockButton = modelLock; positionLockCaption = caption;
+                modelLock.tooltip = "Lock model position";
+                RegisterDockHover(modelLock);
+                positionLockButton = modelLock;
                 modelLock.clicked += () =>
                 {
                     viewport.PositionLocked = !viewport.PositionLocked;
                     modelLock.EnableInClassList("selected", viewport.PositionLocked);
-                    caption.text = viewport.PositionLocked ? "Unlock model" : "Lock model";
+                    modelLock.tooltip = viewport.PositionLocked ? "Unlock model position" : "Lock model position";
+                    RefreshIconColors();
                 };
-                var hide = Button("", ToggleChrome, dock); hide.AddToClassList("dock-button"); hide.name = "hide-controls";
+                var hide = Button("", ToggleChrome, dock); hide.AddToClassList("dock-button"); hide.AddToClassList("dock-tint-hide"); hide.AddToClassList("dock-hide"); hide.name = "hide-controls";
+                hide.userData = "hide";
                 var eye = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/hide") }; eye.AddToClassList("dock-icon"); hide.Add(eye);
-                Label("Hide controls", "dock-label", hide);
+                hide.tooltip = "Hide controls";
+                RegisterDockHover(hide);
+                hideControlsButton = hide;
             }
+            dockHoverLabel = new Label { pickingMode = PickingMode.Ignore };
+            dockHoverLabel.AddToClassList("dock-hover-label"); dock.Add(dockHoverLabel);
             RefreshIconColors();
+        }
+
+        private void RegisterDockHover(Button button)
+        {
+            button.RegisterCallback<PointerEnterEvent>(_ =>
+            {
+                if (dockHoverLabel == null) return;
+                dockHoverLabel.text = button.tooltip;
+                dockHoverLabel.style.top = button.worldBound.center.y - dock.worldBound.y;
+                dockHoverLabel.style.display = DisplayStyle.Flex;
+            });
+            button.RegisterCallback<PointerLeaveEvent>(_ => { if (dockHoverLabel != null) dockHoverLabel.style.display = DisplayStyle.None; });
         }
 
         private void BuildChat(VisualElement workspace)
@@ -371,12 +402,19 @@ namespace Sakura.Unity
 
         private void RefreshIconColors()
         {
-            foreach (var item in navigation)
-            {
-                var icon = item.Value.Q<Image>();
-                ColorUtility.TryParseHtmlString(item.Value.ClassListContains("selected") ? (lightTheme ? "#a13464" : "#ff9ec8") : (lightTheme ? "#785f70" : "#ccb6c8"), out var color);
-                if (icon != null) icon.tintColor = color;
-            }
+            foreach (var item in navigation) TintDockIcon(item.Value);
+            if (positionLockButton != null) TintDockIcon(positionLockButton);
+            if (hideControlsButton != null) TintDockIcon(hideControlsButton);
+        }
+
+        private void TintDockIcon(Button button)
+        {
+            var icon = button.Q<Image>();
+            if (icon == null) return;
+            string tint = button.userData as string ?? "blue";
+            string hex = button.ClassListContains("selected") ? "#168fd5" : DockInks.TryGetValue(tint, out string ink) ? ink : "#3184bb";
+            ColorUtility.TryParseHtmlString(hex, out var color);
+            icon.tintColor = color;
         }
 
         public void ShowPanel(string name)
@@ -515,6 +553,7 @@ namespace Sakura.Unity
             var stages = Element("row", card);
             Button("3D stages", () => ShowStageLibrary(false), stages);
             Button("Tools & Props", () => ShowStageLibrary(true), stages);
+            Button("Image & Live2D items", () => ShowPanel("Background"), stages);
             Label("Open the background panel to add scenery and items alongside your character.", "description", card);
         }
 
@@ -534,7 +573,7 @@ namespace Sakura.Unity
             if (positionLockButton != null && viewport != null)
             {
                 positionLockButton.EnableInClassList("selected", viewport.PositionLocked);
-                positionLockCaption.text = viewport.PositionLocked ? "Unlock model" : "Lock model";
+                positionLockButton.tooltip = viewport.PositionLocked ? "Unlock model position" : "Lock model position";
             }
         }
 
@@ -778,7 +817,7 @@ namespace Sakura.Unity
         private void ReceiveReply(string text) { Label(text, "message", messages.contentContainer); SetStatus(text); messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue)); }
         private void ShowEvidence(JObject reply)
         {
-            if (reply == null || reply.Value<string>("response_kind") == "conversation") return;
+            if (reply == null || messages == null || reply.Value<string>("response_kind") == "conversation") return;
             var statements = reply["statements"] as JArray ?? new JArray();
             var sources = reply["sources"] as JArray ?? new JArray();
             if (statements.Count == 0 && sources.Count == 0) return;
