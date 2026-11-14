@@ -227,6 +227,25 @@ namespace Sakura.Unity
             Button("Preview memory consolidation",() => Request("/api/agent/memory-workbench/consolidate",new JObject { ["approved"] = false },result => Text(result.ToString(Formatting.Indented),content,"description")),content);
             var query = Input("Search entity hints");
             Button("Search linked memories",() => Request("/api/agent/memory-workbench/graph?query=" + Uri.EscapeDataString(query.value ?? ""),null,result => Text(result.ToString(Formatting.Indented),content,"description")),content);
+            var workbench = new Foldout { text = "Memory maintenance workbench", value = false }; content.Add(workbench);
+            var workbenchEnabled = new Toggle("Run deterministic hourly maintenance") { value = false }; workbench.Add(workbenchEnabled);
+            var workbenchStatus = new Label(); workbenchStatus.style.whiteSpace = WhiteSpace.Normal; workbench.Add(workbenchStatus);
+            void LoadWorkbench()
+            {
+                Request("/api/agent/memory-workbench", null, data =>
+                {
+                    workbenchEnabled.SetValueWithoutNotify(data.Value<bool?>("enabled") == true);
+                    workbenchStatus.text = (data.Value<bool?>("enabled") == true ? "Hourly maintenance enabled" : "Hourly maintenance off") + " · " +
+                        ((data["journals"] as JArray ?? new JArray()).Count) + " daily reflection(s)" +
+                        ((string)data["last_error"] is string last && last.Length > 0 ? " · " + last : "");
+                });
+            }
+            Button("Refresh workbench", LoadWorkbench, workbench);
+            Button("Save maintenance switch", () => Request("/api/agent/memory-workbench/configure", new JObject { ["enabled"] = workbenchEnabled.value }, result => { workbenchStatus.text = "Memory maintenance setting saved."; LoadWorkbench(); }), workbench);
+            Button("Rebuild entity hints", () => Request("/api/agent/memory-workbench/graph", new JObject(), result => { workbenchStatus.text = "Entity hints rebuilt from current memory records."; }), workbench);
+            var journalDay = Input("Journal day (YYYY-MM-DD, blank for today)", parent: workbench);
+            Button("Write daily reflection", () => Request("/api/agent/memory-workbench/journal", new JObject { ["day"] = (journalDay.value ?? "").Trim() }, result => { workbenchStatus.text = (string)result["text"] ?? "Daily reflection written."; LoadWorkbench(); }), workbench);
+            LoadWorkbench();
             var routing = new Foldout { text = "Measured model routing", value = false }; content.Add(routing);
             var routingEnabled = new Toggle("Choose a measured model for each coding task") { value = false }; routing.Add(routingEnabled);
             var routingCloud = new Toggle("Allow measured cloud models") { value = false }; routing.Add(routingCloud);
