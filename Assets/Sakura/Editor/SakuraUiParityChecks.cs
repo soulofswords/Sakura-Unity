@@ -31,6 +31,13 @@ namespace Sakura.Unity.Editor
             string[] companion = { "Models", "Camera & tracking", "Voice & speech", "Model Settings", "Background & stage items", "Streaming & output", "Sakura Mobile", "Memory & privacy", "Settings" };
             if (!dock.Query<Button>(className:"dock-button").ToList().Select(button => button.tooltip).SequenceEqual(companion))
                 throw new Exception("Companion navigation differs from the reference.");
+            var firstDock = dock.Query<Button>(className:"dock-button").First();
+            if (firstDock.resolvedStyle.borderTopLeftRadius < 25) throw new Exception("Dock buttons are not circular.");
+            if (firstDock.Q(className:"dock-label") != null) throw new Exception("Dock buttons still carry inline text labels.");
+            var tint = firstDock.resolvedStyle.backgroundColor;
+            if (Mathf.Abs(tint.r - 247f/255f) > 2f/255f || Mathf.Abs(tint.g - 220f/255f) > 2f/255f || Mathf.Abs(tint.b - 232f/255f) > 2f/255f)
+                throw new Exception("First dock button is not tinted with the reference pink: " + tint);
+            if (dock.Q(className:"dock-hover-label") == null) throw new Exception("Dock hover label is missing.");
             studio.ShowPanel("Voice & speech");
             await Task.Delay(1500);
             var tabs = root.Q(className:"settings-tabs");
@@ -100,7 +107,31 @@ namespace Sakura.Unity.Editor
             studio.ShowPanel("Settings");
             if (root.Query<Button>(className:"settings-tab").ToList().Any(button => button.text == "AI & LLM" || button.text == "Assistant"))
                 throw new Exception("Companion-only settings appeared in VTuber mode.");
-            studio.SwitchMode("Companion"); studio.ShowPanel("Character");
+            Submit(root.Query<Button>(className:"settings-tab").ToList().First(button => button.text == "Theme"));
+            await Task.Delay(250);
+            if (root.Query<Label>(className:"card-title").ToList().Any(label => label.text == "Computer access"))
+                throw new Exception("Companion-only computer access appeared in the VTuber Theme tab.");
+            studio.SwitchMode("Companion");
+            studio.ShowPanel("Settings");
+            Submit(root.Query<Button>(className:"settings-tab").ToList().First(button => button.text == "Theme"));
+            await Task.Delay(250);
+            string[] themeCards = { "Appearance", "About Sakura", "Graphics", "Computer access" };
+            if (!root.Query<Label>(className:"card-title").ToList().Select(label => label.text).SequenceEqual(themeCards))
+                throw new Exception("Theme tab cards differ from the reference order.");
+            if (!root.Query<DropdownField>().ToList().Any(field => field.label == "Rendering quality"))
+                throw new Exception("Graphics rendering-quality select is missing.");
+            if (!root.Query<Button>().ToList().Any(button => button.text == "Sakura website: guides, features and setup") ||
+                !root.Query<Button>().ToList().Any(button => button.text == "Release history and downloads"))
+                throw new Exception("About Sakura website/release links are missing.");
+            var versionDeadline = DateTime.UtcNow.AddSeconds(20);
+            bool versionLoaded = false;
+            while (DateTime.UtcNow < versionDeadline && !versionLoaded)
+            {
+                versionLoaded = root.Query<Label>(className:"description").ToList().Any(label => label.text.Contains("· Version"));
+                if (!versionLoaded) await Task.Delay(200);
+            }
+            if (!versionLoaded) throw new Exception("About Sakura did not read the installed version from /api/version.");
+            studio.ShowPanel("Character");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-models-parity.png");
             studio.ToggleTheme();
             try
@@ -110,8 +141,8 @@ namespace Sakura.Unity.Editor
             }
             finally { studio.ToggleTheme(); }
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-compact-parity.png",460,900);
-            System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"fullFeatureParity\":false}");
-            Debug.Log("PASS: mode-specific navigation, direct Voice pane, expression cards, position lock, toolbar scrolling and VTuber settings isolation.");
+            System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"circularTintedDock\":true,\"webThemeTabOrder\":true,\"fullFeatureParity\":false}");
+            Debug.Log("PASS: mode-specific navigation, circular tinted dock, direct Voice pane, expression cards, position lock, toolbar scrolling, web Theme tab order and VTuber settings isolation.");
         }
 
         public static async Task VerifyCompactLayout()
