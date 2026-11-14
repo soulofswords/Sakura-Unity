@@ -367,25 +367,54 @@ namespace Sakura.Unity
                 }
                 card = Card("Screen audio listening");
                 var screenAudio = new Toggle("Listen to PC audio while screen sharing") { value = false }; card.Add(screenAudio);
-                var screenAudioStatus = new Label("Screen audio is optional and only runs while screen sharing is active."); screenAudioStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(screenAudioStatus);
+                var screenAudioStatus = new Label("Screen audio is optional and only runs while screen sharing is active. Pick one to four sources."); screenAudioStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(screenAudioStatus);
+                var screenAudioSources = new VisualElement(); card.Add(screenAudioSources);
+                var screenAudioIds = new List<string>();
+                var screenAudioChoices = new List<Toggle>();
+                string FirstOutput()
+                {
+                    for (int i = 0; i < screenAudioIds.Count; i++)
+                        if (screenAudioChoices[i].label.StartsWith("Computer audio", StringComparison.Ordinal)) return screenAudioIds[i];
+                    return screenAudioIds.Count > 0 ? screenAudioIds[0] : null;
+                }
+                void SendScreenAudio(bool enabled)
+                {
+                    var selected = screenAudioChoices.Where(toggle => toggle.value).Select(toggle => screenAudioIds[screenAudioChoices.IndexOf(toggle)]).Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList();
+                    if (enabled && selected.Count == 0) { var fallback = FirstOutput(); if (fallback != null) selected.Add(fallback); }
+                    if (enabled && selected.Count == 0) { screenAudio.SetValueWithoutNotify(false); screenAudioStatus.text = "No audio sources were reported."; return; }
+                    if (selected.Count > 4) { screenAudioStatus.text = "Choose at most four audio sources."; return; }
+                    backend.Api("/api/screen-audio", new JObject { ["enabled"] = enabled, ["sources"] = new JArray(selected), ["computer_only"] = backend.Mode == "VTuber", ["paused"] = false }.ToString(), (json, error) =>
+                    {
+                        if (!alive) return;
+                        if (error != null) { screenAudio.SetValueWithoutNotify(!enabled); screenAudioStatus.text = error; return; }
+                        try { var data = JObject.Parse(json); screenAudioStatus.text = (string)data["message"] ?? (enabled ? "Screen audio listening on." : "Screen audio listening off."); }
+                        catch (Exception) { screenAudioStatus.text = enabled ? "Screen audio listening on." : "Screen audio listening off."; }
+                    });
+                }
                 backend.Api("/api/screen-audio/sources", null, (json, error) =>
                 {
                     if (!alive) return;
                     if (error != null) { screenAudioStatus.text = "Audio sources unavailable: " + error; screenAudio.SetEnabled(false); return; }
                     try
                     {
-                        var sources = (JObject.Parse(json)["sources"] as JArray ?? new JArray()).OfType<JObject>().Select(item => (string)item["name"]).Where(name => !string.IsNullOrEmpty(name)).ToList();
-                        screenAudioStatus.text = sources.Count == 0 ? "No audio sources were reported." : "Available: " + string.Join(", ", sources.Take(6)) + ".";
+                        var data = JObject.Parse(json); var sources = (data["sources"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                        screenAudioSources.Clear(); screenAudioIds.Clear(); screenAudioChoices.Clear();
+                        foreach (var source in sources)
+                        {
+                            string id = (string)source["id"], name = (string)source["name"], kind = (string)source["kind"];
+                            if (string.IsNullOrEmpty(id)) continue;
+                            var choice = new Toggle(string.IsNullOrEmpty(name) ? id : name) { value = kind == "output" && screenAudioChoices.Count == 0 };
+                            screenAudioIds.Add(id); screenAudioChoices.Add(choice); screenAudioSources.Add(choice);
+                            choice.RegisterValueChangedCallback(evt =>
+                            {
+                                if (evt.newValue && screenAudioChoices.Count(item => item.value) > 4) { choice.SetValueWithoutNotify(false); screenAudioStatus.text = "Choose at most four audio sources."; }
+                            });
+                        }
+                        screenAudioStatus.text = sources.Count == 0 ? "No audio sources were reported." : "Select up to four sources. Default is computer playback.";
                     }
                     catch (Exception) { screenAudioStatus.text = "The audio service returned an unreadable response."; }
                 });
-                screenAudio.RegisterValueChangedCallback(evt => backend.Api("/api/screen-audio", new JObject { ["enabled"] = evt.newValue, ["sources"] = new JArray("default-output"), ["computer_only"] = false, ["paused"] = false }.ToString(), (json, error) =>
-                {
-                    if (!alive) return;
-                    if (error != null) { screenAudio.SetValueWithoutNotify(!evt.newValue); screenAudioStatus.text = error; return; }
-                    try { var data = JObject.Parse(json); screenAudioStatus.text = (string)data["message"] ?? (evt.newValue ? "Screen audio listening on." : "Screen audio listening off."); }
-                    catch (Exception) { screenAudioStatus.text = evt.newValue ? "Screen audio listening on." : "Screen audio listening off."; }
-                }));
+                screenAudio.RegisterValueChangedCallback(evt => SendScreenAudio(evt.newValue));
             }
             else if (selected == "Assistant")
             {

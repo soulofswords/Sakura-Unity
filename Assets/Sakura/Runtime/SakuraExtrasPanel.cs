@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -48,6 +49,66 @@ namespace Sakura.Unity
                 backend.Api("/api/personas/activate", new JObject { ["persona_id"] = personaIds[index] }.ToString(), (_, error) => { if (!alive()) return; personaStatus.text = error ?? "Character role updated."; });
             });
             LoadPersonas();
+            var personaFile = new TextField("Card file (.json or .png)") { value = "" }; personaCard.Add(personaFile);
+            Add(personaCard, "Import character card", () =>
+            {
+                string path = (personaFile.value ?? "").Trim().Trim('"');
+                if (!File.Exists(path)) { personaStatus.text = "Choose an existing character card file."; return; }
+                try
+                {
+                    var info = new FileInfo(path);
+                    if (info.Length <= 0 || info.Length > 32 * 1024 * 1024) { personaStatus.text = "Character cards must be between 1 byte and 32 MB."; return; }
+                    var payload = new JObject { ["file_name"] = Path.GetFileName(path), ["data"] = Convert.ToBase64String(File.ReadAllBytes(path)) };
+                    personaStatus.text = "Importing card…";
+                    backend.Api("/api/personas/import", payload.ToString(), (json, error) =>
+                    {
+                        if (!alive()) return;
+                        if (error != null) { personaStatus.text = error; return; }
+                        try
+                        {
+                            var data = JObject.Parse(json);
+                            if (data.Value<bool?>("ok") == false) { personaStatus.text = (string)data["error"] ?? "The card was refused."; return; }
+                            personaStatus.text = "Imported " + ((string)data["name"] ?? "character card") + ". It is available in the role list but not active yet.";
+                            LoadPersonas();
+                        }
+                        catch (Exception) { personaStatus.text = "The card service returned an unreadable response."; }
+                    });
+                }
+                catch (Exception error) { personaStatus.text = "The card could not be read: " + error.Message; }
+            });
+            Add(personaCard, "Export selected character card", () =>
+            {
+                int index = personaSelect.choices.IndexOf(personaSelect.value);
+                if (index < 0 || index >= personaIds.Count || string.IsNullOrEmpty(personaIds[index])) { personaStatus.text = "Choose a character role first."; return; }
+                backend.Api("/api/personas/export", new JObject { ["persona_id"] = personaIds[index] }.ToString(), (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { personaStatus.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        if (data.Value<bool?>("ok") == false) { personaStatus.text = (string)data["error"] ?? "The card could not be exported."; return; }
+                        personaStatus.text = "Exported to " + ((string)data["path"] ?? "the character-cards folder") + ".";
+                    }
+                    catch (Exception) { personaStatus.text = "The card service returned an unreadable response."; }
+                });
+            });
+            bool deleteArmed = false;
+            Button deletePersona = null;
+            deletePersona = Add(personaCard, "Delete selected imported card", () =>
+            {
+                int index = personaSelect.choices.IndexOf(personaSelect.value);
+                if (index < 0 || index >= personaIds.Count || string.IsNullOrEmpty(personaIds[index])) { personaStatus.text = "Choose an imported character card first."; return; }
+                if (!deleteArmed) { deleteArmed = true; deletePersona.text = "Click again to delete this card"; personaStatus.text = "This removes the imported card from this PC. Click again to confirm."; return; }
+                deleteArmed = false; deletePersona.text = "Delete selected imported card";
+                backend.Api("/api/personas/delete", new JObject { ["persona_id"] = personaIds[index] }.ToString(), (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { personaStatus.text = error; return; }
+                    personaStatus.text = "Imported card deleted."; LoadPersonas();
+                });
+            });
+            deletePersona.AddToClassList("agent-reject");
 
             var toolsCard = Card("PC tools");
             var toolsStatus = Status(toolsCard);

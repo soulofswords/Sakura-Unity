@@ -182,6 +182,45 @@ namespace Sakura.Unity
                     + (broken.Length == 0 ? "All bone transforms are finite." : "Non-finite transforms: " + string.Join(", ", broken) + ".");
                 status.text = "Bone diagnosis complete.";
             }), body);
+            Button("Load saved bone repairs", () => Run(() =>
+            {
+                string modelPath = viewport.LoadedModelPath ?? "";
+                if (string.IsNullOrEmpty(modelPath)) throw new InvalidDataException("Select a PMX model first.");
+                backend.Api("/api/models/bone-repairs?model=" + Uri.EscapeDataString(modelPath), null, (json, error) => Run(() =>
+                {
+                    if (error != null) throw new InvalidDataException(error);
+                    var data = JObject.Parse(json);
+                    if (data.Value<bool?>("invalidated") == true) { status.text = "Saved repairs belong to a different version of this model."; return; }
+                    var repairs = data["repairs"] as JObject;
+                    var diagnostic = repairs?["diagnostic"] as JObject;
+                    var frozen = diagnostic?["frozen"] as JArray;
+                    if (frozen == null) { status.text = "No saved bone repairs for this model."; return; }
+                    model.Settings.frozen = frozen.Values<int>().Where(index => index >= 0 && index < model.Instance.BoneTransforms.Length).Distinct().ToList();
+                    model.Apply(); model.Save(); Populate();
+                    status.text = "Loaded " + model.Settings.frozen.Count + " saved bone repairs.";
+                }));
+            }), body);
+            Button("Save bone repairs to library", () => Run(() =>
+            {
+                string modelPath = viewport.LoadedModelPath ?? "";
+                if (string.IsNullOrEmpty(modelPath)) throw new InvalidDataException("Select a PMX model first.");
+                string signature = string.Join(";", model.Instance.BoneTransforms.Select(entry => entry.name + ":" + entry.localPosition.x.ToString("R") + "," + entry.localPosition.y.ToString("R") + "," + entry.localPosition.z.ToString("R")));
+                var repairs = new JObject
+                {
+                    ["manual"] = new JArray(),
+                    ["diagnostic"] = new JObject
+                    {
+                        ["version"] = 2,
+                        ["signature"] = signature,
+                        ["frozen"] = new JArray(model.Settings.frozen.Select(index => (object)index))
+                    }
+                };
+                backend.Api("/api/models/bone-repairs", new JObject { ["model"] = modelPath, ["repairs"] = repairs }.ToString(), (json, error) => Run(() =>
+                {
+                    if (error != null) throw new InvalidDataException(error);
+                    status.text = "Bone repairs saved to the model library.";
+                }));
+            }), body);
         }
         void Appearance()
         {
