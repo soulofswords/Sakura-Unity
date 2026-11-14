@@ -165,6 +165,23 @@ namespace Sakura.Unity
                 catch (Exception) { archaeologyStatus.text = "Saved context returned an unreadable response."; }
             }));
 
+            var memoryCard = Card("Long-term memory");
+            var memoryQuery = new TextField("Search what Sakura remembers"); memoryCard.Add(memoryQuery);
+            var memoryStatus = Status(memoryCard);
+            Add(memoryCard, "Search memories", () => backend.Api("/api/long-term-memory/search", new JObject { ["query"] = (memoryQuery.value ?? "").Trim(), ["limit"] = 10 }.ToString(), (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { memoryStatus.text = error; return; }
+                try
+                {
+                    var data = JObject.Parse(json);
+                    if (data.Value<bool?>("enabled") == false) { memoryStatus.text = (string)data["note"] ?? "Long-term memory is off."; return; }
+                    var rows = (data["results"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                    memoryStatus.text = rows.Count == 0 ? "No matching memories." : string.Join("\n", rows.Select(row => "• " + ((string)row["text"] ?? "Memory") + " · " + ((string)row["classification"] ?? "note") + (row.Value<double?>("age_days") is double age ? " · " + age.ToString("0.0") + " days old" : "")));
+                }
+                catch (Exception) { memoryStatus.text = "The memory service returned an unreadable response."; }
+            }));
+
             var featureCard = Card("Optional features");
             var phoneShare = new Toggle("Share conversation logs with paired phones"); featureCard.Add(phoneShare);
             var cameraStyle = new Toggle("Camera-aware reply delivery"); featureCard.Add(cameraStyle);
