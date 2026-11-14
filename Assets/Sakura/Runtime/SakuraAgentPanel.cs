@@ -430,13 +430,35 @@ namespace Sakura.Unity
                 var liveHost = new VisualElement(); content.Add(liveHost);
                 Text("Embedded live view of this local app, in a separate session. Closing it keeps the app's server running.", liveHost, "description");
                 WebViewElement liveView = null;
+                Label liveStatus = new Label(); liveStatus.style.whiteSpace = WhiteSpace.Normal; liveHost.Add(liveStatus);
                 Button liveToggle = null;
                 liveToggle = Button("Open live view", () =>
                 {
                     if (liveView != null) { liveHost.Remove(liveView); liveView = null; liveToggle.text = "Open live view"; return; }
-                    liveView = new WebViewElement { InitialUrl = currentUrl };
-                    liveView.style.height = 380; liveView.style.width = new Length(100, LengthUnit.Percent);
-                    liveHost.Add(liveView); liveToggle.text = "Close live view";
+                    try
+                    {
+                        liveStatus.text = "Starting embedded browser…";
+                        var opening = new WebViewElement { InitialUrl = currentUrl };
+                        new SakuraBrowserPreview(opening, message => liveStatus.text = message);
+                        liveView = opening;
+                        opening.NavigationCompleted += (_, success) =>
+                        {
+                            if (liveView != opening) return;
+                            liveStatus.text = success ? "Local app loaded." : "The local app did not load. Check that its server is still running, then reopen the live view.";
+                        };
+                        opening.style.height = 380; opening.style.width = new Length(100, LengthUnit.Percent);
+                        liveHost.Add(opening); liveToggle.text = "Close live view";
+                        liveHost.schedule.Execute(() =>
+                        {
+                            if (liveView == opening && !opening.IsReady)
+                                liveStatus.text = "Embedded browser could not start. Check that Microsoft Edge WebView2 Runtime is installed.";
+                        }).StartingIn(20000);
+                    }
+                    catch (Exception error)
+                    {
+                        liveView?.RemoveFromHierarchy(); liveView = null;
+                        liveStatus.text = "Embedded browser failed: " + error.Message;
+                    }
                 }, buttons);
             }
 #endif

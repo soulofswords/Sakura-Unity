@@ -26,3 +26,21 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 migration.migrate(old, new)
             self.assertEqual((new / "models/avatar.pmx").read_bytes(), b"user edits")
+
+    def test_browser_profile_requires_explicit_opt_in(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = root / "old"
+            new = root / "new"
+            (old / "models").mkdir(parents=True)
+            (old / "desktop-profile").mkdir()
+            new.mkdir()
+            (new / "app.py").write_text("# backend")
+            (old / "models" / "avatar.pmx").write_bytes(b"avatar")
+            (old / "desktop-profile" / "Cookies").write_bytes(b"session")
+            (old / "desktop-profile" / "agent-state.json").write_text("{}")
+            migration.migrate(old, new)
+            self.assertFalse((new / "desktop-profile" / "Cookies").exists())
+            self.assertTrue((new / "desktop-profile" / "agent-state.json").is_file())
+            migration.migrate(old, new, include_browser=True)
+            self.assertEqual((new / "desktop-profile" / "Cookies").read_bytes(), b"session")

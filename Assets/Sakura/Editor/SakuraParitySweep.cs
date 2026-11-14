@@ -14,6 +14,7 @@ namespace Sakura.Unity.Editor
         const string Request = @"C:\AI\Unity-Verification\run-parity-sweep.request";
         const string Result = @"C:\AI\Unity-Verification\parity-sweep.json";
         static bool running;
+        static bool browserOnly;
         static SakuraParitySweep() { EditorApplication.update += Tick; }
 
         [MenuItem("Sakura/Checks/Run desktop parity sweep")]
@@ -25,16 +26,24 @@ namespace Sakura.Unity.Editor
 
         static void Tick()
         {
+            if (running && EditorApplication.isPlaying)
+            {
+                EditorApplication.isPaused = false;
+                EditorApplication.QueuePlayerLoopUpdate();
+                return;
+            }
             if (running || EditorApplication.isCompiling || EditorApplication.isUpdating || !File.Exists(Request)) return;
             if (!EditorApplication.isPlaying)
             {
                 if (!EditorApplication.isPlayingOrWillChangePlaymode)
                 {
                     SakuraSetup.CreateStudio();
+                    EditorApplication.isPaused = false;
                     EditorApplication.isPlaying = true;
                 }
                 return;
             }
+            browserOnly = File.ReadAllText(Request).Trim() == "browser";
             running = true; File.Delete(Request); Run();
         }
 
@@ -50,6 +59,12 @@ namespace Sakura.Unity.Editor
             }
             try
             {
+                if (browserOnly)
+                {
+                    await Task.Delay(1500);
+                    await Check("embedded-browser", SakuraBrowserLiveChecks.Verify);
+                    return;
+                }
                 var deadline = DateTime.UtcNow.AddSeconds(90);
                 SakuraBackend backend;
                 do

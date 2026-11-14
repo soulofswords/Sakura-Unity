@@ -7,6 +7,15 @@ from pathlib import Path
 import tempfile
 
 USER_DATA = ("models", "voices", "desktop-profile", "llm-models", "settings.json")
+# Browser cookies, sessions and caches are not user documents. They stay behind
+# unless the owner explicitly opts in to carrying the signed-in browser profile.
+BROWSER_DATA = {
+    "Cookies", "Cookies-journal", "EBWebView", "DawnCache", "GPUCache", "Cache",
+    "Code Cache", "Service Worker", "Local Storage", "Session Storage",
+    "blob_storage", "Network", "Favicons", "History", "History-journal",
+    "Login Data", "Login Data For Account", "Web Data", "Web Data-journal",
+    "Preferences", "Local State", "TransportSecurity",
+}
 
 
 def digest(path):
@@ -17,7 +26,7 @@ def digest(path):
     return value.hexdigest()
 
 
-def migrate(source, destination, dry_run=False):
+def migrate(source, destination, dry_run=False, include_browser=False):
     source = Path(source).resolve(strict=True)
     destination = Path(destination).resolve(strict=True)
     if source == destination or source.is_relative_to(destination) or destination.is_relative_to(source):
@@ -34,9 +43,11 @@ def migrate(source, destination, dry_run=False):
                 raise ValueError("Migration cannot follow links. Copy linked assets separately.")
             if not path.is_file():
                 continue
+            relative = path.relative_to(source)
+            if not include_browser and any(part in BROWSER_DATA for part in relative.parts):
+                continue
             if not path.resolve().is_relative_to(source):
                 raise ValueError("Source file escapes the selected installation.")
-            relative = path.relative_to(source)
             target = destination / relative
             if not target.resolve().is_relative_to(destination):
                 raise ValueError("Destination file escapes the selected installation.")
@@ -68,6 +79,7 @@ def migrate(source, destination, dry_run=False):
         finally:
             Path(temporary).unlink(missing_ok=True)
     return {"planned": len(plan), "copied": copied, "dry_run": dry_run,
+            "browser_profile_copied": bool(include_browser),
             "source_preserved": True, "existing_data_overwritten": False}
 
 
@@ -76,8 +88,9 @@ if __name__ == "__main__":
     parser.add_argument("--source", required=True)
     parser.add_argument("--destination", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--include-browser-profile", action="store_true", help="Also copy browser cookies and signed-in sessions.")
     args = parser.parse_args()
     try:
-        print(json.dumps(migrate(args.source, args.destination, args.dry_run)))
+        print(json.dumps(migrate(args.source, args.destination, args.dry_run, args.include_browser_profile)))
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(2, str(error) + "\n")
