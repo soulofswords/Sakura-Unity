@@ -160,7 +160,7 @@ namespace Sakura.Unity
             var root = Viewport == null ? null : Viewport.AvatarRoot;
             if (root != greetedRoot) { greetedRoot = root; greetAt = root == null ? 0 : Time.unscaledTime + .8f; }
             if (root != null && greetAt > 0 && Time.unscaledTime >= greetAt && !TrackingOwnsMotion && !Active)
-            { greetAt = 0; Gesture("greeting_wave"); }
+            { greetAt = 0; if (!SakuraHandRaising.Play(root, this)) Gesture("greeting_wave"); }
             Tick(Mathf.Clamp(Time.deltaTime, 0, .05f));
         }
         public void Tick(float delta)
