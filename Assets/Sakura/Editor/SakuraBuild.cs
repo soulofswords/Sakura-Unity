@@ -93,7 +93,7 @@ namespace Sakura.Unity.Editor
                 });
                 if(report.summary.result != BuildResult.Succeeded) throw new InvalidOperationException("Build failed with " + report.summary.totalErrors + " errors.");
                 string tools = Path.Combine(destination,"Tools"); Directory.CreateDirectory(tools);
-                foreach(string filename in new[] { "backend_bridge.py", "unity_tracking_api.py", "unity_tracking_worker.py", "unity_wake.py", "vrm_pmx_convert.py", "migrate_library.py" })
+                foreach(string filename in new[] { "backend_bridge.py", "unity_tracking_api.py", "unity_tracking_worker.py", "unity_wake.py", "vrm_pmx_convert.py", "migrate_library.py", "backup_model_library.py" })
                     File.Copy(Path.Combine("Tools", filename), Path.Combine(tools, filename), true);
                 File.WriteAllText(Path.Combine(destination,"TEST-BUILD.txt"),
                     "Unity migration test build. Uses the existing backend and models at F:\\AI\\assistant\\Sakura on this PC.\nKeep the executable with its Data folder, UnityPlayer.dll and Tools folder.\nFull feature parity is still under verification.\n");

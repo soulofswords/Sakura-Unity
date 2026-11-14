@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -59,6 +61,81 @@ namespace Sakura.Unity
                 var card = Card("Updates & reinstall");
                 Check(card, "Keep my settings when reinstalling", "preserve_configuration_on_reinstall");
                 Text("Keep your preferences through app updates and reinstalls. Your imported models, voices and artwork are kept.", "description", card);
+                card = Card("Encrypted local backup");
+                Text("Export characters and saved memories with AES-256-GCM password encryption. API keys, Google/Jio sessions and browser cookies are excluded. Restore creates a new folder and never overwrites your active installation.", "description", card);
+                string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                var backupPath = new TextField("Backup file") { value = Path.Combine(documents, "Sakura-Backup.sakurabak") }; card.Add(backupPath);
+                var restoreFolder = new TextField("Restore folder") { value = documents }; card.Add(restoreFolder);
+                var backupPassword = new TextField("Backup password (at least 12 characters)") { isPasswordField = true }; card.Add(backupPassword);
+                var backupStatus = new Label(); backupStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(backupStatus);
+                void RunBackup(string operation)
+                {
+                    string path = (backupPath.value ?? "").Trim().Trim('"');
+                    string secret = backupPassword.value ?? "";
+                    if (secret.Length < 12) { backupStatus.text = "Use a backup password of at least 12 characters."; return; }
+                    if (operation == "create" && !path.EndsWith(".sakurabak", StringComparison.OrdinalIgnoreCase)) path += ".sakurabak";
+                    backupPassword.value = "";
+                    backupStatus.text = operation == "create" ? "Encrypting the model library and saved memories…" : "Decrypting into a new folder…";
+                    JObject body = operation == "create"
+                        ? new JObject { ["path"] = path, ["password"] = secret }
+                        : new JObject { ["backup"] = path, ["parent"] = (restoreFolder.value ?? "").Trim().Trim('"'), ["password"] = secret };
+                    backend.Api("/api/backup/" + operation, body.ToString(), (json, error) =>
+                    {
+                        if (!alive) return;
+                        if (error != null) { backupStatus.text = error; return; }
+                        try
+                        {
+                            var result = JObject.Parse(json);
+                            backupStatus.text = (string)result["message"] ?? ("Backup ready · " + ((string)result["path"] ?? path));
+                        }
+                        catch (Exception) { backupStatus.text = "The backup service returned an unreadable response."; }
+                    });
+                }
+                AddButton("Create backup", () => RunBackup("create"), card);
+                AddButton("Restore to folder", () => RunBackup("restore"), card);
+                Text("Keep the password safe. Sakura cannot recover it.", "description", card);
+                card = Card("Google Drive model backup");
+                Text("Back up the local model library to the shared “Sakura AI assistant.” Drive folder. Create a Google Desktop OAuth client JSON once, keep it outside this project, then sign in. The token stays in your Windows AppData folder. The tool uploads models only; it never deletes local files.", "description", card);
+                var driveClient = new TextField("OAuth client JSON") { value = PlayerPrefs.GetString("sakura-drive-oauth-client", "") }; card.Add(driveClient);
+                var driveStatus = new Label(); driveStatus.style.whiteSpace = WhiteSpace.Normal; card.Add(driveStatus);
+                void RunDrive(string arguments, string starting)
+                {
+                    try
+                    {
+                        string python = SakuraBackend.PythonExecutable(backend.SourceFolder);
+                        string tool = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Tools", "backup_model_library.py"));
+                        if (!File.Exists(tool)) throw new FileNotFoundException("The Drive backup tool is missing. Repair this installation.");
+                        if (arguments.Contains("\"")) throw new ArgumentException("Paths cannot contain quotes.");
+                        PlayerPrefs.SetString("sakura-drive-oauth-client", driveClient.value.Trim().Trim('"')); PlayerPrefs.Save();
+                        var info = new ProcessStartInfo(python, "-u \"" + tool + "\" " + arguments)
+                        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8 };
+                        info.EnvironmentVariables["PYTHONUTF8"] = "1";
+                        var process = new Process { StartInfo = info, EnableRaisingEvents = true };
+                        driveStatus.text = starting;
+                        process.OutputDataReceived += (_, args) => { if (args.Data != null) host.schedule.Execute(() => { if (alive) driveStatus.text = args.Data; }); };
+                        process.ErrorDataReceived += (_, args) => { if (args.Data != null) host.schedule.Execute(() => { if (alive) driveStatus.text = args.Data; }); };
+                        process.Exited += (_, __) => host.schedule.Execute(() => { if (alive) driveStatus.text = "Drive backup finished. Review the last line above."; process.Dispose(); });
+                        process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                    }
+                    catch (Exception error) { driveStatus.text = error.Message; }
+                }
+                AddButton("Sign in with Google", () =>
+                {
+                    string client = driveClient.value.Trim().Trim('"');
+                    if (!File.Exists(client)) { driveStatus.text = "Choose the Google Desktop OAuth client JSON first."; return; }
+                    RunDrive("--login --oauth-client \"" + client + "\"", "Opening Google sign-in in your browser…");
+                }, card);
+                AddButton("Back up models now", () =>
+                {
+                    string models = Path.Combine(backend.SourceFolder, "models");
+                    if (!Directory.Exists(models)) { driveStatus.text = "No local models folder was found."; return; }
+                    RunDrive("--source \"models=" + models + "\"", "Uploading the model library to Drive…");
+                }, card);
+                AddButton("Dry run (no upload)", () =>
+                {
+                    string models = Path.Combine(backend.SourceFolder, "models");
+                    RunDrive("--source \"models=" + models + "\" --dry-run", "Planning the Drive upload without changing anything…");
+                }, card);
                 card = Card("Assistant identity");
                 Field(card, "Assistant name", "assistant_name"); Field(card, "VTuber name", "vtuber_name");
                 Select(card, "Avatar presentation", "avatar_presentation", new[] { "auto", "feminine", "masculine", "neutral" }, new[] { "Automatic", "Feminine", "Masculine", "Neutral" });
