@@ -35,6 +35,7 @@ namespace Sakura.Unity
         private Label positionLockCaption;
         private CharacterEntry[] catalog = Array.Empty<CharacterEntry>();
         private string format = "PMX", search = "";
+        private string catalogView = "Library";
         private bool lightTheme;
         private bool vtuberEdition;
         private bool initialCatalog = true;
@@ -535,8 +536,21 @@ namespace Sakura.Unity
 
         private void BuildCatalog()
         {
+            var views = Element("row", panelBody); views.AddToClassList("model-view-tabs");
+            var libraryTab = Button("Character library", () => { catalogView = "Library"; ShowPanel("Character"); }, views);
+            libraryTab.name = "models-library-tab"; libraryTab.EnableInClassList("selected", catalogView == "Library");
+            var converterTab = Button("Converter", () => { catalogView = "Converter"; ShowPanel("Character"); }, views);
+            converterTab.name = "models-converter-tab"; converterTab.EnableInClassList("selected", catalogView == "Converter");
+            if (catalogView == "Converter")
+            {
+                new SakuraModelConverterPanel(backend, catalog, viewport.LoadedModelPath, panelBody, backend.RefreshCatalog);
+                return;
+            }
             var card = Element("card", panelBody);
             Label("Your character library", "card-title", card);
+            var migration = new Foldout { text = catalog.Length == 0 ? "Bring my existing Sakura library" : "Import a previous Sakura library", value = catalog.Length == 0 };
+            card.Add(migration);
+            SakuraLibraryMigrationPanel.Build(migration, backend);
             var query = new TextField { value = search }; query.AddToClassList("search");
             query.tooltip = "Search by model name or folder"; card.Add(query);
             query.textEdition.placeholder = "Search your characters…";

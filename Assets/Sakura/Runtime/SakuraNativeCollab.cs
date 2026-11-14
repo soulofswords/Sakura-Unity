@@ -320,7 +320,11 @@ namespace Sakura.Unity
             foreach (var peer in peers.Values.ToArray())
             {
                 if (!peer.Sending && peer.ModelPath != viewport.LoadedModelPath) _ = SendModel(peer);
-                if (pose.Length < 60000 && peer.Pose?.ReadyState == RTCDataChannelState.Open && peer.Pose.BufferedAmount < 60000) peer.Pose.Send(pose);
+                try
+                {
+                    if (pose.Length < 60000 && peer.Pose?.ReadyState == RTCDataChannelState.Open && peer.Pose.BufferedAmount < 60000) peer.Pose.Send(pose);
+                }
+                catch (Exception) { RemovePeer(peer.Id); continue; }
                 if (peer.Driver != null && peer.LatestPose != null) { peer.Driver.Receive(peer.LatestPose); peer.LatestPose = null; }
             }
         }

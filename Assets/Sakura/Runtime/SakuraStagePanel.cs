@@ -118,7 +118,7 @@ namespace Sakura.Unity
         {
             string input = Path.GetFullPath(folder.value.Trim().Trim('"'));
             if (!Directory.Exists(input)) throw new DirectoryNotFoundException("Choose the complete PMX asset folder.");
-            string python = Path.Combine(backend.SourceFolder, "venv", "Scripts", "python.exe");
+            string python = SakuraBackend.PythonExecutable(backend.SourceFolder);
             // Reuse the source application's validated package importer, including its dedicated scenery bucket.
             const string script = "import json,sys;from pathlib import Path;from model_import import import_package,MAX_BYTES;p=json.loads(sys.stdin.read());base=Path(p['folder']);files=[];total=0\nfor f in base.rglob('*'):\n if f.is_symlink():raise ValueError('Symbolic links are not supported')\n if f.is_file():\n  total+=f.stat().st_size\n  if total>MAX_BYTES or len(files)>=5000:raise ValueError('Package exceeds 512 MB or 5000 files')\n  files.append((str(Path(base.name)/f.relative_to(base)).replace(chr(92),'/'),f.read_bytes()))\nprint(json.dumps(import_package(Path(p['root'])/'models',files,'pmx','','',p['kind'])))";
             var info = new ProcessStartInfo(python) { Arguments = "-c \"" + script + "\"", WorkingDirectory = backend.SourceFolder, UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8 };

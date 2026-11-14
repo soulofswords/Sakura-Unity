@@ -167,7 +167,13 @@ namespace Sakura.Unity
             if (enabled)
             {
                 pointsStatus = "Connecting to Twitch points…"; nextPoints = 0;
-                backend.Api("/api/points/configure", new JObject { ["enabled"] = true }.ToString(), (_, error) => { pointsStatus = error ?? "Connecting to Twitch points…"; });
+                int requestedGeneration = pointsGeneration;
+                backend.Api("/api/points/configure", new JObject { ["enabled"] = true }.ToString(), (_, error) =>
+                {
+                    if (requestedGeneration != pointsGeneration) return;
+                    pointsStatus = error ?? "Connecting to Twitch points…";
+                    if (error != null) pointsEnabled = false;
+                });
             }
             else
             {
@@ -307,6 +313,7 @@ namespace Sakura.Unity
             emoteToggle.RegisterValueChangedCallback(evt => chat.SetEmoteDrops(evt.newValue));
             var pointsToggle = new Toggle("Channel points banner") { value = chat.PointsEnabled }; effectsCard.Add(pointsToggle);
             pointsToggle.RegisterValueChangedCallback(evt => chat.SetPoints(evt.newValue));
+            pointsToggle.schedule.Execute(() => pointsToggle.SetValueWithoutNotify(chat.PointsEnabled)).Every(250);
             var points = new Label(chat.PointsStatus); points.style.whiteSpace = WhiteSpace.Normal; effectsCard.Add(points);
             var rewardId = new TextField("Reward ID") { maxLength = 64 }; effectsCard.Add(rewardId);
             var rewardAction = new DropdownField("Reward action", new List<string> { "Banner only", "Wave", "Dance", "Emote shower" }, 0); effectsCard.Add(rewardAction);

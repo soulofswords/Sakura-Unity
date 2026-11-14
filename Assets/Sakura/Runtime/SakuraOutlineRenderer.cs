@@ -44,7 +44,7 @@ namespace Sakura.Unity
                 outline.receiveShadows = false;
                 outline.updateWhenOffscreen = source.updateWhenOffscreen;
                 outline.allowOcclusionWhenDynamic = false;
-                int count = Mathf.Min(source.sharedMesh.blendShapeCount, 64);
+                int count = source.sharedMesh.blendShapeCount;
                 for (int index = 0; index < count; index++) outline.SetBlendShapeWeight(index, source.GetBlendShapeWeight(index));
                 parts.Add((source, outline));
             }
@@ -57,7 +57,7 @@ namespace Sakura.Unity
             foreach (var (source, outline) in parts)
             {
                 if (source == null || outline == null) continue;
-                int count = Mathf.Min(source.sharedMesh == null ? 0 : source.sharedMesh.blendShapeCount, 64);
+                int count = (source.sharedMesh == null ? 0 : source.sharedMesh.blendShapeCount);
                 for (int index = 0; index < count; index++) outline.SetBlendShapeWeight(index, source.GetBlendShapeWeight(index));
             }
         }

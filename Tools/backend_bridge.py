@@ -9,6 +9,10 @@ import threading
 from contextlib import asynccontextmanager
 import asyncio
 
+# The packaged embedded runtime uses a ._pth file, so the script directory is not
+# added to sys.path automatically. Keep the bridge's sibling modules importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 
 def validate_source(value):
     source = Path(value).resolve()

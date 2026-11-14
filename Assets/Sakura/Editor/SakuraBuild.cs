@@ -87,12 +87,13 @@ namespace Sakura.Unity.Editor
                     scenes = new[] { "Assets/Scenes/SakuraStudio.unity" },
                     target = BuildTarget.StandaloneWindows64,
                     locationPathName = executable,
-                    extraScriptingDefines = new[] { "SAKURA_DWM_ALPHA", "SAKURA_PREVIEW_VERIFY" },
+                    extraScriptingDefines = Environment.GetEnvironmentVariable("SAKURA_DEVELOPER_BUILD") == "1"
+                        ? new[] { "SAKURA_DWM_ALPHA", "SAKURA_PREVIEW_VERIFY" } : new[] { "SAKURA_DWM_ALPHA" },
                     options = BuildOptions.None
                 });
                 if(report.summary.result != BuildResult.Succeeded) throw new InvalidOperationException("Build failed with " + report.summary.totalErrors + " errors.");
                 string tools = Path.Combine(destination,"Tools"); Directory.CreateDirectory(tools);
-                foreach(string filename in new[] { "backend_bridge.py", "unity_tracking_api.py", "unity_tracking_worker.py", "unity_wake.py" })
+                foreach(string filename in new[] { "backend_bridge.py", "unity_tracking_api.py", "unity_tracking_worker.py", "unity_wake.py", "vrm_pmx_convert.py", "migrate_library.py" })
                     File.Copy(Path.Combine("Tools", filename), Path.Combine(tools, filename), true);
                 File.WriteAllText(Path.Combine(destination,"TEST-BUILD.txt"),
                     "Unity migration test build. Uses the existing backend and models at F:\\AI\\assistant\\Sakura on this PC.\nKeep the executable with its Data folder, UnityPlayer.dll and Tools folder.\nFull feature parity is still under verification.\n");

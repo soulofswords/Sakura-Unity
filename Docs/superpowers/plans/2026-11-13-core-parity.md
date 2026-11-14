@@ -10,4 +10,16 @@
 - [ ] Exercise complete JSON appearance import, embedded local browser, cloud and phone paths in live clients.
 - [ ] Run remaining native checks and compare both editions with the reference. Record hardware-dependent acceptance separately.
 
+## 2026-11-14 correction pass
+
+- [x] Keep packaged embedded-Python sibling imports, remove packaged developer-path fallback, use the bundled runtime for scenery import.
+- [x] Add explicit checksum-verified previous-library copy from Models; reject conflicts and preserve originals.
+- [x] Fix closing-peer collab sends, failed points toggle state and outlines with over 64 blendshapes.
+- [x] Gate preview verification code behind an explicit developer-build environment flag.
+- [x] Wire Models → Converter to the external pinned engine with progress/cancel and new-output policy.
+- [ ] Accept converter humanoid fidelity: a real Irida round trip wrote both formats but synthesized humanoid placeholders on return.
+- [ ] Complete authenticated Drive subset upload/restore and full backup; sharing a URL is insufficient for upload authorization.
+
+Python suite: 45 run, one skipped; focused packaging suite: four passed. Unity batch compile and rig monitor passed. These checks do not establish hardware, account or visual parity.
+
 Preserve the original project and assets. Large verification/build outputs belong on C:. The model picker will host a **Converter** tab for VRM ↔ PMX; conversion quality and format losses must be stated rather than treated as 1:1.

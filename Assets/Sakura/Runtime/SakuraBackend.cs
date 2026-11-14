@@ -47,7 +47,7 @@ namespace Sakura.Unity
         {
             if (Application.isEditor) return;
             string bundled = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Sakura");
-            if (File.Exists(Path.Combine(bundled, "runtime", "python.exe"))) SourceFolder = bundled;
+            SourceFolder = bundled;
         }
 
         public static string PythonExecutable(string folder)
