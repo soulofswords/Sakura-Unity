@@ -12,7 +12,7 @@
 ## Updating from 2.1
 
 1. Close Sakura.
-2. Run `Sakura-Updater-2.2.exe --package <Sakura-2.2-Update.zip> --install "<existing install folder>" --edition companion` (or `vtuber`).
+2. Run `Sakura-Updater-2.2.exe --package Sakura-Companion-2.2-Update.zip` --install "<existing install folder>" --edition companion` (or `vtuber`).
 3. The updater backs up user data, replaces only application files, preserves `Sakura/models`, `Sakura/voices`, `Sakura/llm-models`, `Sakura/desktop-profile` and `Sakura/settings.json`, removes stale 2.1 application files, updates shortcuts/registry and restarts.
 4. `--dry-run` lists files without changing anything. `--no-restart` skips launch.
 
