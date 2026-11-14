@@ -132,6 +132,21 @@ namespace Sakura.Unity.Editor
             }
             if (!versionLoaded) throw new Exception("About Sakura did not read the installed version from /api/version.");
             studio.ShowPanel("Character");
+            var importsCard = root.Query<Label>(className:"card-title").ToList().FirstOrDefault(label => label.text == "Import a character")?.parent;
+            if (importsCard == null || !importsCard.Query<Button>().ToList().Any(button => button.text == "Upload PMX"))
+                throw new Exception("The local PMX import button is missing from the Models pane.");
+            bool connectedBefore = await LibraryConnected(studio.GetComponent<SakuraBackend>());
+            Submit(importsCard.Query<Button>().ToList().First(button => button.text == "Cloud import PMX"));
+            await Task.Delay(400);
+            var cloud = root.Q("cloud-library");
+            if (cloud == null || cloud.Q<TextField>("library-email") == null || cloud.Q<TextField>("library-password") == null)
+                throw new Exception("Cloud import PMX did not open the email sign-in card.");
+            if (!connectedBefore && cloud.Q<Foldout>(className:"cloud-account").value != true)
+                throw new Exception("The email sign-in form was not presented to a signed-out user.");
+            await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-cloud-signin-parity.png");
+            if (await LibraryConnected(studio.GetComponent<SakuraBackend>()) != connectedBefore)
+                throw new Exception("Opening the cloud library changed the saved sign-in state.");
+            studio.ShowPanel("Character");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-models-parity.png");
             studio.ToggleTheme();
             try
@@ -141,7 +156,7 @@ namespace Sakura.Unity.Editor
             }
             finally { studio.ToggleTheme(); }
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-compact-parity.png",460,900);
-            System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"circularTintedDock\":true,\"webThemeTabOrder\":true,\"fullFeatureParity\":false}");
+            System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"circularTintedDock\":true,\"webThemeTabOrder\":true,\"cloudImportSignIn\":true,\"fullFeatureParity\":false}");
             Debug.Log("PASS: mode-specific navigation, circular tinted dock, direct Voice pane, expression cards, position lock, toolbar scrolling, web Theme tab order and VTuber settings isolation.");
         }
 
@@ -203,6 +218,17 @@ namespace Sakura.Unity.Editor
             if (!root.Query<Button>().ToList().Any(button => button.text == "Apply replacement")) throw new Exception("Texture selection/apply flow differs from the reference.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-model-remapping-parity.png");
             Debug.Log("PASS: reference PMX tab order, numeric zoom, unclipped tabs, model-only material picking, colour wheel/RGB and separate texture selection/apply.");
+        }
+
+        private static Task<bool> LibraryConnected(SakuraBackend backend)
+        {
+            var completion = new TaskCompletionSource<bool>();
+            backend.Api("/api/model-library/connection", null, (json, error) =>
+            {
+                if (error != null) { completion.SetException(new Exception(error)); return; }
+                completion.SetResult(Newtonsoft.Json.Linq.JObject.Parse(json).Value<bool>("configured"));
+            });
+            return completion.Task;
         }
 
         private static void Submit(Button button)

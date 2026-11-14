@@ -79,12 +79,15 @@ def import_selected(source, kind, selection=None):
     if selection is None:
         import tkinter
         from tkinter import filedialog
+        # Like the web desktop picker, start in the designated models/<format> folder.
+        start = source / 'models' / kind
+        start.mkdir(parents=True, exist_ok=True)
         window = tkinter.Tk()
         window.withdraw()
         window.attributes('-topmost', True)
         try:
-            selection = (filedialog.askopenfilename(title='Import a VRM character', filetypes=[('VRM model', '*.vrm')], parent=window)
-                         if kind == 'vrm' else filedialog.askdirectory(title='Choose the complete ' + kind.upper() + ' model folder', parent=window))
+            selection = (filedialog.askopenfilename(title='Import a VRM character', filetypes=[('VRM model', '*.vrm')], initialdir=str(start), parent=window)
+                         if kind == 'vrm' else filedialog.askdirectory(title='Choose the complete ' + kind.upper() + ' model folder', initialdir=str(start), parent=window))
         finally:
             window.destroy()
     if not selection:
