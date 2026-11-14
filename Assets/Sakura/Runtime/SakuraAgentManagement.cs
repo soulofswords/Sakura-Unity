@@ -121,6 +121,27 @@ namespace Sakura.Unity
                 string service = builtin;
                 Button("Add " + service,() => Request("/api/agent/services/" + service,new JObject(),_ => Refresh()),add);
             }
+            var store = new Foldout { text = "Curated extension store", value = false }; content.Add(store);
+            var storeWorkspace = Input("Workspace folder for folder-scoped extensions", parent: store);
+            var storeList = new VisualElement(); store.Add(storeList);
+            Button("Load extension store", () => Request("/api/agent/extension-store", null, data =>
+            {
+                storeList.Clear();
+                foreach (var card in data["extensions"] as JArray ?? new JArray())
+                {
+                    string id = (string)card["id"], cardName = (string)card["name"] ?? id;
+                    if (string.IsNullOrWhiteSpace(id) || !System.Text.RegularExpressions.Regex.IsMatch(id, @"^[a-z0-9][a-z0-9-]{0,59}$")) continue;
+                    var entry = new Foldout { text = cardName, value = false }; storeList.Add(entry);
+                    Text((string)card["description"] ?? "No description.", entry, "description");
+                    Text(((string)card["publisher"] ?? "Unknown publisher") + " · " + ((string)card["source"] ?? "no source"), entry, "description");
+                    Button("Add configuration", () => Request("/api/agent/extension-store/add", new JObject { ["id"] = id, ["workspace"] = storeWorkspace.value ?? "" }, result =>
+                    {
+                        Text(result.ToString(Formatting.Indented), entry, "description");
+                        status.text = "Extension configuration added. Discovery and tool calls still follow Agent approval.";
+                        Refresh();
+                    }), entry);
+                }
+            }), store).name = "agent-extension-store";
         }
 
         private void BuildSkills()

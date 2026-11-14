@@ -135,6 +135,53 @@ namespace Sakura.Unity
                 }
                 catch (Exception) { toolsStatus.text = "The tool service returned an unreadable response."; }
             }));
+            Add(toolsCard, "System status", () => backend.Api("/api/assistant-tools/status", null, (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { toolsStatus.text = error; return; }
+                try
+                {
+                    var data = JObject.Parse(json); var lines = new List<string>();
+                    if ((string)data["cpu_name"] is string cpu) lines.Add("CPU: " + cpu);
+                    if ((string)data["os"] is string os) lines.Add("OS: " + os);
+                    if (data["logical_cpus"] is JToken cpus) lines.Add("Logical CPUs: " + cpus);
+                    if (data["ram"]?["percent"] is JToken ram) lines.Add("RAM used: " + ram + "%");
+                    if (data["disk"]?["free_bytes"] is JToken free) lines.Add("Free disk: " + ((double)free / (1024 * 1024 * 1024)).ToString("0.0") + " GB");
+                    if (data["battery"]?["percent"] is JToken battery) lines.Add("Battery: " + battery + "%");
+                    if (data["uptime_seconds"] is JToken uptime) lines.Add("Uptime: " + TimeSpan.FromSeconds((double)uptime).ToString(@"d\.hh\:mm"));
+                    toolsStatus.text = lines.Count == 0 ? "System status returned no readable fields." : string.Join("\n", lines);
+                }
+                catch (Exception) { toolsStatus.text = "System status returned an unreadable response."; }
+            }));
+            var toolRunId = new TextField("Action sequence id"); toolsCard.Add(toolRunId);
+            Add(toolsCard, "Check action sequence", () => backend.Api("/api/assistant-tools/workflow/" + Uri.EscapeDataString((toolRunId.value ?? "").Trim()), null, (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { toolsStatus.text = error; return; }
+                try
+                {
+                    var data = JObject.Parse(json); var steps = (data["steps"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                    toolsStatus.text = "Sequence " + ((string)data["status"] ?? "unknown") + (data.Value<bool?>("cancel_requested") == true ? " · cancel requested" : "") + "\n" +
+                        string.Join("\n", steps.Select((step, index) => (index + 1) + ". " + (step.Value<bool?>("ok") == true ? "✓ " : "✗ ") + (string)step["request"] + ((string)step["reply"] is string reply && reply.Length > 0 ? " — " + reply : "")));
+                }
+                catch (Exception) { toolsStatus.text = "The action sequence returned an unreadable response."; }
+            }));
+            Add(toolsCard, "Cancel action sequence", () => backend.Api("/api/assistant-tools/cancel", new JObject { ["id"] = (toolRunId.value ?? "").Trim() }.ToString(), (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { toolsStatus.text = error; return; }
+                try { toolsStatus.text = JObject.Parse(json).Value<bool?>("cancelled") == true ? "Cancel requested." : "That action sequence is not running."; }
+                catch (Exception) { toolsStatus.text = "The cancel service returned an unreadable response."; }
+            }));
+            var deviceRow = new VisualElement(); deviceRow.style.flexDirection = FlexDirection.Row; toolsCard.Add(deviceRow);
+            foreach (var action in new[] { ("Get volume", "get"), ("Volume up", "up"), ("Volume down", "down"), ("Mute", "mute"), ("Unmute", "unmute") })
+            { string operation = action.Item2; deviceRow.Add(new Button(() => backend.Api("/api/assistant-tools/device", new JObject { ["action"] = "audio.volume", ["operation"] = operation }.ToString(), (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { toolsStatus.text = error; return; }
+                try { toolsStatus.text = "Volume: " + (JObject.Parse(json)["message"] ?? json); }
+                catch (Exception) { toolsStatus.text = "The device service returned an unreadable response."; }
+            })) { text = action.Item1 }); }
 
             var archaeologyCard = Card("Saved context");
             var archaeologyQuery = new TextField("What were you looking for?"); archaeologyCard.Add(archaeologyQuery);
@@ -180,6 +227,40 @@ namespace Sakura.Unity
                     memoryStatus.text = rows.Count == 0 ? "No matching memories." : string.Join("\n", rows.Select(row => "• " + ((string)row["text"] ?? "Memory") + " · " + ((string)row["classification"] ?? "note") + (row.Value<double?>("age_days") is double age ? " · " + age.ToString("0.0") + " days old" : "")));
                 }
                 catch (Exception) { memoryStatus.text = "The memory service returned an unreadable response."; }
+            }));
+
+            Add(memoryCard, "Show memory report", () => backend.Api("/api/long-term-memory", null, (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { memoryStatus.text = error; return; }
+                try
+                {
+                    var data = JObject.Parse(json);
+                    if (data.Value<bool?>("enabled") == false) { memoryStatus.text = (string)data["note"] ?? "Long-term memory is off."; return; }
+                    double megabytes = data.Value<double?>("database_bytes") is double bytes ? bytes / (1024 * 1024) : 0;
+                    memoryStatus.text = "On: " + (data["live_count"] ?? data["memories"] ?? 0) + " active facts, " + (data["memories"] ?? 0) + " ledger records of " + (data["limit"] ?? 0) +
+                        ", " + megabytes.ToString("0.0") + " MB on this PC. Lookups use " + ((string)data["embedder"] ?? "word overlap") +
+                        (data.Value<bool?>("semantic_retrieval") == true ? " with local meaning search." : " (word overlap only).");
+                }
+                catch (Exception) { memoryStatus.text = "The memory report returned an unreadable response."; }
+            }));
+
+            var relationshipCard = Card("Relationship pacing");
+            var relationshipStatus = Status(relationshipCard);
+            Add(relationshipCard, "Show relationship report", () => backend.Api("/api/relationship", null, (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { relationshipStatus.text = error; return; }
+                try
+                {
+                    var data = JObject.Parse(json);
+                    if (data.Value<bool?>("enabled") == false) { relationshipStatus.text = (string)data["note"] ?? "Conversation pacing is off."; return; }
+                    double warmth = data.Value<double?>("warmth") ?? 0, boundary = data.Value<double?>("boundary") ?? 0;
+                    relationshipStatus.text = ((string)data["stage_label"] ?? "New here") + ": " + (data["turns"] ?? 0) + " messages over " + (data["days_known"] ?? 0) + " days in " + (data["sessions"] ?? 0) + " sittings. " +
+                        "Tone signal " + (warmth > .15 ? "friendly" : warmth < -.15 ? "curt" : "neutral") +
+                        ", boundary signal " + (boundary >= .45 ? "active" : "none") + ".";
+                }
+                catch (Exception) { relationshipStatus.text = "The relationship report returned an unreadable response."; }
             }));
 
             var featureCard = Card("Optional features");

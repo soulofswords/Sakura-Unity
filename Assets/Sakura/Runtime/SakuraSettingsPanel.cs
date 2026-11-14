@@ -183,6 +183,7 @@ namespace Sakura.Unity
                 card = Card("Local AI");
                 Field(card, "Universal local model", "ollama_model"); Field(card, "Game local model", "game_ollama_model"); Field(card, "Local model folder", "ollama_models_folder");
                 AddLocalModelDiscovery(card);
+                AddLocalModelManager(card);
                 Number(card, "Context tokens", "ollama_context", 1024, 8192); Number(card, "Wait for local reply (seconds)", "local_timeout", 5, 120);
                 Check(card, "Allow cloud fallback", "gemini_fallback_enabled"); Check(card, "Automatically use cloud under game VRAM pressure", "game_cloud_auto_enabled");
                 card = Card("Web search"); Check(card, "Allow web search", "web_search_enabled"); Field(card, "Brave Search API key", "brave_key", true);
@@ -470,6 +471,103 @@ namespace Sakura.Unity
             scan = AddButton("Find installed local models", refresh, parent);
             // Only reads the existing catalog. Selecting and saving remain explicit actions.
             parent.schedule.Execute(refresh).ExecuteLater(1);
+        }
+
+        private void AddLocalModelManager(VisualElement parent)
+        {
+            var catalog = new DropdownField("Download model", new List<string> { "Loading local catalog…" }, 0); parent.Add(catalog);
+            var modelName = new TextField("Model name (or exact Ollama tag)"); parent.Add(modelName);
+            var installed = new DropdownField("Installed model", new List<string> { "Loading…" }, 0); parent.Add(installed);
+            var managerImportPaths = new TextField("GGUF paths (one per line)") { multiline = true }; parent.Add(managerImportPaths);
+            var managerStatus = new Label("Downloads are explicit and can be resumed."); managerStatus.style.whiteSpace = WhiteSpace.Normal; parent.Add(managerStatus);
+            var catalogItems = new List<JObject>(); var installedIds = new List<string>();
+            bool deleteArmed = false; Button delete = null;
+            void RefreshInstalled()
+            {
+                backend.Api("/api/ollama/models", new JObject { ["folder"] = (string)Value("ollama_models_folder") ?? "" }.ToString(Formatting.None), (json, error) =>
+                {
+                    if (!alive) return;
+                    if (error != null) { managerStatus.text = "Installed models unavailable: " + error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json); var rows = (data["models"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                        installedIds.Clear(); var labels = new List<string>();
+                        foreach (var row in rows)
+                        {
+                            string name = (string)row["name"]; if (string.IsNullOrEmpty(name)) continue;
+                            installedIds.Add(name); labels.Add(name + " · " + (((double?)row["size"] ?? 0) / 1e9).ToString("0.0") + " GB");
+                        }
+                        installed.choices = labels.Count == 0 ? new List<string> { "No installed Ollama models" } : labels;
+                        installed.SetValueWithoutNotify(installed.choices[0]);
+                    }
+                    catch (Exception) { managerStatus.text = "The local model list returned an unreadable response."; }
+                });
+            }
+            void Download()
+            {
+                string model = (modelName.value ?? "").Trim();
+                if (string.IsNullOrEmpty(model) && catalog.index >= 0 && catalog.index < catalogItems.Count) model = (string)catalogItems[catalog.index]["model"];
+                if (string.IsNullOrEmpty(model)) { managerStatus.text = "Choose a catalog model or enter an exact Ollama tag."; return; }
+                backend.Api("/api/ollama/manager/download", new JObject { ["model"] = model, ["folder"] = (string)Value("ollama_models_folder") ?? "" }.ToString(Formatting.None), (json, error) =>
+                {
+                    if (!alive) return;
+                    managerStatus.text = error ?? "Download started. Progress appears below; existing models are kept.";
+                });
+            }
+            void Import()
+            {
+                string name = (modelName.value ?? "").Trim();
+                var paths = (managerImportPaths.value ?? "").Split(new[] { (char)10, (char)13 }, StringSplitOptions.RemoveEmptyEntries).Select(path => path.Trim()).Where(path => path.Length > 0).ToList();
+                if (string.IsNullOrEmpty(name) || paths.Count == 0) { managerStatus.text = "Enter a new model name and at least one GGUF file path."; return; }
+                backend.Api("/api/ollama/manager/import", new JObject { ["model"] = name, ["paths"] = new JArray(paths), ["folder"] = (string)Value("ollama_models_folder") ?? "" }.ToString(Formatting.None), (json, error) =>
+                {
+                    if (!alive) return;
+                    managerStatus.text = error ?? "GGUF import started. Vision support is checked when it finishes.";
+                });
+            }
+            catalog.RegisterValueChangedCallback(_ => { if (catalog.index >= 0 && catalog.index < catalogItems.Count) modelName.SetValueWithoutNotify((string)catalogItems[catalog.index]["model"] ?? ""); });
+            AddButton("Refresh installed models", RefreshInstalled, parent);
+            AddButton("Download selected model", Download, parent);
+            AddButton("Check selected installed model", () => backend.Api("/api/ollama/manager/details", new JObject { ["model"] = installedIds.Count == 0 ? "" : installedIds[Math.Max(0, installed.index)], ["folder"] = (string)Value("ollama_models_folder") ?? "" }.ToString(Formatting.None), (json, error) =>
+            {
+                if (!alive) return;
+                if (error != null) { managerStatus.text = error; return; }
+                try { var data = JObject.Parse(json); managerStatus.text = "Selected " + ((string)data["model"] ?? "model") + " · " + (data.Value<bool?>("vision") == true ? "vision verified." : "text only; keep an installed vision model for images."); }
+                catch (Exception) { managerStatus.text = "Model details returned an unreadable response."; }
+            }), parent);
+            delete = AddButton("Uninstall selected model", () =>
+            {
+                if (installedIds.Count == 0) { managerStatus.text = "Choose an installed model first."; return; }
+                string model = installedIds[Math.Max(0, installed.index)];
+                if (!deleteArmed) { deleteArmed = true; delete.text = "Click again to uninstall " + model; managerStatus.text = "This removes only " + model + ". Click again to confirm."; return; }
+                deleteArmed = false; delete.text = "Uninstall selected model";
+                backend.Api("/api/ollama/manager/delete", new JObject { ["model"] = model, ["folder"] = (string)Value("ollama_models_folder") ?? "", ["confirm"] = model }.ToString(Formatting.None), (json, error) =>
+                {
+                    if (!alive) return;
+                    managerStatus.text = error ?? "Model uninstalled. Other models were kept."; RefreshInstalled();
+                });
+            }, parent);
+            AddButton("Import GGUF weights", Import, parent);
+            IVisualElementScheduledItem poll = null;
+            poll = parent.schedule.Execute(() => backend.Api("/api/ollama/manager", null, (json, error) =>
+            {
+                if (!alive || error != null) return;
+                try
+                {
+                    var data = JObject.Parse(json);
+                    if (catalogItems.Count == 0 && data["catalog"] is JArray rows)
+                    {
+                        catalogItems.Clear(); var labels = new List<string>();
+                        foreach (var row in rows.OfType<JObject>()) { catalogItems.Add(row); labels.Add(((string)row["name"] ?? (string)row["model"]) + " · " + ((string)row["download"] ?? "download")); }
+                        catalog.choices = labels.Count == 0 ? new List<string> { "No catalog models" } : labels;
+                    }
+                    var job = data["job"] as JObject;
+                    if (job != null) managerStatus.text = (string)job["message"] + (job.Value<double?>("percent") is double percent ? " (" + percent.ToString("0") + "%)" : "");
+                }
+                catch (Exception) { }
+            })).Every(2000);
+            parent.RegisterCallback<DetachFromPanelEvent>(_ => poll.Pause());
+            RefreshInstalled();
         }
 
         private void ModelChoices(VisualElement parent, string label, string key, List<string> ids, Dictionary<string, string> labels)
