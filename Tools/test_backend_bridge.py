@@ -78,6 +78,22 @@ class BridgeTests(unittest.TestCase):
         with patch.dict('sys.modules', {'tkinter': tk, 'tkinter.filedialog': dialog}):
             self.assertEqual(self.bridge.pick_visual_asset(), {'cancelled': True})
 
+    def test_chat_attachment_picker_cancellation_and_size_bounds(self):
+        window = types.SimpleNamespace(withdraw=lambda: None, attributes=lambda *args: None, destroy=lambda: None)
+        dialog = types.SimpleNamespace(askopenfilename=lambda **kwargs: '')
+        tk = types.SimpleNamespace(Tk=lambda: window, filedialog=dialog)
+        with tempfile.TemporaryDirectory() as folder, patch.dict('sys.modules', {'tkinter': tk, 'tkinter.filedialog': dialog}):
+            root = Path(folder)
+            self.assertEqual(self.bridge.pmx_tool(root, 'chat-attachment', {}), {'cancelled': True})
+            file = root / 'notes.txt'
+            dialog.askopenfilename = lambda **kwargs: str(file)
+            file.write_text('attachment fixture')
+            self.assertEqual(self.bridge.pmx_tool(root, 'chat-attachment', {}), {'path': str(file.resolve())})
+            file.write_bytes(b'')
+            with self.assertRaises(ValueError): self.bridge.pmx_tool(root, 'chat-attachment', {})
+            with file.open('wb') as output: output.truncate(10 * 1024 * 1024 + 1)
+            with self.assertRaises(ValueError): self.bridge.pmx_tool(root, 'chat-attachment', {})
+
     def test_video_picker_rejects_other_file_extensions(self):
         with tempfile.TemporaryDirectory() as folder:
             selected = Path(folder) / 'script.exe'

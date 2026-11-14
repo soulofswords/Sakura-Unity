@@ -30,7 +30,7 @@
 Button:hover, Button:focus { border-color:var(--accent); }
 Button:disabled { opacity:.6; }
 .dock-button { width:52px; height:52px; min-height:52px; flex-shrink:0; flex-direction:column; justify-content:center; align-items:center; padding:13px; border-width:1px; border-color:rgba(255,255,255,0.47); border-radius:26px; background-color:var(--dock-tint,#e4f4fd); margin-bottom:14px; color:var(--dock-ink,#3184bb); }
-.dock-button:hover { translate:3px 0; border-color:rgba(255,255,255,0.85); }
+.dock-button:hover { border-color:rgba(255,255,255,0.85); }
 .dock-button.selected { background-color:#ffffff; border-width:2px; border-color:rgba(22,143,213,0.42); }
 .dock-tint-pink { --dock-tint:#f7dce8; --dock-ink:#b7688d; }
 .dock-tint-blue { --dock-tint:#d9effb; --dock-ink:#3888b3; }
@@ -86,6 +86,7 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .composer Button { width:38px; padding:0; }
 .chat-input { flex-grow:1; min-width:0; margin:0 6px; }
 .chat-input > .unity-text-field__input { min-width:0; }
+.chat-input .unity-text-field__input { --unity-cursor-color: #e9f3ff; --unity-selection-color: rgba(69, 145, 203, 0.55); }
 .chat.minimized { height:54px; }
 .chat.minimized .messages, .chat.minimized .capture-status, .chat.minimized .composer { display:none; }
 .footer { position:absolute; bottom:14px; left:90px; right:392px; flex-direction:row; align-items:center; }
@@ -97,8 +98,7 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .compact .dock-button { width:44px; height:44px; min-height:44px; padding:10px; border-radius:22px; }
 .short .dock-icon, .compact .dock-icon { width:20px; height:20px; }
 .short .panel { top:13px; }
-.compact .panel { width:auto; left:84px; right:10px; bottom:180px; }
-.compact.panel-open .stage { display:none; }
+.compact .panel { width:auto; left:84px; right:10px; bottom:300px; }
 .compact .chat { left:74px; width:270px; bottom:170px; }
 .compact .footer { left:74px; right:12px; bottom:70px; flex-wrap:wrap; }
 .compact .footer .status { width:100%; flex-basis:100%; max-height:34px; margin-bottom:6px; white-space:nowrap; text-overflow:ellipsis; }

@@ -16,6 +16,9 @@ namespace Sakura.Unity.Editor
             void Check(bool condition, string message) { checks++; if (!condition) throw new InvalidOperationException(message); }
             Check(SakuraAvatarViewport.NormalizeCursor(new Vector2(150, 90), new Vector2(150, 90), new Vector2(320, 640)) == Vector2.zero, "Compact gaze origin follows the avatar");
             Check(SakuraAvatarViewport.NormalizeCursor(new Vector2(310, 410), new Vector2(150, 90), new Vector2(320, 640)) == Vector2.one, "Gaze uses actual stage dimensions");
+            Check((SakuraTrackingRig.CursorHeadRotation(Vector2.right, false) * Vector3.forward).x < 0, "3D cursor gaze turns toward screen right, which is world -X");
+            Check((SakuraTrackingRig.CursorHeadRotation(Vector2.up, false) * Vector3.forward).y > 0, "3D cursor gaze turns up for an upward pointer");
+            Check(Mathf.DeltaAngle(0, SakuraTrackingRig.CursorHeadRotation(Vector2.right, true).eulerAngles.y) > 0, "Live2D retains positive ParamAngleX for screen-right gaze");
             Check(Mathf.Approximately(SakuraTrackingRig.Blink(0), 0), "Open eyes must stay open");
             Check(Mathf.Approximately(SakuraTrackingRig.Blink(.6f), 1), "Blink closure threshold");
             Check(!SakuraTrackingRig.FaceRotation(new JObject { ["matrix"] = new JArray(1, 2) }, out _), "Reject malformed matrices");
@@ -44,11 +47,23 @@ namespace Sakura.Unity.Editor
             try
             {
                 var tracking = root.AddComponent<SakuraTracking>(); var rig = root.AddComponent<SakuraTrackingRig>();
+                var replyBackend = root.AddComponent<SakuraBackend>();
+                string phoneReply = null; int phoneReplyCount = 0;
+                replyBackend.ReplyReceived += text => { phoneReply = text; phoneReplyCount++; };
+                Check(replyBackend.ReceivePhoneReply("नमस्ते from phone") && phoneReply == "नमस्ते from phone", "Phone reply reaches the desktop chat without losing Unicode");
+                Check(!replyBackend.ReceivePhoneReply(" ") && !replyBackend.ReceivePhoneReply(new string('x', 32769)) && phoneReplyCount == 1, "Blank and oversized phone replies do not reach chat");
+                replyBackend.VtuberEdition = true;
+                Check(!replyBackend.ReceivePhoneReply("hidden") && phoneReplyCount == 1, "Standalone VTuber rejects phone conversation replies");
+                replyBackend.VtuberEdition = false;
                 tracking.StartSelectedTracking("Sakura Mobile");
                 Check(tracking.Source == SakuraTracking.InputSource.Phone, "Start tracking selects the Sakura Mobile source");
                 Check(tracking.Status == "PC backend is unavailable.", "Start tracking requests the phone backend and reports when it is unavailable");
                 var backendField = typeof(SakuraTracking).GetField("backend", BindingFlags.Instance | BindingFlags.NonPublic);
                 Check(backendField != null, "Tracking backend field is available for isolated offline check");
+                backendField.SetValue(tracking, replyBackend);
+                typeof(SakuraTracking).GetMethod("PhoneCommand", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(tracking,
+                    new object[] { new JObject { ["type"] = "phone-reply", ["text"] = "Phone command delivered" } });
+                Check(phoneReply == "Phone command delivered" && phoneReplyCount == 2, "Queued phone reply dispatches through the desktop polling handler");
                 var previousHands = tracking.Hands;
                 backendField.SetValue(tracking, null);
                 tracking.SetHandsTracking(!tracking.Hands);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
@@ -15,6 +16,7 @@ namespace Sakura.Unity.Editor
         const string Result = @"C:\AI\Unity-Verification\parity-sweep.json";
         static bool running;
         static bool browserOnly;
+        static bool voiceOnly;
         static SakuraParitySweep() { EditorApplication.update += Tick; }
 
         [MenuItem("Sakura/Checks/Run desktop parity sweep")]
@@ -44,6 +46,7 @@ namespace Sakura.Unity.Editor
                 return;
             }
             browserOnly = File.ReadAllText(Request).Trim() == "browser";
+            voiceOnly = File.ReadAllText(Request).Trim() == "voice";
             running = true; File.Delete(Request); Run();
         }
 
@@ -61,6 +64,11 @@ namespace Sakura.Unity.Editor
             }
             try
             {
+                if (voiceOnly)
+                {
+                    await Check("voice-playback", VerifyVoicePlayback);
+                    return;
+                }
                 if (browserOnly)
                 {
                     await Task.Delay(1500);
@@ -119,6 +127,33 @@ namespace Sakura.Unity.Editor
             if (finished != completion.Task) throw new TimeoutException("Unity's read-only phone-link route did not respond.");
             string error = await completion.Task;
             if (!string.IsNullOrEmpty(error)) throw new Exception("Unity's native request was rejected by the local-origin guard: " + error);
+        }
+
+        static async Task VerifyVoicePlayback()
+        {
+            var backend = UnityEngine.Object.FindFirstObjectByType<SakuraBackend>();
+            var voice = UnityEngine.Object.FindFirstObjectByType<SakuraVoice>();
+            if (backend == null || voice == null) throw new Exception("Companion voice components missing.");
+            backend.SetMode("Companion");
+            async Task<string> Call(string route, string body)
+            {
+                var done = new TaskCompletionSource<string>();
+                backend.Api(route, body, (json, error) => { if (error != null) done.TrySetException(new Exception(error)); else done.TrySetResult(json); });
+                if (await Task.WhenAny(done.Task, Task.Delay(120000)) != done.Task) throw new TimeoutException(route);
+                return await done.Task;
+            }
+            await Call("/api/unity/start-services", "{}");
+            var reply = JObject.Parse(await Call("/api/tts/speak", "{\"text\":\"Sakura voice playback check.\"}"));
+            string path = reply.Value<string>("audio");
+            if (!SakuraBackend.ValidAudioPath(path)) throw new Exception("TTS returned no valid audio path: " + reply);
+            voice.PlayCohost(path);
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (!voice.Speaking && DateTime.UtcNow < deadline) await Task.Delay(25);
+            if (!voice.Speaking) throw new Exception("Unity did not start speech playback: " + voice.Status);
+            if (voice.SpeechSource.clip == null || voice.SpeechSource.clip.length <= 0) throw new Exception("Speech clip is empty.");
+            if (!UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Any(listener => listener.enabled && listener.gameObject.activeInHierarchy))
+                throw new Exception("No enabled AudioListener for voice playback.");
+            Debug.Log("PASS: live TTS route, Unity audio download, nonempty clip and AudioSource playback. Physical audibility requires listening.");
         }
     }
 }

@@ -579,7 +579,6 @@ namespace Sakura.Unity
         {
             var settings = part.Settings; var source = SourceTexture(part);
             if (part.Renderer != null) part.Renderer.enabled = !settings.hidden;
-            if (part.ArtMesh != null) part.ArtMesh.enabled = !settings.hidden;
             float opacity = 1 - settings.transparency; Texture2D generated = null;
             if (source != null && ((part.ArtMesh == null && settings.strength > 0) || opacity > 1))
             {

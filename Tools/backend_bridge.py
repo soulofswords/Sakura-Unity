@@ -437,20 +437,24 @@ def pick_visual_asset(video=False):
 def pmx_tool(source, tool, payload):
     """Explicit native UI actions; never run a shell or load AI services."""
     sys.path.insert(0, str(source))
-    if tool == 'appearance-import':
+    if tool in ('appearance-import', 'chat-attachment'):
         import tkinter
         from tkinter import filedialog
         window = tkinter.Tk()
         window.withdraw()
         window.attributes('-topmost', True)
         try:
-            selected = filedialog.askopenfilename(title='Import Sakura appearance settings', parent=window,
-                filetypes=[('Sakura appearance package', '*.sakura-appearance.json'), ('JSON files', '*.json')])
+            selected = filedialog.askopenfilename(title='Attach a file to chat' if tool == 'chat-attachment' else 'Import Sakura appearance settings', parent=window,
+                filetypes=[('Chat documents and images', '*.txt *.md *.csv *.json *.log *.py *.js *.html *.xml *.yaml *.yml *.pdf *.docx *.png *.jpg *.jpeg *.webp')] if tool == 'chat-attachment' else [('Sakura appearance package', '*.sakura-appearance.json'), ('JSON files', '*.json')])
         finally:
             window.destroy()
         if not selected:
             return {'cancelled': True}
         package = Path(selected).resolve()
+        if tool == 'chat-attachment':
+            if str(package).startswith('\\\\') or not package.is_file() or not 0 < package.stat().st_size <= 10 * 1024 * 1024:
+                raise ValueError('Choose a non-empty local file of up to 10 MB.')
+            return {'path': str(package)}
         if str(package).startswith('\\\\') or not package.is_file() or package.suffix.lower() != '.json':
             raise ValueError('Choose a local Sakura appearance JSON file.')
         if package.stat().st_size > 64 * 1024 * 1024:
@@ -483,7 +487,7 @@ def main():
     parser.add_argument('--edition', choices=('companion', 'vtuber'), default='companion')
     parser.add_argument('--import-format', choices=('pmx', 'vrm', 'live2d'))
     parser.add_argument('--package')
-    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture', 'backdrop-image', 'backdrop-video', 'appearance-import'))
+    parser.add_argument('--pmx-tool', choices=('editor', 'mmd', 'reference', 'texture', 'backdrop-image', 'backdrop-video', 'appearance-import', 'chat-attachment'))
     args = parser.parse_args()
     try:
         source = validate_source(args.source)

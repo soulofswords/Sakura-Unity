@@ -51,6 +51,7 @@ namespace Sakura.Unity
             avatarCamera.backgroundColor = Color.clear;
             avatarCamera.cullingMask = 1 << 30;
             avatarCamera.fieldOfView = 30;
+            avatarCamera.allowMSAA = true;
             avatarCamera.nearClipPlane = .01f;
             avatarCamera.farClipPlane = 100;
             image = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
@@ -129,7 +130,7 @@ namespace Sakura.Unity
             width = dimensions.x; height = dimensions.y;
             if (target != null && target.width == width && target.height == height && target.antiAliasing == renderSamples) return;
             if (target != null) { avatarCamera.targetTexture = null; target.Release(); Destroy(target); }
-            target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32) { antiAliasing = renderSamples };
+            target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32) { antiAliasing = renderSamples, filterMode = FilterMode.Bilinear };
             target.Create(); avatarCamera.targetTexture = target; image.image = target;
             if (avatar != null) FrameAvatar();
         }
@@ -261,7 +262,7 @@ namespace Sakura.Unity
                 avatar = loaded;
                 LoadedFormat = format;
                 LoadedModelPath = relative;
-                avatarCamera.GetUniversalAdditionalCameraData().SetRenderer(format == "Live2D" ? 1 : -1);
+                avatarCamera.GetUniversalAdditionalCameraData().SetRenderer(-1);
                 avatar.transform.SetParent(transform, false);
                 avatar.transform.localPosition = Vector3.zero;
                 yaw = format == "Live2D" ? 180 : 0; live2DRoll = 0; zoom = targetZoom = 1; framingOffset = Vector3.zero;

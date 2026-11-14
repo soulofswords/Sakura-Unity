@@ -126,6 +126,93 @@ namespace Sakura.Unity
                 if (error != null) { cameraStyle.SetValueWithoutNotify(!evt.newValue); featureStatus.text = error; }
                 else featureStatus.text = evt.newValue ? "Camera delivery hints enabled." : "Camera delivery hints disabled.";
             }));
+
+            var guestCard = Card("Guest session and local SDK");
+            var guest = new Toggle("Guest session (owner memory and tools paused)"); guestCard.Add(guest);
+            var guestStatus = Status(guestCard);
+            var sdkToken = new TextField("Local SDK token") { isPasswordField = true, isReadOnly = true }; guestCard.Add(sdkToken);
+            var sdkStatus = Status(guestCard);
+            backend.Api("/api/features/status", null, (json, error) =>
+            {
+                if (!alive() || error != null) return;
+                try { guest.SetValueWithoutNotify(JObject.Parse(json).Value<bool?>("guest") == true); }
+                catch (Exception) { }
+            });
+            guest.RegisterValueChangedCallback(evt =>
+            {
+                backend.Api("/api/features/guest", new JObject { ["enabled"] = evt.newValue }.ToString(), (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { guest.SetValueWithoutNotify(!evt.newValue); guestStatus.text = error; return; }
+                    try { guestStatus.text = JObject.Parse(json).Value<bool?>("guest") == true ? "Guest session active. Owner memory and tools are paused." : "Owner session restored."; }
+                    catch (Exception) { guestStatus.text = evt.newValue ? "Guest session active." : "Owner session restored."; }
+                });
+            });
+            Add(guestCard, "Create local SDK token", () => backend.Api("/api/features/sdk-token", "{}", (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { sdkStatus.text = error; return; }
+                try { sdkToken.value = (string)JObject.Parse(json)["token"] ?? ""; sdkStatus.text = "Token created. Keep it private; it is stateless chat only."; }
+                catch (Exception) { sdkStatus.text = "The SDK service returned an unreadable response."; }
+            }));
+            Add(guestCard, "Revoke SDK token", () => backend.ApiDelete("/api/features/sdk-token", (_, error) =>
+            {
+                if (!alive()) return;
+                sdkToken.value = ""; sdkStatus.text = error ?? "SDK access revoked.";
+            }));
+
+            var homeCard = Card("Smart home");
+            var homeEnabled = new Toggle("Enable Zigbee2MQTT"); homeCard.Add(homeEnabled);
+            var homeHost = new TextField("Broker IP"); homeCard.Add(homeHost);
+            var homePort = new TextField("Port (1883 or 8883)"); homeCard.Add(homePort);
+            var homeTls = new Toggle("TLS"); homeCard.Add(homeTls);
+            var homeUser = new TextField("Username"); homeCard.Add(homeUser);
+            var homePassword = new TextField("Password") { isPasswordField = true }; homeCard.Add(homePassword);
+            var homeTopic = new TextField("Base topic"); homeCard.Add(homeTopic);
+            var homeAllowed = new TextField("Allowed device IDs (comma separated)"); homeCard.Add(homeAllowed);
+            var homeStatus = Status(homeCard);
+            void LoadHome()
+            {
+                backend.Api("/api/companion/studio/home", null, (json, error) =>
+                {
+                    if (!alive() || error != null) { if (alive()) homeStatus.text = error ?? ""; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json); var config = data["config"] as JObject ?? new JObject();
+                        homeEnabled.SetValueWithoutNotify(config.Value<bool?>("enabled") == true);
+                        homeHost.SetValueWithoutNotify((string)config["host"] ?? "127.0.0.1");
+                        homePort.SetValueWithoutNotify(((int?)config["port"] ?? 1883).ToString());
+                        homeTls.SetValueWithoutNotify(config.Value<bool?>("tls") == true);
+                        homeUser.SetValueWithoutNotify((string)config["username"] ?? "");
+                        homeTopic.SetValueWithoutNotify((string)config["base_topic"] ?? "zigbee2mqtt");
+                        homeAllowed.SetValueWithoutNotify(string.Join(", ", (config["allowed"] as JArray ?? new JArray()).Values<string>()));
+                        homeStatus.text = data.Value<bool?>("connected") == true ? "Connected to " + ((string)config["host"] ?? "broker") + "." : (string)data["error"] ?? "Not connected.";
+                    }
+                    catch (Exception) { homeStatus.text = "Smart-home settings returned an unreadable response."; }
+                });
+            }
+            Add(homeCard, "Reload smart home", LoadHome);
+            Add(homeCard, "Save smart home", () =>
+            {
+                if (!int.TryParse(homePort.value, out int port) || port != 1883 && port != 8883) { homeStatus.text = "Use MQTT port 1883 or TLS port 8883."; return; }
+                var config = new JObject
+                {
+                    ["enabled"] = homeEnabled.value, ["host"] = homeHost.value.Trim(), ["port"] = port,
+                    ["tls"] = homeTls.value, ["username"] = homeUser.value.Trim(), ["base_topic"] = homeTopic.value.Trim(),
+                    ["allowed"] = new JArray(homeAllowed.value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(value => value.Trim()).Where(value => value.Length > 0))
+                };
+                var body = new JObject { ["config"] = config };
+                if (!string.IsNullOrEmpty(homePassword.value)) body["password"] = homePassword.value;
+                homePassword.value = "";
+                backend.Api("/api/companion/studio/home", body.ToString(), (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { homeStatus.text = error; return; }
+                    try { var data = JObject.Parse(json); homeStatus.text = data.Value<bool?>("connected") == true ? "Smart home connected." : (string)data["error"] ?? "Saved. Broker is not connected."; }
+                    catch (Exception) { homeStatus.text = "Smart-home settings saved."; }
+                });
+            });
+            LoadHome();
         }
     }
 }

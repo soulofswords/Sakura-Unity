@@ -182,9 +182,10 @@ namespace Sakura.Unity
             footer = Element("footer", root); footer.name = "companion-statusbar";
             BuildFooter();
             ShowPanel("Character");
+            ClosePanel();
             root.RegisterCallback<GeometryChangedEvent>(args =>
             {
-                root.EnableInClassList("compact", args.newRect.width < 650);
+                root.EnableInClassList("compact", args.newRect.width < 760);
                 root.EnableInClassList("short", args.newRect.height < 760);
                 float available = Math.Max(100, args.newRect.height - 145);
                 chatExpandedHeight = Math.Min(440, Math.Min(args.newRect.height * .5f, available));
@@ -291,8 +292,30 @@ namespace Sakura.Unity
             Button("▤", ConfirmClearMemory, chatHeader).tooltip = "Clear conversation memory";
             captureStatus = Label("Screen off · Capture stopped", "capture-status", chat);
             messages = new ScrollView(); messages.AddToClassList("messages"); chat.Add(messages);
+            var attachmentTray = Element("chat-attachment-tray", chat);
+            attachmentTray.style.flexShrink = 0;
+            attachmentTray.style.flexDirection = FlexDirection.Row;
+            attachmentTray.style.flexWrap = Wrap.Wrap;
+            void RenderAttachments()
+            {
+                attachmentTray.Clear();
+                attachmentTray.style.display = backend.ChatAttachments.Count > 0 || backend.AttachmentBusy ? DisplayStyle.Flex : DisplayStyle.None;
+                foreach (var attachment in backend.ChatAttachments)
+                {
+                    var item = attachment;
+                    var chip = Button((string)item["name"] + " ×", () => backend.RemoveChatAttachment(item), attachmentTray);
+                    chip.tooltip = "Remove attachment";
+                }
+                if (backend.AttachmentBusy) Label("Reading file…", "description", attachmentTray);
+            }
+            backend.AttachmentsChanged += RenderAttachments;
+            attachmentTray.RegisterCallback<DetachFromPanelEvent>(_ => backend.AttachmentsChanged -= RenderAttachments);
+            RenderAttachments();
             var composer = Element("composer", chat);
+            var attach = Button("+", backend.PickChatAttachment, composer);
+            attach.name = "chat-attach"; attach.tooltip = "Attach up to three files, 10 MB each";
             var input = new TextField { multiline = false }; input.AddToClassList("chat-input"); composer.Add(input);
+            input.schedule.Execute(() => { if (input.panel != null) input.Focus(); }).StartingIn(700);
             microphoneButton = Button("♩", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); }, composer);
             microphoneButton.name = "chat-microphone";
             microphoneButton.tooltip = "Microphone OFF · click to listen";
@@ -300,7 +323,7 @@ namespace Sakura.Unity
             input.textEdition.placeholder = "Type a message or use your mic…";
             void SendMessage()
             {
-                if (string.IsNullOrWhiteSpace(input.value) || backend.Busy) return;
+                if (string.IsNullOrWhiteSpace(input.value) || backend.Busy || backend.AttachmentBusy) return;
                 Label(input.value, "user-message", messages.contentContainer);
                 backend.SendChat(input.value); input.value = "";
             }
@@ -760,7 +783,7 @@ namespace Sakura.Unity
                         int slash = path.LastIndexOf('/');
                         PlayerPrefs.SetString(preference, slash < 0 ? "" : path.Substring(0, slash)); PlayerPrefs.Save();
                         _ = viewport.LoadModel(backend.SourceFolder, entry.path);
-                        overlay.RemoveFromHierarchy();
+                        overlay.RemoveFromHierarchy(); ClosePanel();
                     }, grid); button.AddToClassList("picker-item");
                     previews.Bind(button, entry.path);
                 }
@@ -777,7 +800,7 @@ namespace Sakura.Unity
         private void ReceiveCatalog(CharacterEntry[] entries)
         {
             catalog = entries;
-            if (CurrentPanel == "Character") ShowPanel("Character");
+            if (CurrentPanel == "Character" && !panel.ClassListContains("panel-closed")) ShowPanel("Character");
             if (!initialCatalog) return;
             initialCatalog = false;
             backend.Api("/api/settings",null,(json,error) =>
@@ -803,7 +826,7 @@ namespace Sakura.Unity
         {
             if (!SakuraInstances.IsSecondary) { PlayerPrefs.SetString("sakura-selected-model",viewport.LoadedModelPath); PlayerPrefs.Save(); }
             RefreshModelPhysics();
-            if (CurrentPanel == "Character" || CurrentPanel == "Model Settings" || CurrentPanel == "Expressions & hotkeys") ShowPanel(CurrentPanel);
+            if (!panel.ClassListContains("panel-closed") && (CurrentPanel == "Character" || CurrentPanel == "Model Settings" || CurrentPanel == "Expressions & hotkeys")) ShowPanel(CurrentPanel);
         }
         public void RefreshModelPhysics()
         {
@@ -818,7 +841,7 @@ namespace Sakura.Unity
                 } catch (Newtonsoft.Json.JsonException failure) { SetStatus("Could not read physics settings: " + failure.Message); }
             });
         }
-        private void ReceiveImportedModel(string path) { _ = viewport.LoadModel(backend.SourceFolder, path); }
+        private void ReceiveImportedModel(string path) { ClosePanel(); _ = viewport.LoadModel(backend.SourceFolder, path); }
         private void SetStatus(string text) { if (status != null) status.text = text; }
         private void ReceiveReply(string text) { Label(text, "message", messages.contentContainer); SetStatus(text); messages.schedule.Execute(() => messages.scrollOffset = new Vector2(0, float.MaxValue)); }
         private void ShowEvidence(JObject reply)

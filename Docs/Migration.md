@@ -237,6 +237,12 @@ WebView2 was created in Play mode, accepted an HTML document after asynchronous 
 
 ## Desktop parity checkpoint — 2026-11-14
 
+### Original UI continuation
+
+The original desktop UI remains the migration reference. Companion now accepts the backend's queued `phone-reply` command and displays it through the existing chat event. Empty/oversized replies and replies in the standalone VTuber edition are rejected. The phone retains speech playback ownership; this path does not issue a second LLM request or persist the conversation again. Native checks cover Unicode delivery and edition isolation; a further polling-dispatch regression assertion was added and awaits a fresh run.
+
+The subsequent live sweep passed 12 checks, including the authenticated read-only phone-link route, but **failed embedded-browser**: the loopback document was requested and its ready/message handshake did not arrive even after one reload. This supersedes the earlier browser pass for current acceptance. The native browser remains an unresolved parity issue; the later assertion and physical phone sync still require verification.
+
 The Unity Editor compiled the runtime successfully after replacing incompatible .NET Framework CodePages/Unsafe assemblies with pinned .NET Standard package builds. The CP932 regression check round-trips `あ` (`82 A0`) and is included in the parity sweep. A fresh Play-mode sweep passed **12/12** checks: Shift-JIS encoding, desktop shell, compact layout, Model Settings, Agent shell, guide navigation, rig monitor, phone-transfer validation, collab boundaries, stage profile, VMC packet serialization and embedded-browser lifecycle.
 
 Windows Companion and VTuber players were rebuilt from the same Unity source and their standalone package staging was refreshed. This proves current player compilation and packaging, not clean-machine startup, installer behavior, migration from an earlier installation or platform-specific hardware behavior. The complete `Tools/test_*.py` suite passed **50 tests, 1 skipped** (the host does not support symlinks).

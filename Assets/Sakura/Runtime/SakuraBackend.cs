@@ -133,7 +133,7 @@ namespace Sakura.Unity
 
         public void RunPmxTool(string tool, string model, Action<string, string> completed, float[] direction = null)
         {
-            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture" && tool != "backdrop-image" && tool != "backdrop-video" && tool != "appearance-import") throw new ArgumentException("Invalid model tool.");
+            if (tool != "editor" && tool != "mmd" && tool != "reference" && tool != "texture" && tool != "backdrop-image" && tool != "backdrop-video" && tool != "appearance-import" && tool != "chat-attachment") throw new ArgumentException("Invalid model tool.");
             if (modelToolProcess != null) { completed(null, "Finish the open PMX tool first."); return; }
             try
             {
@@ -303,8 +303,14 @@ namespace Sakura.Unity
             { completed(null, "Invalid API route."); return; }
             StartCoroutine(CallApi(route, body, completed));
         }
+        public void ApiDelete(string route, Action<string, string> completed)
+        {
+            if (!route.StartsWith("/api/", StringComparison.Ordinal) || route.Contains("..") || route.Contains("\\"))
+            { completed(null, "Invalid API route."); return; }
+            StartCoroutine(CallApi(route, "", completed, "DELETE"));
+        }
 
-        private IEnumerator CallApi(string route, string body, Action<string, string> completed)
+        private IEnumerator CallApi(string route, string body, Action<string, string> completed, string method = null)
         {
             if (!Connected)
             {
@@ -317,7 +323,8 @@ namespace Sakura.Unity
             {
                 if (route.EndsWith("/install", StringComparison.Ordinal)) request.timeout = 1800;
                 else if (route == "/api/unity/wake/check") request.timeout = 45;
-                if (body != null)
+                if (method != null) request.method = method;
+                else if (body != null)
                 {
                     request.method = "POST";
                     request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
@@ -344,6 +351,8 @@ namespace Sakura.Unity
                 text = command;
                 if (string.IsNullOrWhiteSpace(text)) { StatusChanged?.Invoke("Awake · ready to listen."); return; }
             }
+            if (AttachmentBusy) { StatusChanged?.Invoke("Wait for the attachment upload to finish."); return; }
+            var attachmentIds = ChatAttachments.ConvertAll(item => (string)item["id"]).ToArray();
             Busy = true;
             StatusChanged?.Invoke("Starting AI for your reply…");
             string mode = Mode; int revision = ++modeRevision;
@@ -358,7 +367,7 @@ namespace Sakura.Unity
                 {
                     if (mode != Mode || generation != chatGeneration) return;
                     if (error != null) { Busy = false; ChatError(error); return; }
-                    StartCoroutine(Chat(text, mode, generation, task));
+                    StartCoroutine(Chat(text, mode, generation, task, attachmentIds));
                 });
             });
         }
@@ -373,6 +382,15 @@ namespace Sakura.Unity
         }
 
         private void ChatError(string error) { StatusChanged?.Invoke(error); ReplyReceived?.Invoke("I could not reply: " + error); }
+
+        public bool ReceivePhoneReply(string text)
+        {
+            if (VtuberEdition || Mode != "Companion" || string.IsNullOrWhiteSpace(text) || text.Length > 32768) return false;
+            // The phone owns speech playback and the backend already saved this turn.
+            ReplyReceived?.Invoke(text);
+            StatusChanged?.Invoke("Phone conversation synced.");
+            return true;
+        }
 
         public void UploadAudio(byte[] wav, Action<string, string> completed)
         {
@@ -440,7 +458,7 @@ namespace Sakura.Unity
             }
         }
 
-        private IEnumerator Chat(string text, string mode, int generation, string task)
+        private IEnumerator Chat(string text, string mode, int generation, string task, string[] attachmentIds)
         {
             Busy = true;
             StatusChanged?.Invoke("Preparing reply…");
@@ -449,6 +467,7 @@ namespace Sakura.Unity
                 activeChat = request;
                 request.method = "POST";
                 var payload = Newtonsoft.Json.Linq.JObject.FromObject(new ChatRequest { text = text, surface = mode == "Agent" ? "agent" : "companion", agent_task = mode == "Agent" ? task : null });
+                if (attachmentIds.Length > 0) payload["attachments"] = new Newtonsoft.Json.Linq.JArray(attachmentIds);
                 if (mode == "Companion" && !Regex.IsMatch(text, @"^(?:hello|hi|hey|hii+|hiya|namaste|नमस्ते)[!.\s]*$", RegexOptions.IgnoreCase))
                     GetComponent<SakuraScreenFeatures>()?.AddChatContext(payload);
                 var actions = GetComponent<SakuraAvatarActions>();
@@ -507,14 +526,22 @@ namespace Sakura.Unity
                         response.speech_reply = response.reply;
                         reply["reply"] = response.reply;
                     }
+                    ChatAttachments.RemoveAll(item => Array.IndexOf(attachmentIds, (string)item["id"]) >= 0);
+                    AttachmentsChanged?.Invoke();
                     ReplyReceived?.Invoke(response.reply); StatusChanged?.Invoke("Ready");
                     ReplyDataReceived?.Invoke(reply);
                     if (mode != "Companion") yield break;
-                    Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = response.speech_reply ?? response.reply }), (json, error) =>
+                    Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = string.IsNullOrWhiteSpace(response.speech_reply) ? response.reply : response.speech_reply }), (json, error) =>
                     {
                         if (mode != Mode || generation != chatGeneration) return;
                         if (error != null) { StatusChanged?.Invoke("Reply ready; speech unavailable: " + error); return; }
-                        try { var audio = Newtonsoft.Json.Linq.JObject.Parse(json).Value<string>("audio"); if (ValidAudioPath(audio)) AudioReplyReceived?.Invoke(audio); }
+                        try
+                        {
+                            var speech = Newtonsoft.Json.Linq.JObject.Parse(json);
+                            var audio = speech.Value<string>("audio");
+                            if (ValidAudioPath(audio)) AudioReplyReceived?.Invoke(audio);
+                            else StatusChanged?.Invoke("Reply ready; speech unavailable: " + (speech.Value<string>("voice_notice") ?? "the voice service returned no audio."));
+                        }
                         catch (Exception) { StatusChanged?.Invoke("Reply ready; invalid speech response."); }
                     });
                 }

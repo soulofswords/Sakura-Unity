@@ -322,6 +322,11 @@ namespace Sakura.Unity
         void PhoneCommand(JObject command)
         {
             string kind = command.Value<string>("type");
+            if (kind == "phone-reply")
+            {
+                backend?.ReceivePhoneReply(command.Value<string>("text"));
+                return;
+            }
             if (kind == "request-model")
             {
                 string requestId = command.Value<string>("request_id");
@@ -537,9 +542,14 @@ namespace Sakura.Unity
             var angles = HeadTarget().eulerAngles; Parameter("ParamAngleX", Mathf.DeltaAngle(0, angles.y)); Parameter("ParamAngleY", -Mathf.DeltaAngle(0, angles.x)); Parameter("ParamAngleZ", Mathf.DeltaAngle(0, angles.z));
         }
         Quaternion smooth = Quaternion.identity;
+        public static Quaternion CursorHeadRotation(Vector2 direction, bool live2D)
+        {
+            // The 3D camera faces -Z, so its screen-right axis is world -X.
+            return Quaternion.Euler(-direction.y * 15, direction.x * (live2D ? 25 : -25), 0);
+        }
         Quaternion HeadTarget()
         {
-            var target = Quaternion.Euler(-cursor.y * 15, cursor.x * 25, 0);
+            var target = CursorHeadRotation(cursor, cubism != null);
             if (FaceRotation(frame?["face"] as JObject, out var rotation)) { if (!calibrated) { neutral = rotation; calibrated = true; } target = Quaternion.Inverse(neutral) * rotation; }
             smooth = Quaternion.Slerp(smooth, target, 1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime, .1f) / Mathf.Max(.01f, owner.Smoothing))); return smooth;
         }
