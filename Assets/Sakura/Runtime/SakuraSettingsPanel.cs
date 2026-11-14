@@ -547,6 +547,7 @@ namespace Sakura.Unity
                     managerStatus.text = error ?? "Model uninstalled. Other models were kept."; RefreshInstalled();
                 });
             }, parent);
+            installed.RegisterValueChangedCallback(_ => { deleteArmed = false; if (delete != null) delete.text = "Uninstall selected model"; });
             AddButton("Import GGUF weights", Import, parent);
             IVisualElementScheduledItem poll = null;
             poll = parent.schedule.Execute(() => backend.Api("/api/ollama/manager", null, (json, error) =>
