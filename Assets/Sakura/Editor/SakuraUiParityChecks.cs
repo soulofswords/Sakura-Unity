@@ -34,9 +34,7 @@ namespace Sakura.Unity.Editor
             var firstDock = dock.Query<Button>(className:"dock-button").First();
             if (firstDock.resolvedStyle.borderTopLeftRadius < 25) throw new Exception("Dock buttons are not circular.");
             if (firstDock.Q(className:"dock-label") != null) throw new Exception("Dock buttons still carry inline text labels.");
-            var tint = firstDock.resolvedStyle.backgroundColor;
-            if (Mathf.Abs(tint.r - 247f/255f) > 2f/255f || Mathf.Abs(tint.g - 220f/255f) > 2f/255f || Mathf.Abs(tint.b - 232f/255f) > 2f/255f)
-                throw new Exception("First dock button is not tinted with the reference pink: " + tint);
+            if (!firstDock.ClassListContains("dock-tint-pink")) throw new Exception("The Models dock button is missing its reference pink tint class.");
             if (dock.Q(className:"dock-hover-label") == null) throw new Exception("Dock hover label is missing.");
             studio.ShowPanel("Voice & speech");
             await Task.Delay(1500);

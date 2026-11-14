@@ -36,6 +36,14 @@ namespace Sakura.Unity.Editor
                 await Task.Delay(2500);
                 deadline = DateTime.UtcNow.AddSeconds(10);
                 while (message != "ready" && DateTime.UtcNow < deadline) await Task.Delay(100);
+                if (message != "ready")
+                {
+                    // A reused native browser can occasionally miss the first document's
+                    // load message. Reload once before declaring the bridge unavailable.
+                    view.WebView.Navigate(server.Url);
+                    deadline = DateTime.UtcNow.AddSeconds(10);
+                    while (message != "ready" && DateTime.UtcNow < deadline) await Task.Delay(100);
+                }
                 if (message != "ready") throw new Exception("Loopback document loaded but its ready/message handshake did not arrive.");
                 deadline = DateTime.UtcNow.AddSeconds(15);
                 while (preview.Texture == null && DateTime.UtcNow < deadline) await Task.Delay(100);
