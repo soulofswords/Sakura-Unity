@@ -24,7 +24,7 @@ namespace Sakura.Unity
         private float nextPoll, nextRead;
         private SakuraTwitchEffects effects;
         private bool effectsInitialized;
-        private bool emoteDrops = PlayerPrefs.GetInt("sakura_twitch_emotes", 1) == 1;
+        private bool emoteDrops = true;
         private bool pointsEnabled;
         private string pointsStatus = "Disconnected";
         private float nextPoints;
@@ -45,7 +45,11 @@ namespace Sakura.Unity
             set { PlayerPrefs.SetString("sakura_twitch_client_id", (value ?? "").Trim()); PlayerPrefs.Save(); }
         }
 
-        private void Awake() { backend = GetComponent<SakuraBackend>(); voice = GetComponent<SakuraVoice>(); }
+        private void Awake()
+        {
+            backend = GetComponent<SakuraBackend>(); voice = GetComponent<SakuraVoice>();
+            emoteDrops = PlayerPrefs.GetInt("sakura_twitch_emotes", 1) == 1;
+        }
         private void Notify(string value) { Status = value; Changed?.Invoke(); }
         public void Connect(string service, string youtube, string twitch)
         {

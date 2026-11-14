@@ -225,3 +225,12 @@ Packaged players now require their bundled Sakura runtime instead of falling bac
 Verification: 45 Python tests ran, 1 skipped. A clean Unity batch compile exited 0 and SakuraRigMonitorChecks.Validate emitted SAKURA_RIG_MONITOR_CHECKS_PASS. Real Irida VRM → PMX → VRM conversion produced nonempty files, 34,719 vertices, 42,097 triangles, 15 materials and 16 morphs at the PMX stage. The return converter generated placeholder humanoid bones; humanoid fidelity is NOT accepted. Source assets were copied into C:/AI/Unity-Verification/conversion-smoke for the check and originals were preserved.
 
 Full parity remains unaccepted: converter rig fidelity, real installer and upgrade, browser interaction, signed-in cloud download, phone, Cubism live round trip, microphone/RVC/wake, receiver behavior, browser override migration, cross-machine collab and broad shader/visual comparison require further verification. No old app or personal assets should be deleted based on this checkpoint.
+
+
+## Interactive Editor sweep — 2026-11-14
+
+Unity was opened interactively and the desktop shell, compact layout, PMX model settings, Agent shell, guided navigation, rig monitor, collab validation, stage-profile validation and VMC packet checks passed in Play mode. The sweep is reproducible from Sakura > Checks > Run desktop parity sweep. It records individual results at C:/AI/Unity-Verification/parity-sweep.json. The sweep uses local services and existing test fixtures; it does not prove remote collab or physical VMC delivery.
+
+A real startup exception was reproduced: SakuraLiveChat read PlayerPrefs.GetInt from a MonoBehaviour field initializer. The read now occurs in Awake; the rerun had no recurrence of that exception.
+
+WebView2 was created in Play mode, accepted an HTML document after asynchronous initialization, executed a DOM click handler, returned a web message and was destroyed on panel detach. The screenshot did not show the expected browser page, so visible page rendering, physical input and actual task-owned localhost navigation remain UNVERIFIED despite the lifecycle check passing. Do not mark embedded browser visual acceptance complete. A D3D12 upload-buffer warning was observed during the screenshot sweep; its impact remains unconfirmed. No installer was built or release published during this sweep.
