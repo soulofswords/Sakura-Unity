@@ -54,6 +54,7 @@ namespace Sakura.Unity
             Bone("torso", HumanBodyBones.Spine, "上半身", "spine"); Bone("head", HumanBodyBones.Head, "頭", "head");
             Bone("leftArm", HumanBodyBones.LeftUpperArm, "左腕", "leftArm"); Bone("rightArm", HumanBodyBones.RightUpperArm, "右腕", "rightArm");
             Bone("leftElbow", HumanBodyBones.LeftLowerArm, "左ひじ", "左肘", "leftElbow"); Bone("rightElbow", HumanBodyBones.RightLowerArm, "右ひじ", "右肘", "rightElbow");
+            Bone("leftWrist", HumanBodyBones.LeftHand, "左手首", "leftWrist"); Bone("rightWrist", HumanBodyBones.RightHand, "右手首", "rightWrist");
             Bone("leftThigh", HumanBodyBones.LeftUpperLeg, "左足", "leftLeg", "leftThigh"); Bone("rightThigh", HumanBodyBones.RightUpperLeg, "右足", "rightLeg", "rightThigh");
             Bone("leftKnee", HumanBodyBones.LeftLowerLeg, "左ひざ", "左膝", "leftKnee"); Bone("rightKnee", HumanBodyBones.RightLowerLeg, "右ひざ", "右膝", "rightKnee");
             var renderers = root.GetComponentsInChildren<Renderer>();
@@ -212,8 +213,28 @@ namespace Sakura.Unity
                 else if (action.StartsWith("laugh")) { Rotate("torso", .12f + Mathf.Abs(wave) * .07f); Rotate("head", wave * .06f); }
                 else { Rotate("torso", action == "twist" ? 0 : wave * .04f, action == "twist" ? wave * .22f : 0, wave * .035f); if (action != "hand_left") { Rotate("rightArm", 0, 0, (1.1f + wave * .12f) * sign); Rotate("rightElbow", 0, .6f + wave * .25f); } if (action == "hands_both" || action == "hand_left" || action == "disco") Rotate("leftArm", 0, 0, -(1.1f + wave * .12f) * sign); if (new[] { "step", "march", "groove" }.Contains(action)) { Rotate("leftThigh", wave * .22f); Rotate("rightThigh", -wave * .22f); } }
             }
+            if (Gestures.Contains(action)) ClearArms();
             if (!looping && after > (duration > 0 ? .6f : 3)) { location = action; Restore(); action = null; if (idle != null) idle.MotionOwned = false; }
         }
+        void ClearArms()
+        {
+            if (!bones.ContainsKey("torso") || avatar == null) return;
+            float radius = height * .105f, sign = Viewport.LoadedFormat == "VRM" ? -1 : 1;
+            Vector3 center = avatar.transform.InverseTransformPoint(bones["torso"].position);
+            foreach (string side in new[] { "left", "right" })
+            {
+                if (!bones.TryGetValue(side + "Arm", out var upper) || !bones.TryGetValue(side + "Elbow", out var elbow)) continue;
+                Vector3 point = avatar.transform.InverseTransformPoint(elbow.position);
+                bool inside = Mathf.Abs(point.x - center.x) < radius && Mathf.Abs(point.z - center.z) < radius * .9f && point.y > center.y && point.y < center.y + height * .38f;
+                if (!inside && bones.TryGetValue(side + "Wrist", out var wrist))
+                {
+                    point = avatar.transform.InverseTransformPoint(wrist.position);
+                    inside = Mathf.Abs(point.x - center.x) < radius * .8f && Mathf.Abs(point.z - center.z) < radius * .8f && point.y > center.y && point.y < center.y + height * .38f;
+                }
+                if (inside) upper.localRotation *= Quaternion.Euler(0, 0, (side == "left" ? -.18f : .18f) * sign);
+            }
+        }
+
         void BuildSimple()
         {
             simple = new GameObject("Simple Companion room"); simple.transform.SetParent(transform, false);
