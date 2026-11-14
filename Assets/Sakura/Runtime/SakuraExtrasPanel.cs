@@ -320,6 +320,72 @@ namespace Sakura.Unity
                 sdkToken.value = ""; sdkStatus.text = error ?? "SDK access revoked.";
             }));
 
+            var deckCard = Card("Phone hotkey deck");
+            var deckPort = new IntegerField("OBS WebSocket port") { value = 4455 }; deckCard.Add(deckPort);
+            var deckPassword = new TextField("OBS password") { isPasswordField = true }; deckCard.Add(deckPassword);
+            var deckRows = new VisualElement(); deckCard.Add(deckRows);
+            var deckStatus = Status(deckCard);
+            var deckSlots = new List<(string Id, TextField Label, DropdownField Kind, TextField Target)>();
+            void AddDeckRow(JObject slot = null)
+            {
+                if (deckSlots.Count >= 24) { deckStatus.text = "A hotkey deck supports up to 24 buttons."; return; }
+                string id = (string)slot?["id"] ?? Guid.NewGuid().ToString("N");
+                var row = new VisualElement(); row.style.flexDirection = FlexDirection.Row; deckRows.Add(row);
+                var label = new TextField { value = (string)slot?["label"] ?? "New button" }; label.style.flexGrow = 1; row.Add(label);
+                var kind = new DropdownField(new List<string> { "Avatar pose", "OBS scene" }, (string)slot?["kind"] == "scene" ? 1 : 0); row.Add(kind);
+                var target = new TextField { value = (string)slot?["target"] ?? "greeting_wave" }; target.style.flexGrow = 1; row.Add(target);
+                var entry = (Id: id, Label: label, Kind: kind, Target: target);
+                deckSlots.Add(entry);
+                row.Add(new Button(() => { deckSlots.Remove(entry); row.RemoveFromHierarchy(); }) { text = "Remove" });
+            }
+            void LoadDeck()
+            {
+                backend.Api("/api/hotkey-deck", null, (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { deckStatus.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json); deckRows.Clear(); deckSlots.Clear();
+                        deckPort.SetValueWithoutNotify((int?)data["port"] ?? 4455);
+                        foreach (var slot in (data["slots"] as JArray ?? new JArray()).OfType<JObject>()) AddDeckRow(slot);
+                        deckStatus.text = deckSlots.Count == 0 ? "No phone buttons yet." : deckSlots.Count + " phone button(s) saved.";
+                    }
+                    catch (Exception) { deckStatus.text = "The hotkey deck returned an unreadable response."; }
+                });
+            }
+            Add(deckCard, "Add phone button", () => AddDeckRow());
+            Add(deckCard, "List OBS scenes", () => backend.Api("/api/hotkey-deck/scenes", null, (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { deckStatus.text = error; return; }
+                try
+                {
+                    var scenes = (JObject.Parse(json)["scenes"] as JArray ?? new JArray()).OfType<JObject>().Select(scene => (string)scene["sceneName"]).Where(name => !string.IsNullOrEmpty(name)).ToList();
+                    deckStatus.text = scenes.Count == 0 ? "OBS has no scenes." : "OBS scenes: " + string.Join(", ", scenes.Take(12));
+                }
+                catch (Exception) { deckStatus.text = "The OBS scene list returned an unreadable response."; }
+            }));
+            Add(deckCard, "Save hotkey deck", () =>
+            {
+                var slots = new JArray();
+                foreach (var entry in deckSlots)
+                {
+                    string label = (entry.Label.value ?? "").Trim(), target = (entry.Target.value ?? "").Trim();
+                    if (label.Length == 0 || target.Length == 0) { deckStatus.text = "Every phone button needs a label and a target."; return; }
+                    slots.Add(new JObject { ["id"] = entry.Id, ["label"] = label, ["kind"] = entry.Kind.index == 1 ? "scene" : "pose", ["target"] = target });
+                }
+                backend.Api("/api/hotkey-deck", new JObject { ["port"] = deckPort.value, ["password"] = deckPassword.value ?? "", ["slots"] = slots }.ToString(), (json, error) =>
+                {
+                    if (!alive()) return;
+                    deckPassword.SetValueWithoutNotify("");
+                    if (error != null) { deckStatus.text = error; return; }
+                    deckStatus.text = "Phone deck saved. It appears in Sakura Mobile when this PC is connected.";
+                    LoadDeck();
+                });
+            });
+            LoadDeck();
+
             var homeCard = Card("Smart home");
             var homeEnabled = new Toggle("Enable Zigbee2MQTT"); homeCard.Add(homeEnabled);
             var homeHost = new TextField("Broker IP"); homeCard.Add(homeHost);
