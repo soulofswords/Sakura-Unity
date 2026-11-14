@@ -28,6 +28,8 @@ namespace Sakura.Unity
 
         private void Update()
         {
+            if (viewport == null) viewport = GetComponent<SakuraAvatarViewport>() ?? FindFirstObjectByType<SakuraAvatarViewport>();
+            if (document == null) document = GetComponent<UIDocument>() ?? FindFirstObjectByType<UIDocument>();
             if (viewport == null || document == null) return;
             var root = document.rootVisualElement;
             if (root == null) return;
