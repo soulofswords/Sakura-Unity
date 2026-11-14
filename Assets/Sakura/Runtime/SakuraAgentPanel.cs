@@ -51,7 +51,7 @@ namespace Sakura.Unity
             Text("Sakura Agent", navigation, "card-title");
             Button("+ New task", NewTask, navigation).name = "agent-new-task";
             Button("Search sessions", () => SelectTab("Task history"), navigation);
-            foreach (string name in new[] { "Tasks", "Local AI", "Connections", "Skills", "Memory & learning", "Automations", "Task history", "Browser" })
+            foreach (string name in new[] { "Tasks", "Local AI", "Connections", "Integrations", "Skills", "Memory & learning", "Automations", "Task history", "Browser" })
             {
                 string page = name;
                 var button = Button(page, () => SelectTab(page), navigation);
@@ -283,6 +283,7 @@ namespace Sakura.Unity
             UpdateInspectorVisibility();
             if (tab == "Browser") { BuildBrowser(); return; }
             if (tab == "Connections") { BuildConnections(); return; }
+            if (tab == "Integrations") { BuildIntegrations(); return; }
             if (tab == "Skills") { BuildSkills(); return; }
             if (tab == "Memory & learning") { BuildMemory(); return; }
             if (tab == "Automations") { BuildAutomations(); return; }
@@ -555,6 +556,11 @@ namespace Sakura.Unity
                         Path(Point(17, 9), Point(20, 9), Point(20, 4), Point(15, 4), Point(15, 7));
                         Path(Point(7, 15), Point(4, 15), Point(4, 20), Point(9, 20), Point(9, 17));
                         Path(Point(15, 17), Point(15, 20), Point(20, 20), Point(20, 15), Point(17, 15));
+                        break;
+                    case "Integrations":
+                        Box(4, 4, 16, 16, 3);
+                        Path(Point(8, 4), Point(8, 20)); Path(Point(4, 10), Point(20, 10));
+                        Path(Point(11, 14), Point(17, 14));
                         break;
                     case "Skills":
                         Path(Point(5, 20), Point(9, 19), Point(20, 8), Point(16, 4), Point(5, 15), Point(5, 20));
