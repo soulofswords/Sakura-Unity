@@ -158,9 +158,9 @@ namespace Sakura.Unity
         private readonly List<Frame> frames = new List<Frame>();
         private readonly Queue<Action> gameRequests = new Queue<Action>();
         private bool gameRequestActive;
-        private bool starting, captureLeaseReady, capturing, reacting, pollingGame, switchingGame, configuringGame, gameStartedScreen, gamePriorReactions, gameForeground;
+        private bool starting, captureLeaseReady, capturing, reacting, observing, pollingGame, switchingGame, configuringGame, gameStartedScreen, gamePriorReactions, gameForeground;
         private int generation;
-        private float nextCapture, nextReaction, nextGamePoll, lastDirectReply, lastMicActivity = -100;
+        private float nextCapture, nextReaction, nextObservation, nextGamePoll, lastDirectReply, lastMicActivity = -100;
         private string gamePlayMode = "singleplayer";
         private string configuredProvider = "ollama", currentGameName;
         private bool cloudFallback, changingFallback, autoCloud = true, autoClose = true, settingsLoaded, confirmingQuit;
@@ -201,7 +201,7 @@ namespace Sakura.Unity
 
         public void StopScreen()
         {
-            generation++; starting = false; captureLeaseReady = false; ScreenEnabled = false; ReactionsEnabled = false; frames.Clear();
+            generation++; starting = false; captureLeaseReady = false; ScreenEnabled = false; ReactionsEnabled = false; observing = false; nextObservation = 0; frames.Clear();
             backend?.CancelScreenReaction();
             if (backend != null && backend.Connected) backend.Api("/api/unity/screen", "{\"enabled\":false}", (_, error) => { if (error != null && this != null) Notify("Screen off · " + error); });
             Notify("Screen off · capture stopped");
@@ -228,6 +228,20 @@ namespace Sakura.Unity
                 starting = false; ScreenEnabled = true; nextCapture = Time.unscaledTime + .333f;
                 if (first && GameActive && AutoGameEnabled) SetReactions(true);
                 if (first) Notify("Screen captured · ready for your next question");
+            });
+        }
+
+        private void Observe()
+        {
+            var payload = new JObject { ["text"] = "Silent screen timeline observation", ["screen_observation"] = true, ["defer_audio"] = true };
+            AddChatContext(payload);
+            if (payload["screen_image"] == null) return;
+            int revision = generation; observing = true; nextObservation = Time.unscaledTime + 20;
+            backend.Api("/api/chat", payload.ToString(Formatting.None), (json, error) =>
+            {
+                if (this == null || revision != generation) return;
+                observing = false;
+                // The backend keeps a bounded, silent RAM-only timeline; no reply is spoken.
             });
         }
 
@@ -439,6 +453,8 @@ namespace Sakura.Unity
             if (backend.Mode != "Companion") { if (AutoGameEnabled || GameActive) { AutoGameEnabled = false; LeaveGame(); } if (ScreenEnabled || starting) StopScreen(); return; }
             if (CaptureReady(ScreenEnabled, starting, captureLeaseReady, capturing) && Time.unscaledTime >= nextCapture) Capture(generation);
             if (AutoGameEnabled && !pollingGame && Time.unscaledTime >= nextGamePoll) PollGame();
+            if (ScreenEnabled && !observing && !reacting && Time.unscaledTime >= nextObservation && !backend.Busy &&
+                (voice == null || (!voice.Speaking && !voice.SpeechInputBusy))) Observe();
             if (ScreenEnabled && ReactionsEnabled && !reacting && Time.unscaledTime >= nextReaction &&
                 (GameActive ? gameForeground : Time.unscaledTime - lastDirectReply >= 30)) React(false);
         }
