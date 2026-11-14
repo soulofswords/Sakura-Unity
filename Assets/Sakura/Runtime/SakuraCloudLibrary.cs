@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -19,6 +20,7 @@ namespace Sakura.Unity
         private readonly SakuraBackend backend;
         private readonly VisualElement root;
         private readonly string format;
+        private readonly Action<string> installed;
         private readonly Label status;
         private readonly TextField email, password;
         private readonly Foldout account;
@@ -31,9 +33,9 @@ namespace Sakura.Unity
         private bool signedIn;
         private int catalogGeneration;
 
-        public SakuraCloudLibrary(SakuraBackend backend, VisualElement host, string format)
+        public SakuraCloudLibrary(SakuraBackend backend, VisualElement host, string format, Action<string> installed = null)
         {
-            this.backend = backend; this.format = format.ToLowerInvariant();
+            this.backend = backend; this.format = format.ToLowerInvariant(); this.installed = installed;
             root = new VisualElement(); root.AddToClassList("card"); host.Add(root);
             root.RegisterCallback<DetachFromPanelEvent>(args => { alive = false; catalogGeneration++; password.value = ""; });
             AddText("Cloud import " + format, "card-title", root);
@@ -256,6 +258,12 @@ namespace Sakura.Unity
                 if (!alive) return;
                 if (error != null) { status.text = error; return; }
                 status.text = "Installed into the existing model library."; Refresh();
+                try
+                {
+                    string path = ((JObject.Parse(json)["models"] as JArray)?.FirstOrDefault())?.Value<string>();
+                    if (!string.IsNullOrEmpty(path)) installed?.Invoke(path);
+                }
+                catch (Exception) { }
             });
         }
 

@@ -651,11 +651,22 @@ namespace Sakura.Unity
                 var formats = Element("row", window);
                 foreach (string type in new[] { "PMX", "VRM", "Live2D" })
                 { string selectedType = type; var tab = Button(type, () => ShowLocalPicker(selectedType, phoneRequestId), formats); if (selectedType == kind) tab.AddToClassList("selected"); }
-                Label("Select a PC model to package for your phone. This does not change the model on the PC.", "description", window);
+                var cloud = Button("Cloud library", () =>
+                {
+                    window.Q("picker-find").style.display = DisplayStyle.None; window.Q("picker-breadcrumb").style.display = DisplayStyle.None; window.Q("picker-scroll").style.display = DisplayStyle.None;
+                    var host = Element("phone-cloud", window);
+                    host.Add(new Button(() => ShowLocalPicker(kind, phoneRequestId)) { text = "Back to PC library" });
+                    new SakuraCloudLibrary(backend, host, kind.ToLowerInvariant(), path => tracking.StageModelForPhone(path, phoneRequestId, (success, _) =>
+                    {
+                        if (this == null || overlay == null) return;
+                        if (success) overlay.RemoveFromHierarchy();
+                    }));
+                }, formats);
+                Label("Select a model from this PC or download one from your Sakura cloud library. This does not change the model on the PC.", "description", window);
             }
-            var find = new TextField(); find.textEdition.placeholder = "Search all folders by character name…"; window.Add(find);
-            var breadcrumb = Element("row", window);
-            var scroll = new ScrollView(); window.Add(scroll); scroll.AddToClassList("picker-results");
+            var find = new TextField { name = "picker-find" }; find.textEdition.placeholder = "Search all folders by character name…"; window.Add(find);
+            var breadcrumb = Element("row", window); breadcrumb.name = "picker-breadcrumb";
+            var scroll = new ScrollView { name = "picker-scroll" }; window.Add(scroll); scroll.AddToClassList("picker-results");
             var grid = Element("picker-grid", scroll.contentContainer);
             string preference = "sakura-model-folder:" + kind;
             string folder = PlayerPrefs.GetString(preference, "");
