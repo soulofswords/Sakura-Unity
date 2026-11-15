@@ -12,6 +12,7 @@ namespace Sakura.Unity
         public string CurrentMode { get; private set; } = "Companion";
         public string CurrentPanel { get; private set; } = "Character";
         public int CharacterCount => catalog.Length;
+        public bool IsVtuberEdition => vtuberEdition;
         public bool ControlsHidden { get; private set; }
         public event Action PanelsHidden;
         private VisualElement root, panel, panelBody, dock;
@@ -30,20 +31,31 @@ namespace Sakura.Unity
         private SakuraLiveChat liveChat;
         private SakuraAgentPanel agentPanel;
         private Image appLogo;
+        private Button panelClose;
+        private Image closeIcon;
+        private Image settingsGear;
+        private VisualElement splash, splashFill, voiceModal;
+        private Image splashLogo;
+        private Label voiceMessage, voiceError;
+        private Button voiceClose;
+        private bool splashDismissed, voicePrepStarted;
+        private IVisualElementScheduledItem splashAnimation, voicePoll;
         private Button microphoneButton;
         private Button compactMicrophone, transparencyButton;
         private Button positionLockButton, handsButton, hideControlsButton;
         private Label dockHoverLabel;
         private CharacterEntry[] catalog = Array.Empty<CharacterEntry>();
         private string format = "PMX", search = "";
-        private string catalogView = "Library";
         private bool lightTheme;
         private bool vtuberEdition;
         private bool initialCatalog = true;
         private bool propsLibrary;
-        private float chatExpandedHeight = 440;
+        private float chatExpandedHeight = 520;
         private int replyVisualRevision;
+        private int panelAnimation, chromeAnimation;
         private readonly Dictionary<string, Button> navigation = new Dictionary<string, Button>();
+        private readonly Dictionary<Button, Texture2D[]> pictureIconVariants = new Dictionary<Button, Texture2D[]>();
+        private readonly Dictionary<string, Label> catalogSelectionLabels = new Dictionary<string, Label>();
         public VisualElement StageElement { get; private set; }
 
         private void OnEnable()
@@ -109,7 +121,15 @@ namespace Sakura.Unity
             backend.ReplyDataReceived += ApplyAvatarReply;
             if (vtuberEdition) SwitchMode("VTuber");
             backend.RefreshCatalog();
-            SakuraSetupGuide.Attach(this, root);
+            // The standalone player starts with the same three-way chooser as the
+            // existing desktop launcher. Verification builds skip it so automated
+            // checks still enter the Studio directly.
+            string[] arguments = Environment.GetCommandLineArgs();
+            bool verification = arguments.Any(argument => argument == "--sakura-verify" || argument == "--sakura-verify-hold");
+            if (!Application.isEditor && !verification)
+                SakuraStartupChooser.Attach(this, backend, () => SakuraSetupGuide.Attach(this, root));
+            else
+                SakuraSetupGuide.Attach(this, root);
         }
 
         private void Build()
@@ -144,6 +164,10 @@ namespace Sakura.Unity
             });
             viewport = GetComponent<SakuraAvatarViewport>() ?? gameObject.AddComponent<SakuraAvatarViewport>();
             viewport.Attach(stage);
+            string startupModel = PlayerPrefs.GetString("sakura-selected-model", "");
+            if (!SakuraInstances.IsSecondary && !string.IsNullOrWhiteSpace(startupModel)
+                && System.IO.File.Exists(System.IO.Path.Combine(backend.SourceFolder, "models", startupModel)))
+                _ = viewport.LoadModel(backend.SourceFolder, startupModel);
             var stageItems = GetComponent<SakuraStageItems>() ?? gameObject.AddComponent<SakuraStageItems>();
             stageItems.Initialize(backend, viewport); stageItems.AttachStage(stage);
             var collab = GetComponent<SakuraNativeCollab>() ?? gameObject.AddComponent<SakuraNativeCollab>();
@@ -170,10 +194,13 @@ namespace Sakura.Unity
             panel = Element("panel", workspace);
             panel.name = "companion-panel";
             var panelHeader = Element("panel-header", panel);
+            settingsGear = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/settings"), pickingMode = PickingMode.Ignore };
+            settingsGear.AddToClassList("panel-gear"); settingsGear.style.display = DisplayStyle.None; panelHeader.Add(settingsGear);
             var panelTitles = Element("panel-titles", panelHeader);
             panelEdition = Label("SAKURA COMPANION", "panel-edition", panelTitles);
             heading = Label("Models", "panel-title", panelTitles);
-            Button("×", ClosePanel, panelHeader).AddToClassList("close");
+            panelClose = Button("", ClosePanel, panelHeader); panelClose.AddToClassList("close");
+            closeIcon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/close-x"), pickingMode = PickingMode.Ignore }; closeIcon.AddToClassList("close-icon"); panelClose.Add(closeIcon);
             var scroll = new ScrollView(); scroll.AddToClassList("panel-scroll"); panel.Add(scroll);
             panelBody = scroll.contentContainer;
             panelBody.name = "companion-panel-body";
@@ -188,9 +215,11 @@ namespace Sakura.Unity
                 root.EnableInClassList("compact", args.newRect.width < 760);
                 root.EnableInClassList("short", args.newRect.height < 760);
                 float available = Math.Max(100, args.newRect.height - 145);
-                chatExpandedHeight = Math.Min(440, Math.Min(args.newRect.height * .5f, available));
+                chatExpandedHeight = Math.Min(520, Math.Min(args.newRect.height * .5f, available));
                 ResizeChat();
             });
+            BuildVoiceModal();
+            BuildSplash();
         }
 
         private static readonly Dictionary<string, string> DockInks = new Dictionary<string, string>
@@ -203,7 +232,7 @@ namespace Sakura.Unity
         private void BuildDock()
         {
             positionLockButton = null; hideControlsButton = null;
-            dock.Clear(); navigation.Clear();
+            dock.Clear(); navigation.Clear(); pictureIconVariants.Clear();
             bool vtuber = CurrentMode == "VTuber";
             string[] keys = vtuber
                 ? new[] { "Character", "Camera", "Expressions & hotkeys", "Background", "Streaming & output", "Plugins", "Sakura Mobile", "Settings", "Collab" }
@@ -214,7 +243,7 @@ namespace Sakura.Unity
             if (vtuber)
             {
                 labels = new[] { "Models", "Camera &\ntracking", "Expressions &\nhotkeys", "Background", "Streaming &\nvoice", "Plugins", "Sakura\nMobile", "Settings", "Collab" };
-                icons = new[] { "character", "camera", "expressions", "background", "output", "plugins", "phone", "settings", "collab" };
+                icons = new[] { "glyph-character", "glyph-camera", "expressions", "glyph-background", "glyph-output", "plugins", "glyph-phone", "glyph-settings", "collab" };
                 tints = new[] { "pink", "blue", "purple", "green", "indigo", "slate", "orange", "pink", "periwinkle" };
             }
             var scroll = new ScrollView(ScrollViewMode.Vertical)
@@ -232,10 +261,16 @@ namespace Sakura.Unity
                     else ShowPanel(key);
                 }, scroll.contentContainer);
                 button.tooltip = labels[index].Replace("\n", " ");
-                var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/" + icons[index]) };
-                icon.AddToClassList("dock-icon"); button.Add(icon);
-                button.AddToClassList("dock-button"); button.AddToClassList("dock-tint-" + tints[index]);
-                button.userData = tints[index];
+                bool picture = !vtuber;
+                string iconName = (picture ? "dock-" : "") + icons[index];
+                var baseIcon = Resources.Load<Texture2D>("Sakura/Icons/" + iconName);
+                var selectedIcon = picture ? Resources.Load<Texture2D>("Sakura/Icons/" + iconName + "-selected") : null;
+                var icon = new Image { image = baseIcon };
+                if (picture) pictureIconVariants[button] = new[] { baseIcon, selectedIcon ?? baseIcon };
+                icon.AddToClassList("dock-icon"); if (picture) icon.AddToClassList("dock-picture-icon"); button.Add(icon);
+                button.AddToClassList("dock-button");
+                if (picture) { button.AddToClassList("dock-picture"); button.userData = "picture"; }
+                else { button.AddToClassList("dock-tint-" + tints[index]); button.userData = tints[index]; }
                 RegisterDockHover(button);
                 navigation[key] = button;
             }
@@ -284,12 +319,17 @@ namespace Sakura.Unity
             var chat = Element("chat", workspace);
             chatPanel = chat; chat.name = "chat-panel";
             var chatHeader = Element("chat-header", chat);
-            Label("●  Chat with Sakura", "chat-title", chatHeader);
+            var titleRow = Element("chat-title-row", chatHeader);
+            var bubble = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/chat-bubble"), pickingMode = PickingMode.Ignore };
+            bubble.AddToClassList("chat-title-icon"); titleRow.Add(bubble);
+            Label("Chat with Sakura", "chat-title", titleRow);
             Element("spacer", chatHeader);
-            Button("↻", RefreshMemory, chatHeader).tooltip = "Refresh conversation memory";
+            var refresh = Button("", RefreshMemory, chatHeader); refresh.tooltip = "Refresh conversation memory";
+            refresh.Add(new Image { image = Resources.Load<Texture2D>("Sakura/Icons/chat-refresh"), pickingMode = PickingMode.Ignore });
             var minimize = Button("—", () => { chat.EnableInClassList("minimized", !chat.ClassListContains("minimized")); ResizeChat(); }, chatHeader);
             minimize.name = "chat-minimize";
-            Button("▤", ConfirmClearMemory, chatHeader).tooltip = "Clear conversation memory";
+            var clear = Button("", ConfirmClearMemory, chatHeader); clear.tooltip = "Clear conversation memory";
+            clear.Add(new Image { image = Resources.Load<Texture2D>("Sakura/Icons/chat-trash"), pickingMode = PickingMode.Ignore });
             captureStatus = Label("Screen off · Capture stopped", "capture-status", chat);
             messages = new ScrollView(); messages.AddToClassList("messages"); chat.Add(messages);
             var attachmentTray = Element("chat-attachment-tray", chat);
@@ -312,23 +352,38 @@ namespace Sakura.Unity
             attachmentTray.RegisterCallback<DetachFromPanelEvent>(_ => backend.AttachmentsChanged -= RenderAttachments);
             RenderAttachments();
             var composer = Element("composer", chat);
-            var attach = Button("+", backend.PickChatAttachment, composer);
+            var attach = Button("", backend.PickChatAttachment, composer);
             attach.name = "chat-attach"; attach.tooltip = "Attach up to three files, 10 MB each";
+            attach.Add(new Image { image = Resources.Load<Texture2D>("Sakura/Icons/chat-attach"), pickingMode = PickingMode.Ignore });
             var input = new TextField { multiline = false }; input.AddToClassList("chat-input"); composer.Add(input);
             input.schedule.Execute(() => { if (input.panel != null) input.Focus(); }).StartingIn(700);
-            microphoneButton = Button("♩", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); }, composer);
+            microphoneButton = Button("", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); }, composer);
             microphoneButton.name = "chat-microphone";
             microphoneButton.tooltip = "Microphone OFF · click to listen";
+            microphoneButton.Add(new Image { image = Resources.Load<Texture2D>("Sakura/Icons/chat-mic"), pickingMode = PickingMode.Ignore });
             input.tooltip = "Type a message or use your mic…";
             input.textEdition.placeholder = "Type a message or use your mic…";
+            // The field commits its text on Return, which can leave value empty on the
+            // first press, so track edits separately and send that text if needed.
+            string typed = null;
             void SendMessage()
             {
-                if (string.IsNullOrWhiteSpace(input.value) || backend.Busy || backend.AttachmentBusy) return;
-                Label(input.value, "user-message", messages.contentContainer);
-                backend.SendChat(input.value); input.value = "";
+                string text = (input.value ?? string.Empty).Trim();
+                if (text.Length == 0) text = (typed ?? string.Empty).Trim();
+                if (text.Length == 0 || backend.Busy || backend.AttachmentBusy) return;
+                Label(text, "user-message", messages.contentContainer);
+                typed = null;
+                backend.SendChat(text); input.value = "";
+                input.schedule.Execute(() => { if (input.panel != null) input.Focus(); });
             }
-            Button("➤", SendMessage, composer);
-            input.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Return) { SendMessage(); evt.StopPropagation(); } });
+            var send = Button("", SendMessage, composer);
+            send.Add(new Image { image = Resources.Load<Texture2D>("Sakura/Icons/chat-send"), pickingMode = PickingMode.Ignore });
+            input.RegisterValueChangedCallback(evt => typed = evt.newValue);
+            input.RegisterCallback<KeyDownEvent>(evt =>
+            {
+                if (evt.keyCode != KeyCode.Return && evt.keyCode != KeyCode.KeypadEnter) return;
+                SendMessage(); evt.StopPropagation();
+            }, TrickleDown.TrickleDown);
 
         }
         private void BuildQuickControls(VisualElement workspace)
@@ -362,7 +417,9 @@ namespace Sakura.Unity
             if (mode != "Companion") avatarActions?.DisableRoom();
             if (viewport != null && viewport.Idle != null) viewport.Idle.Companion = mode == "Companion";
             ControlsHidden = false;
+            chromeAnimation++;
             root.RemoveFromClassList("controls-hidden");
+            ResetChromeVisuals();
             badge.text = mode.ToUpperInvariant();
             root.EnableInClassList("vtuber", mode == "VTuber");
             root.EnableInClassList("agent", mode == "Agent");
@@ -399,8 +456,63 @@ namespace Sakura.Unity
             if (CurrentMode == "Agent") return;
             ControlsHidden = !ControlsHidden;
             if (ControlsHidden) PanelsHidden?.Invoke();
-            root.EnableInClassList("controls-hidden", ControlsHidden);
+            AnimateChrome();
             root.EnableInClassList("panel-open", !ControlsHidden && panel != null && !panel.ClassListContains("panel-closed"));
+        }
+
+        private void ResetChromeVisuals()
+        {
+            foreach (var element in new[] { root.Q(className: "header"), dock, panel, footer, chatPanel })
+            {
+                if (element == null) continue;
+                element.style.opacity = 1;
+                element.style.translate = Translate.None();
+            }
+        }
+
+        private void AnimateChrome()
+        {
+            bool show = !ControlsHidden;
+            var items = new List<(VisualElement Element, float Dx, float Dy)>();
+            void Add(VisualElement element, float dx, float dy)
+            {
+                if (element == null) return;
+                if (!show && element.ClassListContains("panel-closed")) return;
+                if (!show && element.style.display == DisplayStyle.None) return;
+                items.Add((element, dx, dy));
+            }
+            Add(root.Q(className: "header"), 0, -12);
+            Add(dock, -12, 0);
+            Add(panel, 24, 0);
+            Add(footer, 0, 12);
+            Add(chatPanel, 0, 10);
+            if (items.Count == 0) { root.EnableInClassList("controls-hidden", !show); return; }
+
+            int revision = ++chromeAnimation;
+            float started = Time.unscaledTime;
+            if (show)
+            {
+                root.RemoveFromClassList("controls-hidden");
+                foreach (var item in items) { item.Element.style.opacity = 0; item.Element.style.translate = new Translate(item.Dx, item.Dy); }
+            }
+            root.schedule.Execute(() =>
+            {
+                if (this == null || revision != chromeAnimation) return;
+                float t = Mathf.Clamp01((Time.unscaledTime - started) / .18f);
+                float p = t * t * (3 - 2 * t);
+                foreach (var item in items)
+                {
+                    item.Element.style.opacity = show ? p : 1 - p;
+                    item.Element.style.translate = new Translate(item.Dx * (1 - p), item.Dy * (1 - p));
+                }
+                if (t < 1) return;
+                foreach (var item in items)
+                {
+                    item.Element.style.opacity = 1;
+                    item.Element.style.translate = Translate.None();
+                }
+                if (!show) root.EnableInClassList("controls-hidden", true);
+            }).Every(16);
         }
 
         private void BuildFooter()
@@ -409,9 +521,9 @@ namespace Sakura.Unity
             status = Label(CurrentMode == "VTuber" ? "AI paused · choose your camera and start face, shoulder and arm tracking" : "Talk to Sakura…", "status", footer);
             if (!vtuberEdition)
             {
-                var companion = Button("Companion mode", () => SwitchMode("Companion"), footer); companion.SetEnabled(CurrentMode != "Companion"); companion.EnableInClassList("mode-active", CurrentMode == "Companion");
-                var vtuber = Button("VTuber mode", () => SwitchMode("VTuber"), footer); vtuber.SetEnabled(CurrentMode != "VTuber"); vtuber.EnableInClassList("mode-active", CurrentMode == "VTuber");
-                var agent = Button("Agent mode", () => SwitchMode("Agent"), footer); agent.SetEnabled(CurrentMode != "Agent"); agent.EnableInClassList("mode-active", CurrentMode == "Agent");
+                var companion = Button("Companion mode", () => SwitchMode("Companion"), footer); companion.style.display = CurrentMode == "Companion" ? DisplayStyle.None : DisplayStyle.Flex; companion.EnableInClassList("mode-active", CurrentMode == "Companion");
+                var vtuber = Button("VTuber mode", () => SwitchMode("VTuber"), footer); vtuber.style.display = CurrentMode == "VTuber" ? DisplayStyle.None : DisplayStyle.Flex; vtuber.EnableInClassList("mode-active", CurrentMode == "VTuber");
+                var agent = Button("Agent mode", () => SwitchMode("Agent"), footer); agent.style.display = CurrentMode == "Agent" ? DisplayStyle.None : DisplayStyle.Flex; agent.EnableInClassList("mode-active", CurrentMode == "Agent");
             }
             if (CurrentMode == "VTuber")
             {
@@ -439,6 +551,12 @@ namespace Sakura.Unity
             var icon = button.Q<Image>();
             if (icon == null) return;
             string tint = button.userData as string ?? "blue";
+            if (tint == "picture")
+            {
+                if (pictureIconVariants.TryGetValue(button, out var variants))
+                    icon.image = button.ClassListContains("selected") ? variants[1] : variants[0];
+                icon.tintColor = Color.white; return;
+            }
             string hex = button.ClassListContains("selected") ? "#168fd5" : DockInks.TryGetValue(tint, out string ink) ? ink : "#3184bb";
             ColorUtility.TryParseHtmlString(hex, out var color);
             icon.tintColor = color;
@@ -446,22 +564,39 @@ namespace Sakura.Unity
 
         public void ShowPanel(string name)
         {
+            bool wasClosed = panel.ClassListContains("panel-closed");
             CurrentPanel = name;
+            panelAnimation++;
             panel.RemoveFromClassList("panel-closed");
+            panel.style.opacity = 1;
+            panel.style.translate = Translate.None();
             if (root != null) root.EnableInClassList("panel-open", true);
             bool modelSettings = name == "Model Settings" || name == "Expressions & hotkeys";
             heading.text = modelSettings ? "Model Settings" : name == "Character" ? "Models" : name == "Camera" ? "Camera & tracking" : name == "Background" ? "Background & stage items" : name;
             panelEdition.style.display = modelSettings || name == "Settings" ? DisplayStyle.None : DisplayStyle.Flex;
+            bool settings = name == "Settings";
+            bool closeAccent = settings || modelSettings || name == "Voice & speech";
+            panelClose.EnableInClassList("close-accent", closeAccent);
+            ColorUtility.TryParseHtmlString(closeAccent ? "#8fc3ff" : "#b5c1d0", out var closeTint);
+            closeIcon.tintColor = closeTint;
+            closeIcon.style.width = closeAccent ? 16 : 9;
+            closeIcon.style.height = closeAccent ? 16 : 9;
+            settingsGear.style.display = settings ? DisplayStyle.Flex : DisplayStyle.None;
             panel.EnableInClassList("model-settings-open",modelSettings);
             panelBody.Clear();
-            foreach (var pair in navigation) pair.Value.EnableInClassList("selected", pair.Key == name);
+            foreach (var pair in navigation)
+            {
+                pair.Value.EnableInClassList("selected", pair.Key == name);
+                pair.Value.EnableInClassList("selected-picture", name == "Settings" && pair.Key == name);
+            }
             RefreshIconColors();
             if (name == "Character") BuildCatalog();
             else if (name == "Settings") BuildSettings();
             else if (name == "Expressions & hotkeys") new SakuraModelPanel(viewport, backend, panelBody, "Expressions & hotkeys");
             else if (name == "Camera" || name == "Sakura Mobile")
             {
-                new SakuraTrackingPanel(tracking, panelBody, name == "Sakura Mobile");
+                if (name == "Camera" && CurrentMode == "Companion") new SakuraCompanionCameraPanel(tracking, backend, panelBody);
+                else new SakuraTrackingPanel(tracking, panelBody, name == "Sakura Mobile");
                 if (name == "Camera") GetComponent<SakuraVmc>().BuildPanel(panelBody);
                 if (name == "Camera" && CurrentMode == "Companion") SakuraLiveChat.BuildPanel(liveChat, panelBody, false);
                 if (name == "Sakura Mobile") tracking.PhoneLink();
@@ -491,6 +626,7 @@ namespace Sakura.Unity
                     device.RegisterValueChangedCallback(evt => { voice.StopListening(); voice.MicrophoneDevice = device.index == 0 ? "" : device.value; }); inputCard.Add(device);
                 }
                 Label("Speech recognition uses your saved language and recognised-voice settings. Configure the optional offline wake pack under Settings → General → Hands-free listening.", "description", inputCard);
+                new SakuraPerformancePanel(backend, viewport, voice, panelBody);
             }
             else if (name == "Model Settings")
             {
@@ -508,15 +644,51 @@ namespace Sakura.Unity
                 Label("This feature is available in the original Sakura app. Its native Unity implementation is pending.", "description", panelBody);
                 Label("Migration preserves the existing source and personal assets until full verification and your approval.", "description", panelBody);
             }
+            if (wasClosed) AnimatePanelIn();
+        }
+
+        private void AnimatePanelIn()
+        {
+            int revision = ++panelAnimation;
+            float started = Time.unscaledTime;
+            panel.style.opacity = 0;
+            panel.style.translate = new Translate(new Length(26, LengthUnit.Pixel), new Length(0, LengthUnit.Pixel));
+            panel.schedule.Execute(() =>
+            {
+                if (this == null || revision != panelAnimation || panel == null) return;
+                float t = Mathf.Clamp01((Time.unscaledTime - started) / .18f);
+                float p = 1 - Mathf.Pow(1 - t, 3);
+                panel.style.opacity = p;
+                panel.style.translate = new Translate(new Length(26 * (1 - p), LengthUnit.Pixel), new Length(0, LengthUnit.Pixel));
+                if (t < 1) return;
+                panel.style.opacity = 1;
+                panel.style.translate = Translate.None();
+            }).Every(16);
         }
 
         private void ClosePanel()
         {
+            if (panel.ClassListContains("panel-closed")) return;
             PanelsHidden?.Invoke();
-            panel.AddToClassList("panel-closed");
-            if (root != null) root.EnableInClassList("panel-open", false);
-            foreach (var button in navigation.Values) button.RemoveFromClassList("selected");
+            foreach (var button in navigation.Values) { button.RemoveFromClassList("selected"); button.RemoveFromClassList("selected-picture"); }
             RefreshIconColors();
+            int revision = ++panelAnimation;
+            float started = Time.unscaledTime;
+            panel.style.opacity = 1;
+            panel.style.translate = new Translate(new Length(0, LengthUnit.Pixel), new Length(0, LengthUnit.Pixel));
+            panel.schedule.Execute(() =>
+            {
+                if (this == null || revision != panelAnimation || panel == null) return;
+                float t = Mathf.Clamp01((Time.unscaledTime - started) / .15f);
+                float p = t * t * (3 - 2 * t);
+                panel.style.opacity = 1 - p;
+                panel.style.translate = new Translate(new Length(24 * p, LengthUnit.Pixel), new Length(0, LengthUnit.Pixel));
+                if (t < 1) return;
+                panel.AddToClassList("panel-closed");
+                panel.style.opacity = 1;
+                panel.style.translate = Translate.None();
+                if (root != null) root.EnableInClassList("panel-open", false);
+            }).Every(16);
         }
 
         private void OpenPmxTool(string tool)
@@ -594,6 +766,8 @@ namespace Sakura.Unity
 
         private void Update()
         {
+            if (!splashDismissed && backend != null && backend.Connected && !initialCatalog) DismissSplash();
+            if (!voicePrepStarted && backend != null && backend.Connected && !vtuberEdition && !SakuraInstances.IsSecondary) { voicePrepStarted = true; StartVoicePrep(); }
             SakuraBrowserPreview.UpdateAll();
             if (avatarActions != null) avatarActions.TrackingOwnsMotion = tracking != null && tracking.Source != SakuraTracking.InputSource.Off;
             if (handsButton != null && tracking != null) handsButton.text = tracking.Hands ? "Hands on" : "Hands off";
@@ -608,27 +782,118 @@ namespace Sakura.Unity
 
         private void BuildSettings()
         {
-            new SakuraSettingsPanel(backend, panelBody, ApplyTheme);
+            new SakuraSettingsPanel(backend, panelBody, ApplyTheme, "General", true, modelsHost =>
+            {
+                var converter = new Foldout { text = "VRM ↔ PMX Converter", value = false };
+                modelsHost.Add(converter);
+                new SakuraModelConverterPanel(backend, catalog, viewport.LoadedModelPath, converter, backend.RefreshCatalog);
+            });
             Button("Replay quick setup", () => SakuraSetupGuide.Attach(this, root).Open(), panelBody);
+        }
+
+        private void BuildSplash()
+        {
+            splash = Element("splash", root); splash.name = "startup-splash";
+            splashLogo = new Image { image = Resources.Load<Texture2D>(vtuberEdition ? "Sakura/VTuberLogo" : "Sakura/CompanionLogo"), pickingMode = PickingMode.Ignore };
+            splashLogo.AddToClassList("splash-logo"); splash.Add(splashLogo);
+            Label(vtuberEdition ? "Sakura Studio" : "Sakura Companion", "splash-title", splash);
+            var track = Element("splash-track", splash);
+            splashFill = Element("splash-track-fill", track);
+            Label("Preparing your workspace…", "splash-label", splash);
+            splashAnimation = splash.schedule.Execute(() =>
+            {
+                float t = Time.realtimeSinceStartup;
+                float wave = Mathf.Sin(t * (2 * Mathf.PI / 1.8f));
+                splashLogo.style.opacity = 0.8f + 0.2f * wave;
+                float s = 0.98f + 0.02f * wave;
+                splashLogo.style.scale = new Scale(new Vector3(s, s, 1));
+                float p = (t % 1.2f) / 1.2f;
+                splashFill.style.translate = new Translate(Mathf.Lerp(-126, 415, p), 0);
+            }).Every(40);
+        }
+
+        private void DismissSplash()
+        {
+            splashDismissed = true;
+            splashAnimation?.Pause();
+            splash?.RemoveFromHierarchy();
+            splash = null;
+        }
+
+        private void BuildVoiceModal()
+        {
+            voiceModal = Element("voice-modal", root); voiceModal.name = "kokoro-loading-modal";
+            voiceModal.style.display = DisplayStyle.None;
+            var card = Element("voice-card", voiceModal);
+            var header = Element("voice-card-header", card);
+            Label("Preparing local voices", "voice-card-title", header);
+            var body = Element("voice-card-body", card);
+            voiceMessage = Label("Loading Kokoro speech…", "voice-message", body);
+            var bar = Element("voice-bar", body); Element("voice-bar-fill", bar);
+            Label("Speech runs on your PC. If files are missing, the first setup downloads about 121 MB. No API key is needed.", "voice-hint", body);
+            voiceError = Label("", "voice-error", body);
+            voiceClose = Button("Close", () => { voicePoll?.Pause(); voiceModal.style.display = DisplayStyle.None; }, body);
+            voiceClose.AddToClassList("voice-close");
+        }
+
+        private void StartVoicePrep()
+        {
+            backend.Api("/api/unity/start-services", "{}", (_, __) => { });
+            backend.Api("/api/tts/kokoro", null, (json, error) =>
+            {
+                if (this == null || !isActiveAndEnabled || error != null) return;
+                var state = JObject.Parse(json);
+                if ((string)state["phase"] == "ready") return;
+                voiceModal.style.display = DisplayStyle.Flex;
+                voiceClose.style.display = DisplayStyle.None;
+                voiceError.text = "";
+                voiceMessage.text = (string)state["message"] ?? "Loading local Kokoro voices…";
+                voicePoll = root.schedule.Execute(PollVoiceStatus).Every(500);
+                backend.Api("/api/tts/kokoro", "{}", (postJson, postError) =>
+                {
+                    if (this == null || !isActiveAndEnabled) return;
+                    voicePoll?.Pause();
+                    if (postError != null) { ShowVoiceError(postError); return; }
+                    var result = JObject.Parse(postJson);
+                    if ((string)result["phase"] == "ready") voiceModal.style.display = DisplayStyle.None;
+                    else ShowVoiceError((string)result["error"] ?? (string)result["message"] ?? "Kokoro could not load.");
+                });
+            });
+        }
+
+        private void PollVoiceStatus()
+        {
+            if (this == null || !isActiveAndEnabled || voiceModal == null || voiceModal.style.display == DisplayStyle.None) return;
+            backend.Api("/api/tts/kokoro", null, (json, error) =>
+            {
+                if (this == null || !isActiveAndEnabled || error != null || voiceModal.style.display == DisplayStyle.None) return;
+                var state = JObject.Parse(json);
+                string message = (string)state["message"] ?? "";
+                if ((string)state["phase"] == "downloading") message += " " + (state.Value<int?>("progress") ?? 0) + "%";
+                voiceMessage.text = message;
+                if ((string)state["phase"] == "ready") { voicePoll?.Pause(); voiceModal.style.display = DisplayStyle.None; }
+            });
+        }
+
+        private void ShowVoiceError(string message)
+        {
+            if (voiceModal == null) return;
+            voiceModal.style.display = DisplayStyle.Flex;
+            voiceError.text = message;
+            voiceClose.style.display = DisplayStyle.Flex;
         }
 
         private void BuildCatalog()
         {
-            var views = Element("row", panelBody); views.AddToClassList("model-view-tabs");
-            var libraryTab = Button("Character library", () => { catalogView = "Library"; ShowPanel("Character"); }, views);
-            libraryTab.name = "models-library-tab"; libraryTab.EnableInClassList("selected", catalogView == "Library");
-            var converterTab = Button("Converter", () => { catalogView = "Converter"; ShowPanel("Character"); }, views);
-            converterTab.name = "models-converter-tab"; converterTab.EnableInClassList("selected", catalogView == "Converter");
-            if (catalogView == "Converter")
-            {
-                new SakuraModelConverterPanel(backend, catalog, viewport.LoadedModelPath, panelBody, backend.RefreshCatalog);
-                return;
-            }
+            catalogSelectionLabels.Clear();
             var card = Element("card", panelBody);
             Label("Your character library", "card-title", card);
-            var migration = new Foldout { text = catalog.Length == 0 ? "Bring my existing Sakura library" : "Import a previous Sakura library", value = catalog.Length == 0 };
-            card.Add(migration);
-            SakuraLibraryMigrationPanel.Build(migration, backend);
+            if (catalog.Length == 0)
+            {
+                var migration = new Foldout { text = "Bring my existing Sakura library", value = true };
+                card.Add(migration);
+                SakuraLibraryMigrationPanel.Build(migration, backend);
+            }
             var query = new TextField { value = search }; query.AddToClassList("search");
             query.tooltip = "Search by model name or folder"; card.Add(query);
             query.textEdition.placeholder = "Search your characters…";
@@ -644,6 +909,7 @@ namespace Sakura.Unity
                     var row = Element("model-row", result.contentContainer);
                     Button(entry.name, () =>
                     {
+                        if (entry.path == viewport.LoadedModelPath) return;
                         _ = viewport.LoadModel(backend.SourceFolder, entry.path);
                     }, row);
                     Label(entry.path, "model-path", row);
@@ -656,7 +922,7 @@ namespace Sakura.Unity
                 var select = Button("", () => ShowLocalPicker(kind), card); select.AddToClassList("model-select");
                 select.name = "select-" + kind.ToLowerInvariant(); select.tooltip = kind + " characters";
                 var loaded = catalog.FirstOrDefault(entry => entry.path == viewport.LoadedModelPath && entry.format == kind);
-                Label(loaded == null ? type : type + " · " + loaded.name, "model-select-label", select); Label("▾", "model-select-arrow", select);
+                catalogSelectionLabels[kind] = Label(loaded == null ? type : type + " · " + loaded.name, "model-select-label", select); Label("▾", "model-select-arrow", select);
             }
             query.RegisterValueChangedCallback(args => { search = args.newValue; populateSearch(); });
             Label("Select a character above, or import a complete model package below.", "description", card);
@@ -665,8 +931,10 @@ namespace Sakura.Unity
             var uploadButtons = Element("row", imports);
             foreach (string type in new[] { "PMX", "VRM", "Live2D" })
             { string kind = type; Button("Upload " + type, () => backend.ImportModel(kind), uploadButtons); }
-            var refresh = Button("↻", backend.RefreshCatalog, imports);
+            var refresh = Button("", backend.RefreshCatalog, imports);
             refresh.tooltip = "Refresh imported models"; refresh.style.width = 42; refresh.style.alignSelf = Align.FlexStart; refresh.style.marginBottom = 8;
+            var refreshIcon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/refresh-blue"), pickingMode = PickingMode.Ignore };
+            refreshIcon.style.width = 18; refreshIcon.style.height = 18; refresh.Add(refreshIcon);
             var cloudButtons = Element("row", imports);
             foreach (string type in new[] { "PMX", "VRM", "Live2D" })
             {
@@ -682,11 +950,36 @@ namespace Sakura.Unity
             Label("PMX and Live2D need their texture folders. VRM uses a single .vrm file.", "description", imports);
             var framing = Element("card", panelBody);
             Label("Framing & customization", "card-title", framing);
-            var sizeRow = Element("size-row", framing); Label("Size", "", sizeRow);
-            var size = new Slider(40, 180) { value = 100 }; sizeRow.Add(size);
-            var sizeValue = Label("100%", "", sizeRow);
+            var sizeRow = Element("size-row", framing); Label("Size", "size-label", sizeRow);
+            var size = new SakuraSlider(40, 180) { value = 100, name = "character-zoom-slider" };
+            size.AddToClassList("character-zoom-slider");
+            size.tooltip = "Drag to zoom the character. Double-click for 100%. Scrolling over the character also zooms.";
+            sizeRow.Add(size);
+            var sizeValue = Label("100%", "size-value", sizeRow);
             size.SetValueWithoutNotify(viewport.ZoomPercent); sizeValue.text = Mathf.RoundToInt(viewport.ZoomPercent) + "%";
-            size.RegisterValueChangedCallback(args => { viewport.SetZoomPercent(args.newValue); sizeValue.text = ((int)args.newValue) + "%"; });
+            size.RegisterValueChangedCallback(args =>
+            {
+                viewport.SetZoomPercent(args.newValue);
+                sizeValue.text = Mathf.RoundToInt(viewport.ZoomPercent) + "%";
+            });
+            size.RegisterCallback<ClickEvent>(evt =>
+            {
+                if (evt.clickCount != 2) return;
+                viewport.SetZoomPercent(100);
+                size.SetValueWithoutNotify(100);
+                sizeValue.text = "100%";
+                evt.StopPropagation();
+            });
+            // Wheel zoom and "Full model" can change the camera without touching this slider.
+            // Keep the thumb and percentage honest instead of letting them drift out of date.
+            size.schedule.Execute(() =>
+            {
+                if (size.panel == null) return;
+                float percent = Mathf.Round(viewport.ZoomPercent);
+                if (Mathf.Abs(size.value - percent) < .5f) return;
+                size.SetValueWithoutNotify(percent);
+                sizeValue.text = Mathf.RoundToInt(percent) + "%";
+            }).Every(120);
             var actions = Element("row", framing);
             Button("Full model", () => viewport.ResetFraming(), actions);
             var quality = Button(output == null ? "Balanced" : output.Preset.ToString(), () => {}, actions);
@@ -695,17 +988,18 @@ namespace Sakura.Unity
                 if (output == null) return;
                 output.SetQuality((SakuraOutput.Quality)(((int)output.Preset + 1) % 3)); quality.text = output.Preset.ToString();
             };
-            var eyes = Button(tracking != null && tracking.Source == SakuraTracking.InputSource.Cursor ? "Eyes on" : "Eyes off", () => {}, actions);
+            var eyes = Button("", () => {}, actions); eyes.AddToClassList("icon-text-button");
+            var eyesIcon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/eye"), pickingMode = PickingMode.Ignore };
+            eyesIcon.AddToClassList("button-icon"); eyes.Add(eyesIcon);
+            var eyesText = new Label(tracking != null && tracking.Source == SakuraTracking.InputSource.Cursor ? "Eyes on" : "Eyes off"); eyes.Add(eyesText);
             eyes.clicked += () =>
             {
                 if (tracking == null) return;
                 tracking.SetSource(tracking.Source == SakuraTracking.InputSource.Cursor ? SakuraTracking.InputSource.Off : SakuraTracking.InputSource.Cursor);
-                eyes.text = tracking.Source == SakuraTracking.InputSource.Cursor ? "Eyes on" : "Eyes off";
+                eyesText.text = tracking.Source == SakuraTracking.InputSource.Cursor ? "Eyes on" : "Eyes off";
             };
             Button("PMX Editor", () => OpenPmxTool("editor"), actions);
             Button("MikuMikuDance", () => OpenPmxTool("mmd"), actions);
-            Button("Customize model", () => ShowPanel("Model Settings"), framing);
-            Button("Expressions & hotkeys", () => ShowPanel("Expressions & hotkeys"), framing);
             populateSearch();
         }
 
@@ -782,7 +1076,7 @@ namespace Sakura.Unity
                         }
                         int slash = path.LastIndexOf('/');
                         PlayerPrefs.SetString(preference, slash < 0 ? "" : path.Substring(0, slash)); PlayerPrefs.Save();
-                        _ = viewport.LoadModel(backend.SourceFolder, entry.path);
+                        if (entry.path != viewport.LoadedModelPath) _ = viewport.LoadModel(backend.SourceFolder, entry.path);
                         overlay.RemoveFromHierarchy(); ClosePanel();
                     }, grid); button.AddToClassList("picker-item");
                     previews.Bind(button, entry.path);
@@ -803,6 +1097,11 @@ namespace Sakura.Unity
             if (CurrentPanel == "Character" && !panel.ClassListContains("panel-closed")) ShowPanel("Character");
             if (!initialCatalog) return;
             initialCatalog = false;
+            if (!SakuraInstances.IsSecondary && !viewport.HasAvatar && !viewport.Loading)
+            {
+                string preferred = PlayerPrefs.GetString("sakura-selected-model", "");
+                if (catalog.Any(item => item.path == preferred)) _ = viewport.LoadModel(backend.SourceFolder, preferred);
+            }
             backend.Api("/api/settings",null,(json,error) =>
             {
                 if (this == null || !isActiveAndEnabled || error != null) return;
@@ -826,8 +1125,21 @@ namespace Sakura.Unity
         {
             if (!SakuraInstances.IsSecondary) { PlayerPrefs.SetString("sakura-selected-model",viewport.LoadedModelPath); PlayerPrefs.Save(); }
             RefreshModelPhysics();
-            if (!panel.ClassListContains("panel-closed") && (CurrentPanel == "Character" || CurrentPanel == "Model Settings" || CurrentPanel == "Expressions & hotkeys")) ShowPanel(CurrentPanel);
+            if (!panel.ClassListContains("panel-closed"))
+            {
+                if (CurrentPanel == "Character") RefreshCatalogSelectionLabels();
+                else if (CurrentPanel == "Model Settings" || CurrentPanel == "Expressions & hotkeys") ShowPanel(CurrentPanel);
+            }
         }
+        private void RefreshCatalogSelectionLabels()
+        {
+            foreach (var pair in catalogSelectionLabels)
+            {
+                var loaded = catalog.FirstOrDefault(entry => entry.path == viewport.LoadedModelPath && entry.format == pair.Key);
+                pair.Value.text = loaded == null ? pair.Key : pair.Key + " · " + loaded.name;
+            }
+        }
+
         public void RefreshModelPhysics()
         {
             var model = viewport.AvatarRoot;
@@ -931,7 +1243,7 @@ namespace Sakura.Unity
             foreach (var button in new[] { microphoneButton, compactMicrophone })
             {
                 if (button == null) continue;
-                button.text = button == compactMicrophone ? enabled ? "On" : "Mic" : enabled ? "●" : "♩";
+                if (button == compactMicrophone) button.text = enabled ? "On" : "Mic";
                 button.tooltip = enabled ? "Microphone ON · click to turn off" : "Microphone OFF · click to listen";
                 button.style.borderTopColor = button.style.borderBottomColor = button.style.borderLeftColor = button.style.borderRightColor = enabled ? new Color(1, .25f, .4f) : StyleKeyword.Null;
                 button.EnableInClassList("microphone-active", enabled);
@@ -943,6 +1255,8 @@ namespace Sakura.Unity
 
         private void OnDisable()
         {
+            splashAnimation?.Pause();
+            voicePoll?.Pause();
             if (nativeWindow != null) nativeWindow.Changed -= UpdateWindowTransparency;
             PanelsHidden?.Invoke();
             if (backend == null) return;

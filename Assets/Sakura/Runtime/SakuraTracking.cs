@@ -44,6 +44,7 @@ namespace Sakura.Unity
         public string Status { get; private set; } = "Tracking off";
         public bool FaceDetected => Source != InputSource.Off && Source != InputSource.Cursor && sample?["face"] is JObject && Time.unscaledTime - lastFrame < .6f;
         public string PhoneInfo { get; private set; } = "Phone link has not been read.";
+        public bool CameraActive => camera != null && camera.isPlaying;
         public JArray PhoneDevices { get; private set; } = new JArray();
         public event Action Changed;
         public event Action<string> PhoneModelRequested;
@@ -53,7 +54,7 @@ namespace Sakura.Unity
         SakuraAvatarViewport viewport;
         SakuraTrackingRig rig;
         int generation;
-        bool pending, uploadPending;
+        bool pending, uploadPending, objectCameraMode;
         bool phoneTrackingEnabled;
         bool phoneLinkEnabled, phoneCommandPending;
         float nextPoll, lastFrame = -100, nextCamera;
@@ -223,10 +224,46 @@ namespace Sakura.Unity
             StopCamera();
             if (Source != InputSource.NvidiaAR && Source != InputSource.Webcam) { Notify("Choose Webcam or NVIDIA AR before opening a native camera."); return; }
             if (!WebCamTexture.devices.Any(item => item.name == device)) { Notify("Choose an available camera."); return; }
-            try { selectedCamera = device; camera = new WebCamTexture(device, 640, 480, 30); camera.Play(); Notify("Native camera opened for local " + (Source == InputSource.Webcam ? "CPU" : "RTX") + " inference."); }
+            try { objectCameraMode = false; selectedCamera = device; camera = new WebCamTexture(device, 640, 480, 30); camera.Play(); Notify("Native camera opened for local " + (Source == InputSource.Webcam ? "CPU" : "RTX") + " inference."); }
             catch (Exception error) { StopCamera(); Notify(error.Message); }
         }
-        void StopCamera() { if (camera != null) { camera.Stop(); Destroy(camera); camera = null; } if (cameraPixels != null) { Destroy(cameraPixels); cameraPixels = null; } }
+        public void StartObjectCamera(string device)
+        {
+            StopCamera();
+            if (!WebCamTexture.devices.Any(item => item.name == device)) { Notify("Choose an available camera."); return; }
+            try
+            {
+                selectedCamera = device;
+                camera = new WebCamTexture(device, 1280, 720, 30);
+                objectCameraMode = true;
+                camera.Play();
+                Notify("Camera open · object recognition shares frames with your selected AI provider.");
+            }
+            catch (Exception error) { StopCamera(); Notify(error.Message); }
+        }
+        public void StopObjectCamera()
+        {
+            if (!objectCameraMode) return;
+            StopCamera();
+            Notify("Camera access off");
+        }
+        public byte[] CaptureJpeg(int quality = 82)
+        {
+            if (camera == null || !camera.isPlaying || camera.width < 32 || camera.height < 32) return null;
+            try
+            {
+                if (cameraPixels == null || cameraPixels.width != camera.width || cameraPixels.height != camera.height)
+                {
+                    if (cameraPixels != null) Destroy(cameraPixels);
+                    cameraPixels = new Texture2D(camera.width, camera.height, TextureFormat.RGB24, false);
+                }
+                cameraPixels.SetPixels32(camera.GetPixels32());
+                cameraPixels.Apply();
+                return cameraPixels.EncodeToJPG(Mathf.Clamp(quality, 40, 92));
+            }
+            catch (Exception error) { Notify(error.Message); return null; }
+        }
+        void StopCamera() { if (camera != null) { camera.Stop(); Destroy(camera); camera = null; } if (cameraPixels != null) { Destroy(cameraPixels); cameraPixels = null; } objectCameraMode = false; }
         public void StartTracking()
         {
             if (Source == InputSource.Off) SetSource(selectedSource);
@@ -401,7 +438,7 @@ namespace Sakura.Unity
         }
         void LateUpdate()
         {
-            if (camera == null || !camera.isPlaying || !camera.didUpdateThisFrame || camera.width < 32 || uploadPending || Time.unscaledTime < nextCamera || backend == null) return;
+            if (objectCameraMode || camera == null || !camera.isPlaying || !camera.didUpdateThisFrame || camera.width < 32 || uploadPending || Time.unscaledTime < nextCamera || backend == null) return;
             nextCamera = Time.unscaledTime + .066f;
             if (camera.width > 1920 || camera.height > 1080) { StopCamera(); Notify("Camera supplied oversized frames. Choose a lower camera resolution."); return; }
             try

@@ -43,6 +43,7 @@ namespace Sakura.Unity
         private BridgeIdentity identity;
         private string serverStartupError;
         private bool startupGreetingRequested;
+        private string pendingReply;
         private readonly ConcurrentQueue<Action> pending = new ConcurrentQueue<Action>();
 
         private void Awake()
@@ -297,10 +298,40 @@ namespace Sakura.Unity
                 try
                 {
                     string reply = Newtonsoft.Json.Linq.JObject.Parse(json).Value<string>("reply");
-                    if (!string.IsNullOrWhiteSpace(reply)) ReplyReceived?.Invoke(reply);
+                    if (!string.IsNullOrWhiteSpace(reply)) { pendingReply = reply; SpeakStartupGreeting(reply); }
                 }
                 catch (Newtonsoft.Json.JsonException) { }
             });
+        }
+
+        /// <summary>The reference app speaks its startup greeting, which needs the services started first.</summary>
+        private void SpeakStartupGreeting(string reply)
+        {
+            Api("/api/unity/start-services", "{}", (_, serviceError) =>
+            {
+                if (serviceError != null || !Connected || Mode != "Companion" || Busy) { ReleasePendingReply(); return; }
+                Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = reply }), (json, speechError) =>
+                {
+                    if (speechError != null || Mode != "Companion") { ReleasePendingReply(); return; }
+                    try
+                    {
+                        string audio = Newtonsoft.Json.Linq.JObject.Parse(json).Value<string>("audio");
+                        if (ValidAudioPath(audio)) AudioReplyReceived?.Invoke(audio);
+                        else ReleasePendingReply();
+                    }
+                    catch (Newtonsoft.Json.JsonException) { ReleasePendingReply(); }
+                });
+            });
+        }
+
+        /// <summary>Shows the reply text only when its voice clip is ready to play.</summary>
+        public void ReleasePendingReply()
+        {
+            string text = pendingReply;
+            pendingReply = null;
+            if (string.IsNullOrWhiteSpace(text)) return;
+            ReplyReceived?.Invoke(text);
+            StatusChanged?.Invoke("Ready");
         }
 
         public void SetMode(string mode)
@@ -341,6 +372,8 @@ namespace Sakura.Unity
             {
                 if (route.EndsWith("/install", StringComparison.Ordinal)) request.timeout = 1800;
                 else if (route == "/api/unity/wake/check") request.timeout = 45;
+                // The first reply can arrive while Kokoro is still loading its engine.
+                else if (route == "/api/tts/speak") request.timeout = 600;
                 if (method != null) request.method = method;
                 else if (body != null)
                 {
@@ -390,16 +423,78 @@ namespace Sakura.Unity
             });
         }
 
+        public void SendCameraReaction(byte[] jpeg, Action<string, string> completed = null)
+        {
+            if (VtuberEdition || Mode != "Companion") { completed?.Invoke(null, "Camera observations are available in Companion mode."); return; }
+            if (jpeg == null || jpeg.Length < 4 || jpeg.Length > 900_000) { completed?.Invoke(null, "Camera image is empty or too large."); return; }
+            if (Busy) { completed?.Invoke(null, "Wait for the current reply to finish."); return; }
+            string mode = Mode; int generation = ++chatGeneration;
+            Busy = true; StatusChanged?.Invoke("Looking through the camera…");
+            chatLifetime.Cancel(); chatLifetime.Dispose(); chatLifetime = new System.Threading.CancellationTokenSource();
+            Api("/api/unity/start-services", "{}", (_, error) =>
+            {
+                if (mode != Mode || generation != chatGeneration) return;
+                if (error != null) { Busy = false; completed?.Invoke(null, error); return; }
+                StartCoroutine(CameraReaction(Convert.ToBase64String(jpeg), mode, generation, completed));
+            });
+        }
+
+        private IEnumerator CameraReaction(string cameraImage, string mode, int generation, Action<string, string> completed)
+        {
+            using (var request = Request("/api/chat"))
+            {
+                activeChat = request;
+                request.method = "POST"; request.timeout = 600;
+                var payload = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["text"] = "Optional camera comment",
+                    ["camera_image"] = cameraImage,
+                    ["camera_reaction"] = true,
+                    ["defer_audio"] = true
+                };
+                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
+                request.SetRequestHeader("Content-Type", "application/json");
+                yield return request.SendWebRequest();
+                if (activeChat == request) activeChat = null;
+                if (Mode != mode || generation != chatGeneration) yield break;
+                Busy = false;
+                if (request.result != UnityWebRequest.Result.Success) { string failure = ResponseError(request.downloadHandler?.text, request.error); completed?.Invoke(null, failure); yield break; }
+                Newtonsoft.Json.Linq.JObject reply;
+                try { reply = Newtonsoft.Json.Linq.JObject.Parse(request.downloadHandler.text); }
+                catch (Newtonsoft.Json.JsonException) { completed?.Invoke(null, "The backend returned an invalid camera response."); yield break; }
+                string text = reply.Value<string>("reply");
+                if (string.IsNullOrWhiteSpace(text)) { completed?.Invoke(null, reply.Value<string>("error") ?? "The selected model returned no camera observation."); yield break; }
+                pendingReply = text;
+                ReplyDataReceived?.Invoke(reply);
+                string spoken = reply.Value<string>("speech_reply") ?? text;
+                Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = spoken }), (json, error) =>
+                {
+                    if (mode != Mode || generation != chatGeneration) return;
+                    if (error != null) { StatusChanged?.Invoke("Camera observation ready; speech unavailable: " + error); ReleasePendingReply(); return; }
+                    try
+                    {
+                        var speech = Newtonsoft.Json.Linq.JObject.Parse(json);
+                        string audio = speech.Value<string>("audio");
+                        if (ValidAudioPath(audio)) AudioReplyReceived?.Invoke(audio);
+                        else { StatusChanged?.Invoke("Camera observation ready; speech unavailable."); ReleasePendingReply(); }
+                    }
+                    catch (Newtonsoft.Json.JsonException) { ReleasePendingReply(); }
+                });
+                completed?.Invoke(text, null);
+            }
+        }
+
         public void InterruptChat()
         {
             chatGeneration++;
             chatLifetime.Cancel();
             CancelScreenReaction();
             activeChat?.Abort(); activeChat = null;
+            pendingReply = null;
             Busy = false;
         }
 
-        private void ChatError(string error) { StatusChanged?.Invoke(error); ReplyReceived?.Invoke("I could not reply: " + error); }
+        private void ChatError(string error) { UnityEngine.Debug.LogWarning("[Sakura] chat failed: " + error); StatusChanged?.Invoke(error); ReplyReceived?.Invoke("I could not reply: " + error); }
 
         public bool ReceivePhoneReply(string text)
         {
@@ -484,6 +579,8 @@ namespace Sakura.Unity
             {
                 activeChat = request;
                 request.method = "POST";
+                // A cold local model can take well over two minutes to answer the first message.
+                request.timeout = 600;
                 var payload = Newtonsoft.Json.Linq.JObject.FromObject(new ChatRequest { text = text, surface = mode == "Agent" ? "agent" : "companion", agent_task = mode == "Agent" ? task : null });
                 if (attachmentIds.Length > 0) payload["attachments"] = new Newtonsoft.Json.Linq.JArray(attachmentIds);
                 if (mode == "Companion" && !Regex.IsMatch(text, @"^(?:hello|hi|hey|hii+|hiya|namaste|नमस्ते)[!.\s]*$", RegexOptions.IgnoreCase))
@@ -494,7 +591,12 @@ namespace Sakura.Unity
                 {
                     payload["avatar_model"] = viewport.LoadedModelPath;
                     payload["avatar_format"] = viewport.LoadedFormat;
-                    payload["avatar_can_dance"] = viewport.HasAvatar && viewport.LoadedFormat != "Live2D";
+                    bool canDance = viewport.HasAvatar && viewport.LoadedFormat != "Live2D";
+                    payload["avatar_can_dance"] = canDance;
+                    // Without these flags the backend never attaches avatar_motion to a reply.
+                    bool canGesture = canDance && actions != null && actions.CanGesture;
+                    payload["avatar_can_greet"] = canGesture;
+                    payload["avatar_can_chest_tap"] = canGesture;
                     if (actions != null)
                     {
                         payload["room_context"] = actions.Context;
@@ -546,21 +648,22 @@ namespace Sakura.Unity
                     }
                     ChatAttachments.RemoveAll(item => Array.IndexOf(attachmentIds, (string)item["id"]) >= 0);
                     AttachmentsChanged?.Invoke();
-                    ReplyReceived?.Invoke(response.reply); StatusChanged?.Invoke("Ready");
+                    if (mode == "Companion") pendingReply = response.reply;
+                    else { ReplyReceived?.Invoke(response.reply); StatusChanged?.Invoke("Ready"); }
                     ReplyDataReceived?.Invoke(reply);
                     if (mode != "Companion") yield break;
                     Api("/api/tts/speak", JsonUtility.ToJson(new ChatRequest { text = string.IsNullOrWhiteSpace(response.speech_reply) ? response.reply : response.speech_reply }), (json, error) =>
                     {
                         if (mode != Mode || generation != chatGeneration) return;
-                        if (error != null) { StatusChanged?.Invoke("Reply ready; speech unavailable: " + error); return; }
+                        if (error != null) { UnityEngine.Debug.LogWarning("[Sakura] speech request failed: " + error); StatusChanged?.Invoke("Reply ready; speech unavailable: " + error); ReleasePendingReply(); return; }
                         try
                         {
                             var speech = Newtonsoft.Json.Linq.JObject.Parse(json);
                             var audio = speech.Value<string>("audio");
-                            if (ValidAudioPath(audio)) AudioReplyReceived?.Invoke(audio);
-                            else StatusChanged?.Invoke("Reply ready; speech unavailable: " + (speech.Value<string>("voice_notice") ?? "the voice service returned no audio."));
+                            if (ValidAudioPath(audio)) { UnityEngine.Debug.Log("[Sakura] speech response " + audio); AudioReplyReceived?.Invoke(audio); }
+                            else { StatusChanged?.Invoke("Reply ready; speech unavailable: " + (speech.Value<string>("voice_notice") ?? "the voice service returned no audio.")); ReleasePendingReply(); }
                         }
-                        catch (Exception) { StatusChanged?.Invoke("Reply ready; invalid speech response."); }
+                        catch (Exception) { UnityEngine.Debug.LogWarning("[Sakura] speech response unreadable: " + json); StatusChanged?.Invoke("Reply ready; invalid speech response."); ReleasePendingReply(); }
                     });
                 }
             }
