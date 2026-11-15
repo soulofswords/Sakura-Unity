@@ -332,7 +332,7 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .startup-mode-icon-wrap { width:46px; height:46px; min-width:46px; border-radius:23px; background-color:rgba(97,225,235,.10); align-items:center; justify-content:center; margin-right:14px; }
 .startup-mode-local .startup-mode-icon-wrap { background-color:rgba(180,153,255,.10); }
 .startup-mode-vtuber .startup-mode-icon-wrap { background-color:rgba(245,144,196,.10); }
-.startup-mode-icon { width:26px; height:26px; }
+.startup-mode-icon { width:46px; height:46px; }
 .startup-mode-copy { flex-grow:1; min-width:0; align-items:flex-start; justify-content:center; }
 .startup-mode-title { color:#f0f4ff; font-size:16px; -unity-font-style:bold; -unity-text-align:middle-left; }
 .startup-mode-description { color:#9aa6bd; font-size:10px; margin-top:2px; white-space:normal; -unity-text-align:middle-left; }

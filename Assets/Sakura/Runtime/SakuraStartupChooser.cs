@@ -88,9 +88,9 @@ namespace Sakura.Unity
 
             status = new Label(); status.AddToClassList("startup-status"); body.Add(status);
 
-            AddMode(body, 0, "Cloud API", "Cloud AI companion · Use your API key", "CLOUD", "tab-ai", "#61e1eb", () => Choose("cloud"));
-            AddMode(body, 1, "Local LLM", "On-device AI companion · Run on this PC", "LOCAL", "tab-models", "#b499ff", () => Choose("local"));
-            AddMode(body, 2, "VTuber", "Face + hand tracking · No AI models loaded", "TRACKING", "camera", "#f590c4", () => Choose("vtuber"));
+            AddMode(body, 0, "Cloud API", "Cloud AI companion · Use your API key", "CLOUD", "startup-cloud", "#61e1eb", () => Choose("cloud"));
+            AddMode(body, 1, "Local LLM", "On-device AI companion · Run on this PC", "LOCAL", "startup-local", "#b499ff", () => Choose("local"));
+            AddMode(body, 2, "VTuber", "Face + hand tracking · No AI models loaded", "TRACKING", "startup-vtuber", "#f590c4", () => Choose("vtuber"));
 
             var footer = new Label("This app is currently under development.\nYour feedback is most important."); footer.AddToClassList("startup-footer"); body.Add(footer);
             var discord = new Button(() => Application.OpenURL("https://discord.gg/kgxeMRFWDw")) { text = "Join my Discord and DM me" };
