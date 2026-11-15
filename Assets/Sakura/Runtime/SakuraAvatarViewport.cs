@@ -54,6 +54,10 @@ namespace Sakura.Unity
             avatarCamera.allowMSAA = true;
             avatarCamera.nearClipPlane = .01f;
             avatarCamera.farClipPlane = 100;
+            // The model lives on layer 30 and must only be drawn by this viewport camera,
+            // never by the window/backdrop camera.
+            var studioCamera = Camera.main;
+            if (studioCamera != null && studioCamera != avatarCamera) studioCamera.cullingMask &= ~(1 << 30);
             image = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
             image.style.position = Position.Absolute;
             image.style.left = 0; image.style.right = 0; image.style.top = 0; image.style.bottom = 0;
@@ -97,8 +101,8 @@ namespace Sakura.Unity
                 Vector2 delta = stage.WorldToLocal(evt.position) - dragStart;
                 if (dragButton == 1)
                 {
-                    if (LoadedFormat == "Live2D") live2DRoll = yawStart + delta.x * .35f;
-                    else yaw = yawStart + delta.x * .35f;
+                    if (LoadedFormat == "Live2D") live2DRoll = yawStart - delta.x * .35f;
+                    else yaw = yawStart - delta.x * .35f;
                     ApplyRotation();
                 }
                 else
@@ -262,7 +266,12 @@ namespace Sakura.Unity
                 avatar = loaded;
                 LoadedFormat = format;
                 LoadedModelPath = relative;
-                avatarCamera.GetUniversalAdditionalCameraData().SetRenderer(-1);
+                // The default URP renderer (PC_Renderer) now carries the Cubism render pass feature,
+                // so every model - Live2D included - renders through the pipeline's default renderer.
+                // Relying on a hard-coded renderer index here was what left the built player blank.
+                if (avatarCamera != null)
+                    avatarCamera.GetUniversalAdditionalCameraData().SetRenderer(-1);
+                Debug.Log("[Sakura] " + format + " loaded; avatar camera uses the default URP renderer.");
                 avatar.transform.SetParent(transform, false);
                 avatar.transform.localPosition = Vector3.zero;
                 yaw = format == "Live2D" ? 180 : 0; live2DRoll = 0; zoom = targetZoom = 1; framingOffset = Vector3.zero;
@@ -299,11 +308,38 @@ namespace Sakura.Unity
             var bounds = renderers[0].bounds;
             foreach (var renderer in renderers) bounds.Encapsulate(renderer.bounds);
             if (modelBounds.HasValue) bounds = modelBounds.Value;
+            var live2DBounds = Live2DModelBounds();
+            if (live2DBounds.HasValue) bounds = live2DBounds.Value;
             framingBounds = bounds;
             float halfHeight = Mathf.Max(bounds.extents.y, bounds.extents.x / Mathf.Max(.1f, avatarCamera.aspect));
             float distance = halfHeight / Mathf.Tan(avatarCamera.fieldOfView * Mathf.Deg2Rad * .5f) * 1.12f / zoom;
             avatarCamera.transform.position = bounds.center + framingOffset + Vector3.forward * distance;
             avatarCamera.transform.LookAt(bounds.center + framingOffset);
+        }
+
+        /// <summary>
+        /// Bounds of a Live2D model taken from its drawable meshes.
+        /// Renderer.bounds is empty in a build because the Cubism SDK removes the MeshFilters there.
+        /// </summary>
+        private Bounds? Live2DModelBounds()
+        {
+            if (LoadedFormat != "Live2D" || avatar == null) return null;
+            var controller = avatar.GetComponentInChildren<Live2D.Cubism.Rendering.CubismRenderController>(true);
+            if (controller == null || controller.Renderers == null) return null;
+            Bounds result = default;
+            var found = false;
+            foreach (var cubismRenderer in controller.Renderers)
+            {
+                if (cubismRenderer == null || cubismRenderer.Mesh == null) continue;
+                var meshBounds = cubismRenderer.Mesh.bounds;
+                if (meshBounds.size.x <= 0f && meshBounds.size.y <= 0f) continue;
+                var scale = cubismRenderer.transform.lossyScale;
+                var size = new Vector3(meshBounds.size.x * Mathf.Abs(scale.x), meshBounds.size.y * Mathf.Abs(scale.y), meshBounds.size.z * Mathf.Abs(scale.z));
+                var item = new Bounds(cubismRenderer.transform.TransformPoint(meshBounds.center), size);
+                if (!found) { result = item; found = true; }
+                else result.Encapsulate(item);
+            }
+            return found ? result : (Bounds?)null;
         }
 
         void ApplyRotation()
@@ -316,7 +352,7 @@ namespace Sakura.Unity
         public void Rotate(float degrees)
         {
             if (avatar == null || !float.IsFinite(degrees)) return;
-            if (LoadedFormat == "Live2D") live2DRoll += degrees; else yaw += degrees;
+            if (LoadedFormat == "Live2D") live2DRoll -= degrees; else yaw -= degrees;
             ApplyRotation();
         }
         public void ApplyLive2DLimits(SakuraLive2DSettings settings)

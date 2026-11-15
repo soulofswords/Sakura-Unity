@@ -707,10 +707,10 @@ namespace Sakura.Unity
                 if (item != null && item == rendered) { updateControls?.Invoke(); return; }
                 body.Clear(); rendered = item; updateControls = null; if (item == null) return;
                 var layer = new DropdownField("Layer", new List<string> { "Above model", "Below model" }, item.above ? 0 : 1); body.Add(layer);
-                var x = new Slider("Horizontal position", -50, 150) { value = item.x * 100, showInputField = true }; body.Add(x); x.SetEnabled(!item.locked);
-                var y = new Slider("Vertical position", -50, 150) { value = item.y * 100, showInputField = true }; body.Add(y); y.SetEnabled(!item.locked);
-                var size = new Slider("Size", 3, 150) { value = item.width * 100, showInputField = true }; body.Add(size);
-                var rotation = new Slider("Rotation", -180, 180) { value = item.rotation, showInputField = true }; body.Add(rotation);
+                var x = new SakuraSlider("Horizontal position", -50, 150) { value = item.x * 100, showInputField = true }; body.Add(x); x.SetEnabled(!item.locked);
+                var y = new SakuraSlider("Vertical position", -50, 150) { value = item.y * 100, showInputField = true }; body.Add(y); y.SetEnabled(!item.locked);
+                var size = new SakuraSlider("Size", 3, 150) { value = item.width * 100, showInputField = true }; body.Add(size);
+                var rotation = new SakuraSlider("Rotation", -180, 180) { value = item.rotation, showInputField = true }; body.Add(rotation);
                 var follow = new Toggle("Attach to model movement and size") { value = item.follow }; body.Add(follow);
                 var choices = PinChoices().ToList();
                 var pinLabels = new List<string> { "Whole model" }; pinLabels.AddRange(choices.Select(choice => (choice.Kind == "bone" ? "Bone · " : "ArtMesh · ") + choice.Name));

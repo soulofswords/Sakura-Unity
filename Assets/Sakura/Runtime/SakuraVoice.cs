@@ -307,7 +307,12 @@ namespace Sakura.Unity
 
         private void PlayReply(string relativeAudio)
         {
-            if (!Companion || !isActiveAndEnabled || string.IsNullOrEmpty(relativeAudio)) return;
+            if (!Companion || !isActiveAndEnabled || string.IsNullOrEmpty(relativeAudio))
+            {
+                Debug.LogWarning("[Sakura] speech ignored: companion=" + Companion + " active=" + isActiveAndEnabled + " audio=" + relativeAudio);
+                Backend?.ReleasePendingReply();
+                return;
+            }
             string text = pendingSpeechText; pendingSpeechText = null;
             PlayAudio(relativeAudio, text);
         }
@@ -334,8 +339,14 @@ namespace Sakura.Unity
             {
                 if (this == null || !isActiveAndEnabled || playback != playbackGeneration || Backend.Mode != mode)
                 { if (clip != null) Destroy(clip); return; }
-                if (error != null || clip == null) { SetStatus("Voice playback failed: " + (error ?? "empty audio")); resumeAt = Time.realtimeSinceStartup + .65f; return; }
-                speaker.clip = clip; speaker.Play(); echoGuard.Remember(text, Time.realtimeSinceStartup);
+                if (error != null || clip == null)
+                {
+                    Debug.LogWarning("[Sakura] speech download failed: " + (error ?? "empty audio"));
+                    SetStatus("Voice playback failed: " + (error ?? "empty audio")); Backend?.ReleasePendingReply(); resumeAt = Time.realtimeSinceStartup + .65f; return;
+                }
+                if (speaker == null) { Debug.LogWarning("[Sakura] speech audio source is missing."); Destroy(clip); return; }
+                Debug.Log("[Sakura] speech playing " + clip.length.ToString("0.00") + "s " + clip.frequency + "Hz, listener volume " + AudioListener.volume + " mute " + AudioListener.pause);
+                speaker.clip = clip; Backend?.ReleasePendingReply(); speaker.Play(); echoGuard.Remember(text, Time.realtimeSinceStartup);
                 StartCoroutine(CompletePlayback(playback));
             });
         }

@@ -71,13 +71,13 @@ namespace Sakura.Unity
                 if (operation.index == 0)
                 {
                     Color color = settings.color; new SakuraColourPicker(area, color, value => color = value);
-                    var strength = new Slider("Color strength", 0, 100) { value = settings.strength > 0 ? settings.strength * 100 : 100, showInputField = true }; area.Add(strength);
+                    var strength = new SakuraSlider("Color strength", 0, 100) { value = settings.strength > 0 ? settings.strength * 100 : 100, showInputField = true }; area.Add(strength);
                     Button("Apply color", () => { tools.SetColor(selected, color, strength.value / 100); status.text = "Color saved for this model."; }, area);
                     Button("Restore original color", () => { tools.RestoreColor(selected); Populate(); status.text = "Original color restored."; }, area);
                 }
                 else
                 {
-                    var transparency = new Slider("Transparency %", -100, 100) { value = settings.transparency * 100, showInputField = true }; area.Add(transparency);
+                    var transparency = new SakuraSlider("Transparency %", -100, 100) { value = settings.transparency * 100, showInputField = true }; area.Add(transparency);
                     Button("Apply transparency", () => { tools.SetTransparency(selected, transparency.value / 100); status.text = "Transparency saved for this model."; }, area);
                     Button("Restore original transparency", () => { tools.SetTransparency(selected, 0); Populate(); status.text = "Original transparency restored."; }, area);
                     area.Add(new Label("Negative values strengthen opacity. Texture cutouts stay intact."));
@@ -179,8 +179,8 @@ namespace Sakura.Unity
                         var poll = current.schedule.Execute(() => { if (captured != null) current.text = "Current value " + captured.Value.ToString("0.##"); }).Every(100);
                         current.RegisterCallback<DetachFromPanelEvent>(_ => poll.Pause());
                         var input = new Toggle("Manual input") { value = settings.enabled }; fold.Add(input);
-                        var value = new Slider("Output", captured.MinimumValue, captured.MaximumValue) { value = settings.value, showInputField = true }; fold.Add(value);
-                        var smoothing = new Slider("Smoothing", 0, 100) { value = settings.smoothing, showInputField = true }; fold.Add(smoothing);
+                        var value = new SakuraSlider("Output", captured.MinimumValue, captured.MaximumValue) { value = settings.value, showInputField = true }; fold.Add(value);
+                        var smoothing = new SakuraSlider("Smoothing", 0, 100) { value = settings.smoothing, showInputField = true }; fold.Add(smoothing);
                         var blink = new Toggle("Auto-Blinking") { value = settings.autoBlink }; fold.Add(blink);
                         var breath = new Toggle("Auto-Breathing") { value = settings.autoBreath }; fold.Add(breath);
                         void Save() { tools.SaveParameter(captured.Id); status.text = "Parameter settings saved for this model."; }
@@ -221,9 +221,9 @@ namespace Sakura.Unity
                 var springCard = new VisualElement(); springCard.AddToClassList("card"); body.Add(springCard);
                 var springTitle = new Label("VRM spring bones"); springTitle.AddToClassList("card-title"); springCard.Add(springTitle);
                 var current = tools.VrmSprings;
-                var stiffness = new Slider("Stiffness", 0, 200) { value = current.stiffness * 100, showInputField = true }; springCard.Add(stiffness);
-                var gravity = new Slider("Gravity", 0, 200) { value = current.gravity * 100, showInputField = true }; springCard.Add(gravity);
-                var drag = new Slider("Damping", 0, 200) { value = current.drag * 100, showInputField = true }; springCard.Add(drag);
+                var stiffness = new SakuraSlider("Stiffness", 0, 200) { value = current.stiffness * 100, showInputField = true }; springCard.Add(stiffness);
+                var gravity = new SakuraSlider("Gravity", 0, 200) { value = current.gravity * 100, showInputField = true }; springCard.Add(gravity);
+                var drag = new SakuraSlider("Damping", 0, 200) { value = current.drag * 100, showInputField = true }; springCard.Add(drag);
                 void ApplySprings() => Run(() => { tools.SetVrmSprings(stiffness.value / 100, gravity.value / 100, drag.value / 100); status.text = "Saved VRM spring tuning."; });
                 stiffness.RegisterValueChangedCallback(_ => ApplySprings()); gravity.RegisterValueChangedCallback(_ => ApplySprings()); drag.RegisterValueChangedCallback(_ => ApplySprings());
                 Button("Restore authored springs", () => { stiffness.value = 100; gravity.value = 100; drag.value = 100; ApplySprings(); }, springCard);
@@ -255,13 +255,13 @@ namespace Sakura.Unity
         void Effects()
         {
             var settings = tools.Effects;
-            var glow = new Slider("Bloom / glow", 0, 100) { value = settings.glow * 100, showInputField = true }; body.Add(glow);
-            var saturation = new Slider("Saturation", 0, 200) { value = settings.saturation * 100, showInputField = true }; body.Add(saturation);
-            var contrast = new Slider("Contrast", 0, 200) { value = settings.contrast * 100, showInputField = true }; body.Add(contrast);
+            var glow = new SakuraSlider("Bloom / glow", 0, 100) { value = settings.glow * 100, showInputField = true }; body.Add(glow);
+            var saturation = new SakuraSlider("Saturation", 0, 200) { value = settings.saturation * 100, showInputField = true }; body.Add(saturation);
+            var contrast = new SakuraSlider("Contrast", 0, 200) { value = settings.contrast * 100, showInputField = true }; body.Add(contrast);
             body.Add(new Label("Scene colour overlay"));
             Color overlay = settings.overlayColor;
             var picker = new VisualElement(); body.Add(picker);
-            var strength = new Slider("Overlay strength", 0, 100) { value = settings.overlayStrength * 100, showInputField = true }; body.Add(strength);
+            var strength = new SakuraSlider("Overlay strength", 0, 100) { value = settings.overlayStrength * 100, showInputField = true }; body.Add(strength);
             var outline = new Toggle("Model outline (3D)") { value = settings.outline }; outline.SetEnabled(viewport.LoadedFormat != "Live2D"); body.Add(outline);
             var authoredGlow = new Toggle("Model glow layers") { value = settings.authoredGlow }; authoredGlow.SetEnabled(viewport.LoadedFormat == "Live2D"); body.Add(authoredGlow);
             void Save()

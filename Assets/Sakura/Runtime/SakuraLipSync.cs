@@ -89,9 +89,9 @@ namespace Sakura.Unity
             var card = new VisualElement(); card.AddToClassList("card"); parent.Add(card);
             var title = new Label("Speech lip sync"); title.AddToClassList("card-title"); card.Add(title);
             var enabled = new Toggle("Animate mouth from TTS, Chat Reader and converted voice playback") { value = settings.enabled }; card.Add(enabled);
-            var gain = new Slider("Mouth strength", 0, 5) { value = settings.gain, showInputField = true }; card.Add(gain);
-            var cutoff = new Slider("Silence cutoff", 0, .2f) { value = settings.cutoff, showInputField = true }; card.Add(cutoff);
-            var smoothing = new Slider("Mouth smoothing", .01f, .5f) { value = settings.smoothing, showInputField = true }; card.Add(smoothing);
+            var gain = new SakuraSlider("Mouth strength", 0, 5) { value = settings.gain, showInputField = true }; card.Add(gain);
+            var cutoff = new SakuraSlider("Silence cutoff", 0, .2f) { value = settings.cutoff, showInputField = true }; card.Add(cutoff);
+            var smoothing = new SakuraSlider("Mouth smoothing", .01f, .5f) { value = settings.smoothing, showInputField = true }; card.Add(smoothing);
             var mapping = new DropdownField("A / mouth-open shape", new List<string> { "Automatic", "Disabled" }, 0); card.Add(mapping);
             var note = new Label("Uses the actual playback envelope. Manual mouth expressions and enabled camera mouth tracking take priority. Mapping and strength are saved for the loaded model."); note.AddToClassList("description"); card.Add(note);
             var ids = new List<string>();

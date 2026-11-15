@@ -102,6 +102,7 @@ def install_unity_lifecycle(module, source=None):
     service_context = None
     original_lifetime = module.app.router.lifespan_context
     service_lock = asyncio.Lock()
+    speech_warm = None
     mode = 'VTuber' if getattr(module, 'EDITION', 'companion') == 'vtuber' else 'Companion'
     revision = 0
     screen_enabled = False
@@ -275,9 +276,17 @@ def install_unity_lifecycle(module, source=None):
             'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
             'X-Sakura-Preview-Frames': str(frames), 'X-Sakura-Preview-Columns': str(columns)})
 
+    def warm_speech():
+        """Build the local Kokoro engine so the first spoken reply does not pay for it."""
+        try:
+            from kokoro_speech import prepare
+            prepare()
+        except Exception:
+            pass
+
     @module.app.post('/api/unity/start-services')
     async def start_services():
-        nonlocal service_context
+        nonlocal service_context, speech_warm
         async with service_lock:
             if mode == 'VTuber':
                 return JSONResponse({'error': 'AI conversation stays off in VTuber mode.'}, 409)
@@ -294,6 +303,10 @@ def install_unity_lifecycle(module, source=None):
                     else:
                         os.environ['SAKURA_START_MODE'] = previous
                 service_context = candidate
+                # Kokoro loads its engine and voices on first use; start that now so
+                # the first spoken reply does not wait for the load.
+                if speech_warm is None or speech_warm.done():
+                    speech_warm = asyncio.create_task(asyncio.to_thread(warm_speech))
         return {'ok': True}
 
     @module.app.post('/api/unity/start-voice')
@@ -375,6 +388,14 @@ def serve(source, edition='companion'):
     import gui_server
     import local_api_security
     import uvicorn
+    # Kokoro loads its native engine on first use. Import those modules here, on
+    # the main thread, so the first spoken reply never has to load them lazily
+    # from a worker thread while the services are running.
+    try:
+        import numpy
+        import onnxruntime
+    except ImportError:
+        pass
     gui_server.port = sock.getsockname()[1]
     install_unity_lifecycle(app, source)
     from unity_tracking_api import install as install_tracking

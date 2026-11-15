@@ -55,7 +55,7 @@ namespace Sakura.Unity
         void Text(string value) { var label = new Label(value); label.AddToClassList("description"); body.Add(label); }
         void Slider(string title, float value, float min, float max, Action<float> changed)
         {
-            var slider = new Slider(title, min, max) { value = value, showInputField = true };
+            var slider = new SakuraSlider(title, min, max) { value = value, showInputField = true };
             slider.RegisterValueChangedCallback(evt => Run(() => { changed(evt.newValue); model.Apply(); model.Save(); status.text = "Saved for this model."; })); body.Add(slider);
         }
         void Render()
@@ -123,13 +123,13 @@ namespace Sakura.Unity
                     {
                         Color picked = edit.color;
                         new SakuraColourPicker(area,edit.color,value => picked = value);
-                        var strength = new Slider("Color strength",0,100) { value = edit.strength * 100, showInputField = true }; area.Add(strength);
+                        var strength = new SakuraSlider("Color strength",0,100) { value = edit.strength * 100, showInputField = true }; area.Add(strength);
                         Button("Apply color",() => Run(() => { edit.color = picked; edit.strength = strength.value / 100; edit.colored = true; model.Apply(); model.Save(); status.text = "Color saved for this model."; }),area);
                         Button("Restore original color",() => Run(() => { edit.colored = false; model.Apply(); model.Save(); Render(); }),area);
                     }
                     else
                     {
-                        var transparency = new Slider("Transparency %",-100,100) { value = edit.transparency * 100, showInputField = true }; area.Add(transparency);
+                        var transparency = new SakuraSlider("Transparency %",-100,100) { value = edit.transparency * 100, showInputField = true }; area.Add(transparency);
                         transparency.RegisterValueChangedCallback(change => Run(() => { edit.transparency = change.newValue / 100; model.Apply(); model.Save(); status.text = "Transparency saved. Existing color retained."; }));
                         area.Add(new Label("Negative values strengthen opacity. Texture cutouts stay intact."));
                     }

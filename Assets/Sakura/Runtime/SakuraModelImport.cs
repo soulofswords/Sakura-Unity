@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Live2D.Cubism.Core;
 using Live2D.Cubism.Framework.Json;
+using Live2D.Cubism.Rendering;
 using Live2D.Cubism.Rendering.Masking;
 using Mmd.Parser;
 using Mmd.Rendering;
@@ -114,6 +115,7 @@ namespace Sakura.Unity
                     if (texture == null) throw new InvalidDataException("A referenced Live2D texture is missing.");
                 model = json.ToModel(shouldImportAsOriginalWorkflow: true);
                 if (model == null) throw new InvalidDataException("Cubism could not create this model.");
+                if (model.GetComponent<CubismRenderController>() == null) model.gameObject.AddComponent<CubismRenderController>();
                 int maskGroups = model.Drawables.Select(drawable => drawable.Masks).Where(masks => masks.Length > 0)
                     .Select(masks => string.Join("|", masks.Select(mask => mask.Id).OrderBy(id => id))).Distinct().Count();
                 var maskController = model.GetComponent<CubismMaskTextureController>();

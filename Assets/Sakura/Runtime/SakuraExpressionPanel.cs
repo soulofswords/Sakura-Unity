@@ -63,7 +63,7 @@ namespace Sakura.Unity
                     {
                         expand.text = fold.value ? "−" : "+";
                         if (!evt.newValue || built) return; built = true;
-                        var slider = new Slider("Strength", 0, 100) { value = entry.Strength * 100, showInputField = true };
+                        var slider = new SakuraSlider("Strength", 0, 100) { value = entry.Strength * 100, showInputField = true };
                         slider.RegisterValueChangedCallback(change => Run(() => controller.SetStrength(entry.Id, change.newValue / 100))); fold.Add(slider);
                         var actions = new VisualElement(); actions.AddToClassList("row"); fold.Add(actions);
                         actions.Add(new Button(() => Run(() => controller.Preview(entry.Id))) { text = "Preview" });

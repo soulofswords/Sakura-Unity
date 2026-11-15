@@ -167,6 +167,7 @@ namespace Sakura.Unity
         void Update()
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            MaintainWindowFrame();
             if ((!transparencyRequested && !Transparent) || Time.unscaledTime < nextTransparencyCheck) return;
             nextTransparencyCheck = Time.unscaledTime + .5f;
             if (!transparencyAgentMode && (Screen.fullScreenMode != lastFullScreenMode || !Transparent)) RefreshTransparency();

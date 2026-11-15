@@ -46,7 +46,7 @@ namespace Sakura.Unity
             converterPath = new TextField("Model-To-PMX folder") { value = PlayerPrefs.GetString("sakura-converter-path", "") };
             converterPath.textEdition.placeholder = "Folder containing convert/ and formats/";
             card.Add(converterPath);
-            AddLabel(card, "Requires separately installed Model-To-PMX at commit 5b00e66ac5585e0c6402ea30ccab5c05fad6db2e and Git. This optional GPL tool runs as an external process. A conversion is best-effort: humanoid bones, morphs, materials, textures, scale and axes may need review. VRM spring bones and PMX rigid bodies/joints do not convert 1:1; PMX toon/sphere and VRM MToon settings may be approximated.", "description");
+            AddLabel(card, "Conversion runs the separately installed Model-To-PMX tool (pinned commit 5b00e66ac5585e0c6402ea30ccab5c05fad6db2e) as an external process. It is best-effort: humanoid bones, morphs, materials, textures, scale and axes may need review. Spring bones, rigid bodies, toon/sphere and MToon settings are not 1:1. Output goes to models/converted/; the source model is never overwritten.", "description");
             progress = new ProgressBar { title = "Conversion", lowValue = 0, highValue = 100, value = 0 }; card.Add(progress);
             status = AddLabel(card, candidates.Length == 0 ? "Import a local PMX or VRM model to begin." : "Ready. No files will be changed until you start conversion.", "description");
             var actions = new VisualElement(); actions.AddToClassList("row"); card.Add(actions);
@@ -110,7 +110,7 @@ namespace Sakura.Unity
                     if (!alive) return;
                     var buttons = host.userData as Tuple<Button, Button>;
                     buttons?.Item1.SetEnabled(candidates.Length > 0); buttons?.Item2.SetEnabled(false);
-                    if (exitCode == 0) { progress.value = 100; status.text = "Conversion finished. Review the mapping report and inspect the new model before using it."; refreshCatalog?.Invoke(); }
+                    if (exitCode == 0) { progress.value = 100; status.text = "Conversion complete. Review the mapping report and inspect models/converted/ before using the model."; refreshCatalog?.Invoke(); }
                     else status.text = "Conversion did not complete. Check the converter installation and revision; source files were preserved.";
                 });
             }

@@ -28,6 +28,7 @@ namespace Sakura.Unity
         { public int length, flags, show; public Point minimum, maximum; public Rectangle normal; }
         Placement companionPlacement;
         bool restoreCompanion;
+        IntPtr styledHandle;
         [DllImport("user32.dll")] private static extern IntPtr GetActiveWindow();
         [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW")] private static extern IntPtr GetStyle(IntPtr window,int index);
         [DllImport("user32.dll",EntryPoint="SetWindowLongPtrW")] private static extern IntPtr SetStyle(IntPtr window,int index,IntPtr value);
@@ -45,14 +46,32 @@ namespace Sakura.Unity
             for(int attempt = 0; attempt < 60 && handle == IntPtr.Zero; attempt++) { handle = FindPlayerWindow(); yield return null; }
             if(handle != IntPtr.Zero)
             {
-                SetStyle(handle,-16,new IntPtr(GetStyle(handle,-16).ToInt64() & ~0x00C00000L));
-                SetWindowPos(handle,IntPtr.Zero,0,0,0,0,0x0020 | 0x0001 | 0x0002 | 0x0004 | 0x0010);
+                ApplyBorderless();
                 RefreshTransparency();
             }
 #else
             yield break;
 #endif
         }
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        // Unity can replace its splash window with the player window after the
+        // first frames, and maximizing can restore the native caption. Keep the
+        // native frame removed so the in-app header is the only title bar.
+        void MaintainWindowFrame()
+        {
+            if (handle == IntPtr.Zero || !IsPlayerWindow(handle)) handle = FindPlayerWindow();
+            if (handle == IntPtr.Zero) return;
+            long style = GetStyle(handle, -16).ToInt64();
+            if (handle != styledHandle || (style & 0x00C00000L) != 0) ApplyBorderless();
+        }
+        void ApplyBorderless()
+        {
+            if (handle == IntPtr.Zero) return;
+            SetStyle(handle, -16, new IntPtr(GetStyle(handle, -16).ToInt64() & ~0x00C00000L));
+            SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, 0x0020 | 0x0001 | 0x0002 | 0x0004 | 0x0010);
+            styledHandle = handle;
+        }
+#endif
         public void Minimize()
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
@@ -62,7 +81,7 @@ namespace Sakura.Unity
         public void Maximize()
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
-            if(handle != IntPtr.Zero) ShowWindow(handle,IsZoomed(handle) ? 9 : 3);
+            if(handle != IntPtr.Zero) { ShowWindow(handle,IsZoomed(handle) ? 9 : 3); ApplyBorderless(); }
 #else
             if(!Application.isEditor) Screen.fullScreen = !Screen.fullScreen;
 #endif

@@ -118,6 +118,9 @@ namespace Sakura.Unity
                 elbow.localRotation *= Quaternion.Euler(.1f * Mathf.Rad2Deg,0,0);
                 if (bones.TryGetValue(side + "Wrist",out var wrist) && wrist != null) wrist.localRotation *= Quaternion.Euler(.04f * Mathf.Rad2Deg,0,0);
             }
+            Debug.Log("[Sakura] idle rig chest=" + (chest != null) + " head=" + (head != null) + " neck=" + (neck != null)
+                + " arms=" + (bones.ContainsKey("leftArm") && bones.ContainsKey("rightArm")) + " torso=" + bones.ContainsKey("torso")
+                + " enabled=" + IdleMotions + " companion=" + Companion);
             foreach (var mesh in GetComponentsInChildren<SkinnedMeshRenderer>())
             {
                 for (int index = 0; index < mesh.sharedMesh.blendShapeCount; index++)
@@ -159,7 +162,7 @@ namespace Sakura.Unity
                 var parameter = entry.parameter;
                 parameter.Value = Mathf.Clamp(parameter.DefaultValue + (parameter.MaximumValue - parameter.DefaultValue) * BreathValue * entry.strength, parameter.MinimumValue, parameter.MaximumValue);
             }
-            if (Blinking) foreach (var parameter in blinkParameters) parameter.Value = parameter.MaximumValue * (1 - BlinkValue);
+            if (Blinking) foreach (var parameter in blinkParameters) parameter.Value = Mathf.Lerp(parameter.DefaultValue, parameter.MinimumValue, BlinkValue);
         }
         void LateUpdate()
         {

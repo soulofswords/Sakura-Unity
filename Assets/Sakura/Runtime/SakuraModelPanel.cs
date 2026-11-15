@@ -28,7 +28,7 @@ namespace Sakura.Unity
             tabs = strip.contentContainer; tabs.style.flexDirection = FlexDirection.Row;
             string[] pages = viewport.LoadedFormat == "Live2D"
                 ? new[] { "Texture remapping","Texture coloring","Expressions & hotkeys","Bones","Mouth","Parameters","Effects","Motion" }
-                : new[] { "Texture remapping","Texture coloring","Expressions & hotkeys","Bones","Mouth" };
+                : new[] { "Texture remapping","Texture coloring","Expressions & hotkeys","Bones","Mouth","Effects" };
             strip.EnableInClassList("model-tabs-three",viewport.LoadedFormat != "Live2D");
             foreach (string page in pages)
             {
@@ -82,9 +82,9 @@ namespace Sakura.Unity
                     motion.Save();
                 }); body.Add(toggle);
             }
-            var strength = new Slider("Breathing strength",0,2) { value = motion.BreathStrength, showInputField = true }; body.Add(strength);
+            var strength = new SakuraSlider("Breathing strength",0,2) { value = motion.BreathStrength, showInputField = true }; body.Add(strength);
             strength.RegisterValueChangedCallback(change => { if (viewport.Idle == motion) { motion.BreathStrength = change.newValue; motion.Save(); } });
-            var speed = new Slider("Breathing speed",.25f,3) { value = motion.BreathSpeed, showInputField = true }; body.Add(speed);
+            var speed = new SakuraSlider("Breathing speed",.25f,3) { value = motion.BreathSpeed, showInputField = true }; body.Add(speed);
             speed.RegisterValueChangedCallback(change => { if (viewport.Idle == motion) { motion.BreathSpeed = change.newValue; motion.Save(); } });
         }
     }

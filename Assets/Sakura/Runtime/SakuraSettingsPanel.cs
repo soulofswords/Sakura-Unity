@@ -16,6 +16,7 @@ namespace Sakura.Unity
         private readonly VisualElement host, body;
         private readonly Label status;
         private readonly Action<string> applyTheme;
+        private readonly Action<VisualElement> modelsTabExtra;
         private JObject values = new JObject(), changes = new JObject();
         private readonly List<TextField> secretInputs = new List<TextField>();
         private readonly Dictionary<string, string> voiceLanguages = new Dictionary<string, string>();
@@ -23,10 +24,10 @@ namespace Sakura.Unity
         private string selected = "General";
         private bool saving, previewing, alive = true;
 
-        public SakuraSettingsPanel(SakuraBackend backend, VisualElement host, Action<string> applyTheme, string initialTab = "General", bool showTabs = true)
+        public SakuraSettingsPanel(SakuraBackend backend, VisualElement host, Action<string> applyTheme, string initialTab = "General", bool showTabs = true, Action<VisualElement> modelsTabExtra = null)
         {
             selected = initialTab;
-            this.backend = backend; this.applyTheme = applyTheme;
+            this.backend = backend; this.applyTheme = applyTheme; this.modelsTabExtra = modelsTabExtra;
             this.host = new VisualElement();
             this.host.AddToClassList("settings-content");
             host.Add(this.host);
@@ -39,7 +40,15 @@ namespace Sakura.Unity
                 ? new[] { "Voice", "General", "Models", "Theme", "Camera & Audio" }
                 : new[] { "Voice", "General", "Models", "Theme", "AI & LLM", "Camera & Audio", "Assistant" };
             foreach (string title in pages)
-            { string tab = title; AddButton(title, () => { selected = tab; Render(); }, tabs.contentContainer).AddToClassList("settings-tab"); }
+            {
+                string tab = title;
+                var button = new Button(() => { selected = tab; Render(); });
+                button.AddToClassList("settings-tab"); button.userData = tab;
+                string icon = TabIcon(tab);
+                if (icon != null) button.Add(new Image { image = Resources.Load<Texture2D>("Sakura/Icons/" + icon) });
+                button.Add(new Label(tab));
+                tabs.contentContainer.Add(button);
+            }
             body = new VisualElement(); host.Add(body);
             status = Text("Loading your saved settings…", "description", host);
             backend.Api("/api/settings", null, (json, error) =>
@@ -55,7 +64,7 @@ namespace Sakura.Unity
             speakerProfiles?.Dispose(); speakerProfiles = null;
             ClearSecrets(); body.Clear();
             foreach (var button in host.Q(className: "settings-tabs").Query<Button>().ToList())
-                button.EnableInClassList("tab-selected", button.text == selected);
+                button.EnableInClassList("tab-selected", (string)button.userData == selected);
             if (selected == "General")
             {
                 var card = Card("Updates & reinstall");
@@ -323,7 +332,7 @@ namespace Sakura.Unity
                 var advanced = new Foldout { text = "Voice adjustment", value = false }; card.Add(advanced);
                 Field(advanced, "Pitch", "tts_pitch"); Field(advanced, "Rate", "tts_rate");
                 card = Card("RVC voice changer"); Field(card, "RVC model", "rvc_model"); Field(card, "RVC index", "rvc_index"); Number(card, "RVC pitch", "rvc_pitch", -24, 24);
-                var indexRate = new Slider("RVC index strength", 0, 1) { value = (float?)Value("rvc_index_rate") ?? .75f }; card.Add(indexRate);
+                var indexRate = new SakuraSlider("RVC index strength", 0, 1) { value = (float?)Value("rvc_index_rate") ?? .75f }; card.Add(indexRate);
                 indexRate.RegisterValueChangedCallback(evt => changes["rvc_index_rate"] = evt.newValue);
                 Text("Choose an installed RVC voice in the Voice library or enter model and index paths from the Sakura voices folder.", "description", card);
                 if (backend.Mode == "VTuber")
@@ -368,6 +377,7 @@ namespace Sakura.Unity
                 var card = Card("Model preferences");
                 Check(card, "Enable physics", "physics_enabled");
                 Text("Use Models in the left toolbar for the separate PMX, VRM and Live2D libraries and cloud imports.", "description", card);
+                modelsTabExtra?.Invoke(body);
             }
             else if (selected == "Camera & Audio")
             {
@@ -790,5 +800,6 @@ namespace Sakura.Unity
         private VisualElement Card(string title) { var card = new VisualElement(); card.AddToClassList("card"); body.Add(card); Text(title, "card-title", card); return card; }
         private static Label Text(string text, string css, VisualElement parent) { var label = new Label(text); label.AddToClassList(css); parent.Add(label); return label; }
         private static Button AddButton(string text, Action action, VisualElement parent) { var button = new Button(action) { text = text }; parent.Add(button); return button; }
+        private static string TabIcon(string tab) => tab switch { "Voice" => "tab-voice", "Models" => "tab-models", "Theme" => "tab-theme", "AI & LLM" => "tab-ai", "Camera & Audio" => "tab-camera", "Assistant" => "tab-assistant", _ => null };
     }
 }

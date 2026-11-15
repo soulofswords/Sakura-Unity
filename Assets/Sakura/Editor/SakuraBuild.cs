@@ -15,6 +15,11 @@ namespace Sakura.Unity.Editor
             BuildWindows("vtuber");
         }
 
+        public static void BuildCompanion()
+        {
+            BuildWindows("companion");
+        }
+
         public static string BuildAndroid()
         {
             if (EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before building.");

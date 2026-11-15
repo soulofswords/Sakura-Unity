@@ -35,3 +35,7 @@ __pycache__/
 *.safetensors
 
 /.utmp/
+
+# Owner-imported Live2D Cubism samples are local reference assets, not app source.
+/Assets/Live2D/Cubism/Samples/
+/Assets/Live2D/Cubism/Samples.meta

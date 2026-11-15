@@ -20,6 +20,112 @@ namespace Sakura.Unity
             Button Add(VisualElement card, string text, Action action) { var button = new Button(action) { text = text }; card.Add(button); return button; }
             Label Status(VisualElement card) { var label = new Label(); label.style.whiteSpace = WhiteSpace.Normal; card.Add(label); return label; }
 
+            var budgetCard = Card("Token budget & profile");
+            var budgetStatus = Status(budgetCard);
+            var budgetLimit = new IntegerField("Daily token limit") { value = 100000 }; budgetCard.Add(budgetLimit);
+            void LoadBudget()
+            {
+                backend.Api("/api/companion/status", null, (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { budgetStatus.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        var budget = data["budget"] as JObject ?? new JObject();
+                        int limit = budget.Value<int?>("daily_limit") ?? budget.Value<int?>("limit") ?? 100000;
+                        int used = budget.Value<int?>("used_today") ?? budget.Value<int?>("used") ?? 0;
+                        budgetLimit.SetValueWithoutNotify(limit);
+                        string persona = data["persona"] is JObject profile
+                            ? (profile.Value<bool?>("active") == true ? "custom profile" : "default")
+                            : "default";
+                        budgetStatus.text = "Token budget: " + used + "/" + limit + " used today (" +
+                            Math.Max(0, limit - used) + " remaining). Persona: " + persona +
+                            " · " + (data.Value<int?>("procedures") ?? 0) + " saved procedures." +
+                            ((string)data["skills_export_dir"] is string folder && folder.Length > 0 ? " Skills export: " + folder : "");
+                    }
+                    catch (Exception) { budgetStatus.text = "The companion status returned an unreadable response."; }
+                });
+            }
+            Add(budgetCard, "Refresh budget and profile", LoadBudget);
+            Add(budgetCard, "Save daily limit", () => backend.Api("/api/companion/budget", new JObject { ["daily_limit"] = budgetLimit.value }.ToString(), (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { budgetStatus.text = error; return; }
+                budgetStatus.text = "Daily token limit saved."; LoadBudget();
+            }));
+            Add(budgetCard, "Reset today's usage", () => backend.Api("/api/companion/budget", new JObject { ["reset"] = true }.ToString(), (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { budgetStatus.text = error; return; }
+                budgetStatus.text = "Today's token usage was reset."; LoadBudget();
+            }));
+            LoadBudget();
+
+            var bookingCard = Card("Travel & shopping");
+            var bookingStatus = Status(bookingCard);
+            var bookingText = new TextField("What should I prepare?") { value = "" }; bookingCard.Add(bookingText);
+            void LoadBooking()
+            {
+                backend.Api("/api/companion/booking-workflow?channel=desktop", null, (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { bookingStatus.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        if (data.Value<bool?>("active") != true)
+                        {
+                            bookingStatus.text = "No active request. In Teacher mode say, for example, " +
+                                "\"book a train from Mumbai to Delhi tomorrow\" or \"order milk from Zepto\".";
+                            return;
+                        }
+                        var missing = (data["missing"] as JArray ?? new JArray()).Values<string>().ToList();
+                        bookingStatus.text = "Active " + (string)data["kind"] + ": " + ((string)data["summary"] ?? "") +
+                            (missing.Count > 0
+                                ? "\nStill needed: " + string.Join(", ", missing) + ". Send them in chat."
+                                : "\nReply yes in chat to get the provider link. Nothing is paid here.");
+                    }
+                    catch (Exception) { bookingStatus.text = "The travel/shopping request returned an unreadable response."; }
+                });
+            }
+            Add(bookingCard, "Refresh active request", LoadBooking);
+            Add(bookingCard, "Prepare request", () =>
+            {
+                string request = (bookingText.value ?? "").Trim();
+                if (request.Length < 3) { bookingStatus.text = "Describe what you want to book or buy first."; return; }
+                backend.Api("/api/companion/booking-workflow", new JObject
+                {
+                    ["action"] = "start", ["text"] = request, ["channel"] = "desktop"
+                }.ToString(), (json, error) =>
+                {
+                    if (!alive()) return;
+                    if (error != null) { bookingStatus.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json);
+                        bookingText.SetValueWithoutNotify("");
+                        bookingStatus.text = (string)data["reply"] ?? "Request saved. Continue in chat.";
+                    }
+                    catch (Exception) { bookingStatus.text = "The travel/shopping request returned an unreadable response."; }
+                });
+            });
+            Add(bookingCard, "Cancel active request", () => backend.Api("/api/companion/booking-workflow",
+                new JObject { ["action"] = "cancel", ["channel"] = "desktop" }.ToString(), (json, error) =>
+            {
+                if (!alive()) return;
+                if (error != null) { bookingStatus.text = error; return; }
+                try
+                {
+                    var data = JObject.Parse(json);
+                    bookingStatus.text = data.Value<bool?>("cancelled") == true
+                        ? "Cancelled the active request. Nothing was booked, ordered or paid."
+                        : "There is no active travel/shopping request.";
+                }
+                catch (Exception) { bookingStatus.text = "The travel/shopping cancel returned an unreadable response."; }
+            }));
+            LoadBooking();
+
             var personaCard = Card("Character cards");
             var personaSelect = new DropdownField("Character role", new List<string> { "Loading…" }, 0); personaCard.Add(personaSelect);
             var personaStatus = Status(personaCard);

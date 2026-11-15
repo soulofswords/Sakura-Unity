@@ -98,11 +98,13 @@ def mapping_report(source_name: str, output_name: str, source_ext: str, output_b
         "source": Path(source_name).name, "output": Path(output_name).name,
         "output_bytes": output_bytes, "converter_commit": PINNED_COMMIT,
         "limitations": [
-            "Humanoid bones are mapped heuristically; inspect the generated rig and adjust bone names/axes if needed.",
-            "Morph/expression support depends on source data and is not guaranteed to map one-to-one.",
-            "Materials and textures are converted best-effort; alpha, toon, sphere and MToon properties can change.",
-            "VRM spring bones and PMX rigid bodies/joints are not 1:1 and must be rebuilt in the target format.",
-            "Scale and forward-axis conventions can differ; verify stance, handedness and camera framing.",
+            "⚠️ Humanoid bones: Mapped heuristically. Inspect the generated rig and adjust bone names/axes/weights as needed. Some bone combinations may not transfer correctly.",
+            "⚠️ Morphs/Expressions: Support depends on source data structure. Not guaranteed one-to-one mapping; some shapes may be lost or altered.",
+            "⚠️ Materials & Textures: Converted best-effort. Alpha channels, toon shading, sphere mapping, and MToon properties may change unexpectedly. Re-apply materials manually if needed.",
+            "⚠️ Rigid Bodies & Spring Bones: VRM spring bones and PMX rigid bodies/joints do NOT convert 1:1. Must be rebuilt in the target format using the target format's tools.",
+            "⚠️ Scale & Axes: Scale factors and forward-axis conventions (Y-up vs Z-up) can differ. Verify stance, handedness, and camera framing after conversion.",
+            "⚠️ Spring Bones: Not supported in PMX format. Must be recreated if needed for the target format.",
+            "⚠️ Audio & Physics: Physics parameters and audio clips are not transferred; configure separately in the target engine.",
         ],
     }
 

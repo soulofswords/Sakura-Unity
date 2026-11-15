@@ -145,7 +145,7 @@ namespace Sakura.Unity
                         var enabled = new Toggle("Enabled") { value = draft.enabled }; fold.Add(enabled); enabled.RegisterValueChangedCallback(change => draft.enabled = change.newValue);
                         Number("Input minimum", draft.inputMin, value => draft.inputMin = value, fold); Number("Input maximum", draft.inputMax, value => draft.inputMax = value, fold);
                         Number("Output minimum", draft.outputMin, value => draft.outputMin = value, fold); Number("Output maximum", draft.outputMax, value => draft.outputMax = value, fold);
-                        var smoothing = new Slider("Smoothing (seconds)", 0, 1) { value = draft.smoothing, showInputField = true }; fold.Add(smoothing); smoothing.RegisterValueChangedCallback(change => draft.smoothing = change.newValue);
+                        var smoothing = new SakuraSlider("Smoothing (seconds)", 0, 1) { value = draft.smoothing, showInputField = true }; fold.Add(smoothing); smoothing.RegisterValueChangedCallback(change => draft.smoothing = change.newValue);
                         var current = new Label(); fold.Add(current);
                         var poll = current.schedule.Execute(() => current.text = TryInput(draft.input, out float value) ? "Live input " + value.ToString("0.###") : "Input unavailable · waiting for a fresh tracker or plugin value.").Every(200);
                         current.RegisterCallback<DetachFromPanelEvent>(_ => poll.Pause());

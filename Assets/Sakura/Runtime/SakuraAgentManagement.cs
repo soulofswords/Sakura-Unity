@@ -188,6 +188,7 @@ namespace Sakura.Unity
 
         private void BuildSkills()
         {
+            var skillStatus = new Label(); skillStatus.style.whiteSpace = WhiteSpace.Normal; content.Add(skillStatus);
             foreach (var item in state["skills"] as JArray ?? new JArray())
             {
                 string name = (string)item["name"];
@@ -196,6 +197,7 @@ namespace Sakura.Unity
                 Text((string)item["requirements"],card,"description");
                 var instructions = Input("Procedure",(string)item["instructions"] ?? "",true,card);
                 Button("Save procedure",() => Request("/api/agent/skills/" + name,new JObject { ["instructions"] = instructions.value },_ => Refresh(),"PUT"),card);
+                Button("Export .skill bundle",() => Request("/api/agent/skills/" + name + "/export",new JObject(),data => skillStatus.text = "Exported " + ((string)data["file"] ?? name + ".skill") + " to " + ((string)data["folder"] ?? "the skills export folder") + "."),card);
                 Button("Delete skill",() => Confirm("Delete this saved skill?",() => Request("/api/agent/skills/" + name,null,_ => Refresh(),"DELETE"),card),card);
             }
             var create = new Foldout { text = "Create or import a skill", value = false }; content.Add(create);
@@ -204,8 +206,35 @@ namespace Sakura.Unity
             Button("Create skill",() => Request("/api/agent/skills",new JObject { ["name"] = newName.value,["instructions"] = procedure.value },_ => Refresh()),create);
             var markdown = Input("SKILL.md contents",multiline:true,parent:create);
             Button("Import Markdown",() => Request("/api/agent/skills/import",new JObject { ["markdown"] = markdown.value,["source"] = "Unity skill editor" },_ => Refresh()),create);
+            Button("Export all skills",() => Request("/api/agent/skills/export-all",new JObject(),data => skillStatus.text = "Exported " + (data.Value<int?>("count") ?? 0) + " skill bundles to " + ((string)data["folder"] ?? "the skills export folder") + "."),create);
+            Button("Import .skill bundles",() => Request("/api/agent/skills/import-bundles",new JObject(),data => { skillStatus.text = "Imported " + (data.Value<int?>("imported") ?? 0) + " skill bundles."; Refresh(); }),create);
             if (selected != null && !Archived && (string)selected["status"] == "completed")
                 Button("Learn selected completed task",() => Request("/api/agent/skills/learn",new JObject { ["run_id"] = selected["id"],["name"] = newName.value },_ => Refresh()),create);
+            var budgetFoldout = new Foldout { text = "Token Budget", value = false }; content.Add(budgetFoldout);
+            var budgetLabel = new Label(); budgetLabel.style.whiteSpace = WhiteSpace.Normal; budgetFoldout.Add(budgetLabel);
+            void RefreshBudget()
+            {
+                backend.Api("/api/companion/status", null, (json, error) =>
+                {
+                    if (error != null) { budgetLabel.text = error; return; }
+                    try
+                    {
+                        var data = JObject.Parse(json)["budget"] as JObject;
+                        if (data == null) { budgetLabel.text = "Companion status did not include a token budget."; return; }
+                        budgetLabel.text = "Budget: " + (data.Value<int?>("used_today") ?? 0) + "/"
+                            + (data.Value<int?>("daily_limit") ?? 100000) + " used · "
+                            + (data.Value<int?>("remaining") ?? 0) + " remaining today"
+                            + (data.Value<bool?>("exhausted") == true ? " · exhausted" : "");
+                    }
+                    catch (JsonException) { budgetLabel.text = "The Companion returned an invalid budget response."; }
+                });
+            }
+            Button("Refresh Budget", RefreshBudget, budgetFoldout);
+            Button("Reset Budget", () => backend.Api("/api/companion/budget", new JObject { ["reset"] = true }.ToString(), (json, error) =>
+            {
+                if (error != null) { budgetLabel.text = error; return; }
+                RefreshBudget();
+            }), budgetFoldout);
         }
 
         private void BuildMemory()
@@ -219,7 +248,7 @@ namespace Sakura.Unity
             {
                 string id = (string)row["id"];
                 if (!ValidId(id)) continue;
-                var fold = new Foldout { text = (string)row["category"] + " · " + (string)row["successes"] + " successful runs" }; content.Add(fold);
+                var fold = new Foldout { text = (string)row["category"] + " · " + (string)row["successes"] + " runs, confidence " + ((string)row["confidence"] ?? "0.3") }; content.Add(fold);
                 Text(row["tools"]?.ToString(Formatting.Indented),fold,"description");
                 Button("Forget procedure",() => Confirm("Forget this learned procedure?",() => Request("/api/agent/memory/" + id,null,_ => Refresh(),"DELETE"),fold),fold);
             }
@@ -319,5 +348,6 @@ namespace Sakura.Unity
             Text("This repeats the selected task’s reviewed steps while Sakura is running. The existing backend validates eligibility and asks for execution consent.",content,"description");
             Button("Schedule selected task",() => Confirm("Approve this exact recurring task?",() => Request("/api/agent/automations",new JObject { ["run_id"] = selected["id"],["name"] = name.value,["minutes"] = minutes.value,["mode"] = "steps",["approved"] = true },_ => Refresh()),content),content);
         }
+
     }
 }

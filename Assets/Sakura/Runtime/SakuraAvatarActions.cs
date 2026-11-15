@@ -33,8 +33,6 @@ namespace Sakura.Unity
         string action, location = "home";
         bool looping, wasSleeping;
         int roamIndex;
-        GameObject greetedRoot;
-        float greetAt;
         static readonly string[] RoomActions = { "home", "desk", "mirror", "bed", "sit", "walk", "roam", "explore", "nod", "shake_head", "stretch" };
         static readonly string[] Gestures = { "groove", "step", "wave", "twist", "disco", "march", "hands_both", "hand_left", "hand_right", "greeting_wave", "chest_tap", "laugh", "laugh_bend" };
 
@@ -42,7 +40,7 @@ namespace Sakura.Unity
         {
             var root = Viewport == null ? null : Viewport.AvatarRoot;
             if (root == null || Viewport.LoadedFormat == "Live2D") return false;
-            if (avatar == root) return bones.ContainsKey("torso");
+            if (avatar == root && bones.ContainsKey("torso")) return true;
             Stop(); avatar = root; idle = root.GetComponent<SakuraIdleMotion>(); bones.Clear();
             var all = root.GetComponentsInChildren<Transform>(true);
             var animator = root.GetComponentInChildren<Animator>();
@@ -51,7 +49,8 @@ namespace Sakura.Unity
                 Transform bone = animator != null && animator.isHuman ? animator.GetBoneTransform(human) : all.FirstOrDefault(t => names.Any(n => string.Equals(t.name, n, StringComparison.OrdinalIgnoreCase)));
                 if (bone != null) bones[key] = bone;
             }
-            Bone("torso", HumanBodyBones.Spine, "上半身", "spine"); Bone("head", HumanBodyBones.Head, "頭", "head");
+            Bone("torso", HumanBodyBones.Spine, "上半身", "spine"); Bone("chest", HumanBodyBones.Chest, "上半身2", "chest");
+            Bone("head", HumanBodyBones.Head, "頭", "head");
             Bone("leftArm", HumanBodyBones.LeftUpperArm, "左腕", "leftArm"); Bone("rightArm", HumanBodyBones.RightUpperArm, "右腕", "rightArm");
             Bone("leftElbow", HumanBodyBones.LeftLowerArm, "左ひじ", "左肘", "leftElbow"); Bone("rightElbow", HumanBodyBones.RightLowerArm, "右ひじ", "右肘", "rightElbow");
             Bone("leftWrist", HumanBodyBones.LeftHand, "左手首", "leftWrist"); Bone("rightWrist", HumanBodyBones.RightHand, "右手首", "rightWrist");
@@ -100,15 +99,28 @@ namespace Sakura.Unity
         {
             if (reply == null) return false;
             string motion = (string)reply?["avatar_motion"];
+            if (!string.IsNullOrEmpty(motion)) Debug.Log("[Sakura] motion " + motion);
             string room = reply?["room_action"]?.Type == JTokenType.String ? (string)reply["room_action"] : (string)reply?["room_action"]?["action"];
             if (motion == "stop") { Stop(); return true; }
             if (motion?.StartsWith("room:", StringComparison.Ordinal) == true) return Act(motion.Substring(5));
             if (!string.IsNullOrEmpty(room)) return Act(room);
             return !string.IsNullOrEmpty(motion) && Gesture(motion);
         }
+        // The web app only advertises greeting gestures when these bones exist; the
+        // backend strips avatar_motion from chat replies otherwise.
+        public bool CanGesture
+        {
+            get
+            {
+                if (!Bind()) return false;
+                return bones.ContainsKey("chest") && bones.ContainsKey("rightArm")
+                    && bones.ContainsKey("rightElbow") && bones.ContainsKey("rightWrist");
+            }
+        }
         public bool Gesture(string name)
         {
             if (!Gestures.Contains(name) || TrackingOwnsMotion || !Bind()) return false;
+            if (name == "greeting_wave" && SakuraHandRaising.Play(avatar, this)) return true;
             Stop(); Begin(name); duration = 0; looping = new[] { "groove", "step", "wave", "twist", "disco", "march", "hands_both", "hand_left", "hand_right" }.Contains(name); return true;
         }
         void Begin(string next)
@@ -158,10 +170,6 @@ namespace Sakura.Unity
         void Rotate(string key, float x = 0, float y = 0, float z = 0) { if (bones.TryGetValue(key, out var bone) && rest.TryGetValue(bone, out var rotation)) bone.localRotation = rotation * Quaternion.Euler(x * Mathf.Rad2Deg, y * Mathf.Rad2Deg, z * Mathf.Rad2Deg); }
         void LateUpdate()
         {
-            var root = Viewport == null ? null : Viewport.AvatarRoot;
-            if (root != greetedRoot) { greetedRoot = root; greetAt = root == null ? 0 : Time.unscaledTime + .8f; }
-            if (root != null && greetAt > 0 && Time.unscaledTime >= greetAt && !TrackingOwnsMotion && !Active)
-            { greetAt = 0; if (!SakuraHandRaising.Play(root, this)) Gesture("greeting_wave"); }
             Tick(Mathf.Clamp(Time.deltaTime, 0, .05f));
         }
         public void Tick(float delta)
@@ -211,11 +219,87 @@ namespace Sakura.Unity
                 float sign = Viewport.LoadedFormat == "VRM" ? -1 : 1;
                 if (action == "chest_tap") { Rotate("rightArm", .3f, 0, -.65f * sign); Rotate("rightElbow", 0, .9f + wave * .08f); }
                 else if (action.StartsWith("laugh")) { Rotate("torso", .12f + Mathf.Abs(wave) * .07f); Rotate("head", wave * .06f); }
-                else { Rotate("torso", action == "twist" ? 0 : wave * .04f, action == "twist" ? wave * .22f : 0, wave * .035f); if (action != "hand_left") { Rotate("rightArm", 0, 0, (1.1f + wave * .12f) * sign); Rotate("rightElbow", 0, .6f + wave * .25f); } if (action == "hands_both" || action == "hand_left" || action == "disco") Rotate("leftArm", 0, 0, -(1.1f + wave * .12f) * sign); if (new[] { "step", "march", "groove" }.Contains(action)) { Rotate("leftThigh", wave * .22f); Rotate("rightThigh", -wave * .22f); } }
+                else DanceStep(after);
             }
             if (Gestures.Contains(action)) ClearArms();
-            if (!looping && after > (duration > 0 ? .6f : 3)) { location = action; Restore(); action = null; if (idle != null) idle.MotionOwned = false; }
+            if (!looping && after > (duration > 0 ? .6f : 3)) { location = action; Restore(); if (avatar != null) { avatar.transform.position = start; avatar.transform.rotation = startRotation; } action = null; if (idle != null) idle.MotionOwned = false; }
         }
+        // Ported from the web app's model-dance.js. The old Unity version only
+        // lifted one arm; the reference routine also moves the root, chest,
+        // head, wrists and legs with the beat.
+        void DanceStep(float time)
+        {
+            bool vrm = Viewport != null && Viewport.LoadedFormat == "VRM";
+            float sign = vrm ? -1 : 1;
+            float beat = time * Mathf.PI * 2 * 1.6f, sway = Mathf.Sin(beat * .5f), pulse = Mathf.Sin(beat);
+            float bounce = (1 - Mathf.Cos(beat)) * .5f;
+            float blend = Smooth(time / .35f);
+            bool twist = action == "twist", disco = action == "disco", march = action == "march";
+            bool hands = action == "hands_both" || action == "hand_left" || action == "hand_right";
+            bool waveStyle = action == "wave";
+            Vector3 motion = Vector3.zero;
+            float turn = 0;
+            if (twist) { motion.y = .015f * bounce; turn = pulse * .20f; }
+            else if (disco) motion.y = .035f * bounce;
+            else if (march) motion.y = .07f * bounce;
+            else { motion.x = sway * (action == "step" ? .45f : .16f); motion.y = bounce * .12f; turn = sway * .06f; }
+            avatar.transform.position = start + motion * blend;
+            avatar.transform.rotation = startRotation * Quaternion.Euler(0, turn * Mathf.Rad2Deg * blend, 0);
+
+            void Pose(string key, float x = 0, float y = 0, float z = 0)
+            {
+                if (!bones.TryGetValue(key, out var bone) || !rest.TryGetValue(bone, out var origin)) return;
+                Quaternion target = origin * Quaternion.Euler(x * Mathf.Rad2Deg, y * Mathf.Rad2Deg, z * Mathf.Rad2Deg);
+                bone.localRotation = Quaternion.Slerp(origin, target, blend);
+            }
+
+            if (hands)
+            {
+                bool left = action != "hand_right", right = action != "hand_left";
+                Pose("torso"); Pose("chest"); Pose("neck"); Pose("head");
+                Pose("leftArm", 0, -.10f, vrm ? 1.35f : -.72f);
+                Pose("rightArm", 0, .10f, vrm ? -1.35f : .72f);
+                Pose("leftElbow", 0, -.18f); Pose("rightElbow", 0, .18f);
+                Pose("leftWrist"); Pose("rightWrist");
+                return;
+            }
+            if (twist || disco || march)
+            {
+                Pose("torso", 0, twist ? pulse * .16f : 0, disco ? sway * .10f : 0);
+                Pose("chest", 0, twist ? -pulse * .20f : 0);
+                Pose("head", 0, twist ? -pulse * .08f : 0, disco ? -sway * .06f : 0);
+                float left = disco ? .95f + .35f * pulse : twist ? .30f : .20f + .15f * pulse;
+                float right = disco ? .18f : twist ? .30f : .20f - .15f * pulse;
+                Pose("leftArm", disco ? -.35f : -pulse * .12f, -.15f, vrm ? 1.35f - left : -.72f + left);
+                Pose("rightArm", pulse * .12f, .15f, vrm ? -1.35f + right : .72f - right);
+                Pose("leftElbow", 0, twist ? -.9f : -.35f);
+                Pose("rightElbow", 0, twist ? .9f : .35f);
+                Pose("leftWrist", disco ? pulse * .25f : 0);
+                Pose("rightWrist");
+                float lift = march ? .32f : 0;
+                Pose("leftThigh", Mathf.Max(0, pulse) * lift, twist ? pulse * .12f : 0);
+                Pose("rightThigh", Mathf.Max(0, -pulse) * lift, twist ? pulse * .12f : 0);
+                Pose("leftKnee", -Mathf.Max(0, pulse) * lift * .6f);
+                Pose("rightKnee", -Mathf.Max(0, -pulse) * lift * .6f);
+                return;
+            }
+            Pose("torso", pulse * .035f, sway * .1f, sway * .075f);
+            Pose("chest", -.025f, -sway * .06f, -sway * .035f);
+            Pose("head", bounce * .035f, -sway * .08f, -sway * .04f);
+            float liftL = waveStyle ? .42f + (Mathf.Sin(beat * .5f) + 1) * .28f : .18f + (sway + 1) * .14f;
+            float liftR = waveStyle ? .42f + (Mathf.Sin(beat * .5f + 1.2f) + 1) * .28f : .18f + (1 - sway) * .14f;
+            Pose("leftArm", pulse * .10f, -.10f - liftL * .2f, vrm ? 1.35f - liftL : -.72f + liftL);
+            Pose("rightArm", -pulse * .10f, .10f + liftR * .2f, vrm ? -1.35f + liftR : .72f - liftR);
+            Pose("leftElbow", 0, -.24f - liftL * .55f, -.04f);
+            Pose("rightElbow", 0, .24f + liftR * .55f, .04f);
+            Pose("leftWrist", pulse * .12f, 0, -.05f + liftL * .12f);
+            Pose("rightWrist", -pulse * .12f, 0, .05f - liftR * .12f);
+            Pose("leftThigh", Mathf.Max(0, pulse) * .08f, 0, sway * .025f);
+            Pose("rightThigh", Mathf.Max(0, -pulse) * .08f, 0, sway * .025f);
+            Pose("leftKnee", -.06f - bounce * .06f);
+            Pose("rightKnee", -.06f - bounce * .06f);
+        }
+
         void ClearArms()
         {
             if (!bones.ContainsKey("torso") || avatar == null) return;

@@ -38,7 +38,7 @@ namespace Sakura.Unity
                 var advanced = new Foldout { text = "Tracking source & smoothing", value = false }; card.Add(advanced);
                 source = new DropdownField("Face tracking source", sources.ToList(), (int)tracking.Source); advanced.Add(source);
                 source.RegisterValueChangedCallback(_ => tracking.SetSource((SakuraTracking.InputSource)source.index));
-                var smoothing = new Slider("Movement smoothing", .01f, .25f) { value = tracking.Smoothing, showInputField = true };
+                var smoothing = new SakuraSlider("Movement smoothing", .01f, .25f) { value = tracking.Smoothing, showInputField = true };
                 smoothing.RegisterValueChangedCallback(change => tracking.Smoothing = change.newValue); advanced.Add(smoothing);
                 Description("Webcam uses local CPU MediaPipe. Native RTX requires the installed NVIDIA AR SDK. NVIDIA Broadcast Tracker uses the configured ExpressionApp engine. VBridger receives local VMC data on UDP 39539.", advanced);
             }
