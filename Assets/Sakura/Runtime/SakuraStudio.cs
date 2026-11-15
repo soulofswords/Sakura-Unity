@@ -121,15 +121,19 @@ namespace Sakura.Unity
             backend.ReplyDataReceived += ApplyAvatarReply;
             if (vtuberEdition) SwitchMode("VTuber");
             backend.RefreshCatalog();
-            // The standalone player starts with the same three-way chooser as the
-            // existing desktop launcher. Verification builds skip it so automated
-            // checks still enter the Studio directly.
+            // The Companion player starts with the same three-way chooser as the
+            // desktop launcher. The standalone VTuber edition is already a single
+            // mode, so it opens straight into the VTuber studio. Verification
+            // builds skip both so automated checks still enter the Studio directly.
             string[] arguments = Environment.GetCommandLineArgs();
             bool verification = arguments.Any(argument => argument == "--sakura-verify" || argument == "--sakura-verify-hold");
-            if (!Application.isEditor && !verification)
+            if (!Application.isEditor && !verification && !vtuberEdition)
                 SakuraStartupChooser.Attach(this, backend, () => SakuraSetupGuide.Attach(this, root));
-            else
+            else if (!vtuberEdition)
+            {
                 SakuraSetupGuide.Attach(this, root);
+                backend.BeginStartupGreeting();
+            }
         }
 
         private void Build()

@@ -284,15 +284,22 @@ namespace Sakura.Unity
                 Connected = request.result == UnityWebRequest.Result.Success;
                 StatusChanged?.Invoke(Connected ? "Connected to Sakura’s authenticated local backend." : "Backend is unavailable. " + request.error);
                 if (Connected) SetMode(Mode);
-                if (Connected && !startupGreetingRequested) { startupGreetingRequested = true; StartCoroutine(StartupGreeting()); }
             }
+        }
+
+        /// <summary>Starts the one-time AI greeting after the user has chosen a mode.</summary>
+        public void BeginStartupGreeting()
+        {
+            if (startupGreetingRequested) return;
+            startupGreetingRequested = true;
+            StartCoroutine(StartupGreeting());
         }
 
         private System.Collections.IEnumerator StartupGreeting()
         {
             yield return new WaitForSeconds(1f);
             if (!Connected || Mode != "Companion") yield break;
-            Api("/api/assistant/greeting", "{}", (json, error) =>
+            Api("/api/assistant/greeting?generated=1", "{}", (json, error) =>
             {
                 if (error != null || !Connected || Mode != "Companion") return;
                 try
