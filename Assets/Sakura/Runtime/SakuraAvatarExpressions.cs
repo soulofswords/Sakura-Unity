@@ -59,8 +59,10 @@ namespace Sakura.Unity
             cubism = GetComponent<CubismModel>(); vrm = GetComponent<Vrm10Instance>();
             if (vrm != null)
             {
-                foreach (var key in vrm.Runtime.Expression.ExpressionKeys)
-                { var captured = key; Add("vrm:" + key.Name, key.Name, value => vrm.Runtime.Expression.SetWeight(captured, value)); }
+                var expressionKeys = vrm.Runtime?.Expression?.ExpressionKeys;
+                if (expressionKeys != null)
+                    foreach (var key in expressionKeys)
+                    { var captured = key; Add("vrm:" + key.Name, key.Name, value => vrm.Runtime.Expression.SetWeight(captured, value)); }
             }
             else if (cubism != null)
             {

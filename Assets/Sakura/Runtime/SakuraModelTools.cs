@@ -120,7 +120,7 @@ namespace Sakura.Unity
             vrm = GetComponent<UniVRM10.Vrm10Instance>();
             if (vrm != null)
             {
-                authoredSprings = vrm.SpringBone.Springs.ToList();
+                authoredSprings = vrm.SpringBone?.Springs?.ToList() ?? new List<UniVRM10.Vrm10InstanceSpringBone.Spring>();
                 foreach (var joint in GetComponentsInChildren<UniVRM10.VRM10SpringBoneJoint>(true))
                     vrmSpringBase[joint] = (joint.m_stiffnessForce, joint.m_gravityPower, joint.m_dragForce);
             }
@@ -238,7 +238,7 @@ namespace Sakura.Unity
         }
         void RebuildSprings()
         {
-            if (vrm == null || authoredSprings == null) return;
+            if (vrm == null || vrm.SpringBone == null || authoredSprings == null) return;
             if (!physicsEnabled) { vrm.SpringBone.Springs = new List<UniVRM10.Vrm10InstanceSpringBone.Spring>(); springsDirty = true; return; }
             var frozen = new HashSet<Transform>(bones.Where(bone => profile.frozen.Contains(bone.Id)).Select(bone => bone.Transform));
             var springs = new List<UniVRM10.Vrm10InstanceSpringBone.Spring>();
@@ -262,7 +262,7 @@ namespace Sakura.Unity
                 }
                 AddChain();
             }
-            vrm.SpringBone.Springs = frozen.Count == 0 ? authoredSprings.ToList() : springs;
+            if (vrm.SpringBone != null) vrm.SpringBone.Springs = frozen.Count == 0 ? authoredSprings.ToList() : springs;
             springsDirty = true;
         }
         public void ApplyFrozenBones()
@@ -673,7 +673,7 @@ namespace Sakura.Unity
                 var viewport = GetComponentInParent<SakuraAvatarViewport>();
                 if (viewport != null) viewport.ApplyLive2DLimits(Live2D);
             }
-            if (springsDirty && vrm != null) springsDirty = !vrm.Runtime.SpringBone.ReconstructSpringBone();
+            if (springsDirty && vrm != null && vrm.Runtime.SpringBone != null) springsDirty = !vrm.Runtime.SpringBone.ReconstructSpringBone();
             foreach (var part in parts) if (part.Material != null && part.Original != null) ApplyMaterial(part);
             if (cubism != null && !profile.effects.authoredGlow)
                 foreach (var part in parts) if (IsAdditive(part) && part.ArtMesh.Color.a != 0) { var hidden = part.ArtMesh.Color; hidden.a = 0; part.ArtMesh.Color = hidden; }

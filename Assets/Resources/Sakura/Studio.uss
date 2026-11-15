@@ -262,7 +262,7 @@ TextField > .unity-text-field__label { min-width:0; font-size:12px; color:var(--
 .panel .unity-toggle { flex-direction:row-reverse; justify-content:flex-end; }
 .panel .unity-foldout__toggle { flex-direction:row; }
 .panel .unity-toggle__label { margin:0 0 0 8px; flex-grow:1; flex-shrink:1; min-width:0; white-space:normal; }
-.panel .unity-toggle__input { flex-grow:1; min-width:20px; min-height:20px; flex-shrink:1; }
+.panel .unity-toggle__input { flex-grow:0; min-width:20px; width:20px; min-height:20px; flex-shrink:0; }
 .panel .unity-toggle .unity-toggle__checkmark { width:16px; height:16px; border-width:1px; border-color:var(--muted); border-radius:3px; background-color:var(--input); }
 .panel .unity-toggle:checked .unity-toggle__checkmark { background-color:var(--accent); border-color:var(--accent); }
 .panel .unity-foldout__toggle > .unity-toggle__input { flex-grow:1; min-width:0; }

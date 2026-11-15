@@ -250,17 +250,22 @@ namespace Sakura.Unity
                 else if (format == "PMX") loaded = await SakuraModelImport.LoadPmx(path, importToken, text => { ImportDetails = text; StatusChanged?.Invoke(text); });
                 else loaded = SakuraModelImport.LoadLive2D(path);
                 if (loaded == null) throw new InvalidOperationException("The importer returned no model.");
-                try
+                // A model must still appear when an optional editor/rig helper fails.
+                // Previously one missing VRM spring-bone list aborted the whole import.
+                void Optional(string step, Action action)
                 {
-                    var motion = loaded.AddComponent<SakuraIdleMotion>(); motion.Initialize(path);
-                    loaded.AddComponent<SakuraAvatarExpressions>().Initialize(path, motion);
-                    if (format != "PMX") SakuraModelTools.GetOrCreate(loaded, path);
-                    else loaded.AddComponent<SakuraPmxPhysics>().Initialize(loaded.GetComponent<SakuraPmxModel>());
-                    SakuraMaterialExpressions.GetOrCreate(loaded, path);
-                    if (format != "Live2D") loaded.AddComponent<SakuraRigMonitor>().Initialize(path);
-                    var studio = GetComponent<SakuraStudio>(); motion.Companion = studio == null || studio.CurrentMode == "Companion";
+                    try { action(); }
+                    catch (Exception error) { Debug.LogWarning("[Sakura] " + format + " " + step + " setup skipped: " + error); }
                 }
-                catch { Destroy(loaded); throw; }
+                SakuraIdleMotion motion = null;
+                Optional("idle motion", () => { motion = loaded.AddComponent<SakuraIdleMotion>(); motion.Initialize(path); });
+                Optional("expressions", () => loaded.AddComponent<SakuraAvatarExpressions>().Initialize(path, motion));
+                if (format != "PMX") Optional("model tools", () => SakuraModelTools.GetOrCreate(loaded, path));
+                else Optional("physics", () => loaded.AddComponent<SakuraPmxPhysics>().Initialize(loaded.GetComponent<SakuraPmxModel>()));
+                Optional("material expressions", () => SakuraMaterialExpressions.GetOrCreate(loaded, path));
+                if (format != "Live2D") Optional("rig monitor", () => loaded.AddComponent<SakuraRigMonitor>().Initialize(path));
+                var studio = GetComponent<SakuraStudio>();
+                if (motion != null) motion.Companion = studio == null || studio.CurrentMode == "Companion";
                 if (importToken.IsCancellationRequested) { Destroy(loaded); return; }
                 var previous = avatar;
                 avatar = loaded;
@@ -297,7 +302,7 @@ namespace Sakura.Unity
                 StatusChanged?.Invoke(ImportDetails);
             }
             catch (OperationCanceledException) { }
-            catch (Exception error) { LastImportError = error.Message; StatusChanged?.Invoke("Could not load model. " + error.Message); }
+            catch (Exception error) { Debug.LogError("[Sakura] Could not load " + relative + ": " + error); LastImportError = error.Message; StatusChanged?.Invoke("Could not load model. " + error.Message); }
             finally { Loading = false; }
         }
 

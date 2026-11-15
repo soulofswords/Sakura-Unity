@@ -439,7 +439,7 @@ namespace Sakura.Unity
         void LateUpdate()
         {
             if (objectCameraMode || camera == null || !camera.isPlaying || !camera.didUpdateThisFrame || camera.width < 32 || uploadPending || Time.unscaledTime < nextCamera || backend == null) return;
-            nextCamera = Time.unscaledTime + .066f;
+            nextCamera = Time.unscaledTime + .033f;
             if (camera.width > 1920 || camera.height > 1080) { StopCamera(); Notify("Camera supplied oversized frames. Choose a lower camera resolution."); return; }
             try
             {
@@ -480,6 +480,7 @@ namespace Sakura.Unity
         readonly Dictionary<Transform, Quaternion> writes = new Dictionary<Transform, Quaternion>();
         readonly Dictionary<CubismParameter, float> parameterRest = new Dictionary<CubismParameter, float>();
         readonly Dictionary<string, float> scores = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, float> smoothedScores = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
         readonly HashSet<string> previousScores = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public void Initialize(SakuraTracking tracking)
         {
@@ -532,7 +533,7 @@ namespace Sakura.Unity
         {
             frame = null; cursor = Vector2.zero; calibrated = false; smooth = Quaternion.identity;
             foreach (var item in writes) if (item.Key != null) item.Key.localRotation = rest[item.Key]; writes.Clear();
-            foreach (var name in previousScores) Morph(name, 0); previousScores.Clear();
+            foreach (var name in previousScores) Morph(name, 0); previousScores.Clear(); smoothedScores.Clear();
             if (cubism != null) foreach (var parameter in parameterRest) parameter.Key.Value = parameter.Value;
         }
         void Update()
@@ -559,11 +560,20 @@ namespace Sakura.Unity
             scores["ウィンク"] = left; scores["ウィンク右"] = right;
             foreach (var name in previousScores) if (!scores.ContainsKey(name)) Morph(name, 0);
             previousScores.Clear();
-            foreach (var value in scores) { Morph(value.Key, !owner.Mouth && (value.Key.StartsWith("mouth", StringComparison.OrdinalIgnoreCase) || value.Key == "jawOpen") ? 0 : value.Value); previousScores.Add(value.Key); }
+            foreach (var value in scores) { float target = !owner.Mouth && (value.Key.StartsWith("mouth", StringComparison.OrdinalIgnoreCase) || value.Key == "jawOpen") ? 0 : value.Value; Morph(value.Key, SmoothScore(value.Key, target)); previousScores.Add(value.Key); }
             if (cubism != null)
             {
                 Parameter("ParamEyeLOpen", 1 - left); Parameter("ParamEyeROpen", 1 - right); Parameter("ParamMouthOpenY", scores["aa"]);
             }
+        }
+        float SmoothScore(string name, float value)
+        {
+            if (!smoothedScores.TryGetValue(name, out float current)) current = value;
+            bool fast = name.StartsWith("eyeBlink", StringComparison.OrdinalIgnoreCase) || name == "blink" || name == "jawOpen";
+            float tau = fast ? .035f : .075f;
+            float next = Mathf.Lerp(current, value, 1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime, .1f) / tau));
+            if (Mathf.Abs(next - value) < .0015f) next = value;
+            smoothedScores[name] = next; return next;
         }
         void Morph(string name, float value)
         {
@@ -588,7 +598,9 @@ namespace Sakura.Unity
         {
             var target = CursorHeadRotation(cursor, cubism != null);
             if (FaceRotation(frame?["face"] as JObject, out var rotation)) { if (!calibrated) { neutral = rotation; calibrated = true; } target = Quaternion.Inverse(neutral) * rotation; }
-            smooth = Quaternion.Slerp(smooth, target, 1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime, .1f) / Mathf.Max(.01f, owner.Smoothing))); return smooth;
+            float speed = Quaternion.Angle(smooth, target);
+            float response = speed > 12 ? .45f : speed > 4 ? .7f : 1f;
+            smooth = Quaternion.Slerp(smooth, target, 1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime, .1f) / Mathf.Max(.01f, owner.Smoothing * response))); return smooth;
         }
         void LateUpdate()
         {
