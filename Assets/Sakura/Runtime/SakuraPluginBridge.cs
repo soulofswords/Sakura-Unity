@@ -392,15 +392,14 @@ namespace Sakura.Unity
                 int? width = args["customWidthNDI"]?.Type == JTokenType.Integer ? args.Value<int>("customWidthNDI") : null;
                 int? height = args["customHeightNDI"]?.Type == JTokenType.Integer ? args.Value<int>("customHeightNDI") : null;
                 bool retain = width == null && height == null || width == -1 && height == -1;
-                if (!retain)
-                {
-                    if (width == null || height == null) throw new ArgumentException("Set both customWidthNDI and customHeightNDI, or -1 for both to retain the resolution.");
-                    output.SetNdiResolution(true, width.Value, height.Value); custom = true; resolution = new Vector2Int(width.Value, height.Value);
-                }
-                else if (custom) output.SetNdiResolution(true, resolution.x, resolution.y);
-                else output.SetNdiResolution(false, resolution.x, resolution.y);
+                if (!retain && (width == null || height == null)) throw new ArgumentException("Set both customWidthNDI and customHeightNDI, or -1 for both to retain the resolution.");
                 if (Time.unscaledTime < ndiNextWrite) throw new InvalidOperationException("NDIConfigCooldownNotOver. Wait 3 seconds between NDI configuration changes.");
                 ndiNextWrite = Time.unscaledTime + 3;
+                if (!retain)
+                {
+                    output.SetNdiResolution(true, width.Value, height.Value); custom = true; resolution = new Vector2Int(width.Value, height.Value);
+                }
+                else output.SetNdiResolution(custom, resolution.x, resolution.y);
                 if (channel.Enabled != active) output.Configure("ndi", active);
             }
             return new JObject { ["setNewConfig"] = false, ["ndiActive"] = active, ["useNDI5"] = true, ["useCustomResolution"] = custom, ["customWidthNDI"] = resolution.x, ["customHeightNDI"] = resolution.y };
