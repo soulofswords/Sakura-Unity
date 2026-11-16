@@ -53,6 +53,23 @@ namespace Sakura.Unity
                 while (!load.IsCompleted) yield return null;
                 report["fixtureImportError"] = viewport.LastImportError;
             }
+            if (!SakuraInstances.IsSecondary && backend.Connected)
+            {
+                // VRM shaders are only reached through Shader.Find at runtime, so a build that
+                // strips them renders nothing; count real pixels instead of trusting the import.
+                var vrm = viewport.LoadModel(backend.SourceFolder, "vrm/ArisuMaid.vrm");
+                while (!vrm.IsCompleted) yield return null;
+                report["vrmImportError"] = viewport.LastImportError;
+                yield return new WaitForSecondsRealtime(1);
+                if (viewport.HasAvatar && viewport.LoadedFormat == "VRM")
+                {
+                    report["vrmVisiblePixels"] = viewport.ReadAvatarPixels(256).Count(pixel => pixel.a > 32);
+                    report["vrmShaders"] = new JArray(viewport.AvatarRoot.GetComponentsInChildren<Renderer>()
+                        .SelectMany(renderer => renderer.sharedMaterials).Where(material => material != null)
+                        .Select(material => material.shader == null ? "null" : material.shader.name).Distinct());
+                    yield return Shot(folder, "match-vrm.png");
+                }
+            }
             report["avatarLoaded"] = viewport.HasAvatar; report["microphoneOff"] = !studio.GetComponent<SakuraVoice>().Listening;
             if (viewport.HasAvatar)
             {
