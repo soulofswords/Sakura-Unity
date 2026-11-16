@@ -48,6 +48,8 @@ namespace Sakura.Unity
         public JArray PhoneDevices { get; private set; } = new JArray();
         public event Action Changed;
         public event Action<string> PhoneModelRequested;
+        public event Action<byte[]> PhoneCameraFrame;
+        public bool PhoneCameraActive { get; private set; }
         private InputSource selectedSource = InputSource.Webcam;
         private string selectedCamera;
         SakuraBackend backend;
@@ -92,7 +94,7 @@ namespace Sakura.Unity
         public static bool? PhoneTrackingStateForCommand(string kind)
         {
             if (kind == "tracking-start" || kind == "companion-tracking-start") return true;
-            if (kind == "tracking-stop" || kind == "companion-tracking-stop" || kind == "camera-start") return false;
+            if (kind == "tracking-stop" || kind == "companion-tracking-stop") return false;
             return null;
         }
         public static string PhoneDeckPoseForCommand(string name)
@@ -331,6 +333,7 @@ namespace Sakura.Unity
                     {
                         foreach (var command in (data["commands"] as JArray ?? new JArray()).OfType<JObject>()) PhoneCommand(command);
                         if (phoneTrackingEnabled && data["frame"] is JObject frame) Receive(frame);
+                        if (data["camera"] is JObject phoneCamera && phoneCamera["image"] is JValue imageToken) ReceivePhoneCamera(imageToken.Value<string>());
                     }
                     else if (data.Value<bool?>("connected") == true && data.Value<bool?>("face_detected") != false)
                         Receive(new JObject { ["face"] = new JObject { ["blendshapes"] = data["blendshapes"]?.DeepClone() ?? new JObject() } });
@@ -371,6 +374,15 @@ namespace Sakura.Unity
                 else Notify("Rejected a phone model request with an invalid id.");
                 return;
             }
+            if (kind == "camera-start")
+            {
+                phoneTrackingEnabled = false; PhoneCameraActive = true; sample = null; rig?.Accept(null); StopCamera();
+                Notify("Phone camera viewing started · object only · face tracking off"); Changed?.Invoke(); return;
+            }
+            if (kind == "camera-stop")
+            {
+                PhoneCameraActive = false; Notify("Phone camera viewing stopped"); Changed?.Invoke(); return;
+            }
             bool? trackingState = PhoneTrackingStateForCommand(kind);
             if (trackingState.HasValue)
             {
@@ -394,7 +406,7 @@ namespace Sakura.Unity
                 else if (pose != null && actions != null && actions.Gesture(pose)) Notify("Phone hotkey · " + pose.Replace('_', ' '));
                 else Notify("This phone pose needs a compatible 3D character with tracking stopped.");
             }
-            else if (kind != "tracking-start" && kind != "companion-tracking-start" && kind != "tracking-stop" && kind != "companion-tracking-stop" && kind != "camera-start") Notify("Phone command not yet migrated: " + kind);
+            else if (kind != "tracking-start" && kind != "companion-tracking-start" && kind != "tracking-stop" && kind != "companion-tracking-stop") Notify("Phone command not yet migrated: " + kind);
         }
         public static bool ValidPhoneRequestId(string value) => value != null && value.Length == 32 && value.All(character => character >= '0' && character <= '9' || character >= 'a' && character <= 'f');
         public void StageModelForPhone(string path, string requestId, Action<bool, string> completed = null)
@@ -431,6 +443,18 @@ namespace Sakura.Unity
                 catch (Exception exception) { Notify("Phone transfer could not be confirmed: " + exception.Message); }
             });
         }
+        void ReceivePhoneCamera(string base64)
+        {
+            if (string.IsNullOrEmpty(base64) || base64.Length > 300000) return;
+            try
+            {
+                byte[] jpeg = Convert.FromBase64String(base64);
+                if (jpeg.Length < 4 || jpeg[0] != 0xff || jpeg[1] != 0xd8 || jpeg[2] != 0xff) return;
+                PhoneCameraFrame?.Invoke(jpeg);
+            }
+            catch (FormatException) { }
+        }
+
         public void Receive(JObject frame)
         {
             if (!SakuraTrackingRig.ValidFrame(frame)) throw new ArgumentException("Tracking frame contains invalid or excessive signals.");

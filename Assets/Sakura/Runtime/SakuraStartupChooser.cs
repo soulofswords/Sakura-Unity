@@ -19,13 +19,19 @@ namespace Sakura.Unity
 
         private readonly SakuraStudio studio;
         private readonly SakuraBackend backend;
-        private readonly VisualElement overlay;
+        private readonly VisualElement overlay, body;
         private readonly Action completed;
         private readonly TextField keyField, modelField;
         private readonly DropdownField providerField;
         private readonly Label keyHint, status;
         private readonly List<Button> cards = new List<Button>();
-        private bool busy, closed;
+        private VisualElement localSetup;
+        private DropdownField localCatalog;
+        private Label localStatus;
+        private Button localDownload;
+        private IVisualElementScheduledItem localPoll;
+        private readonly List<JObject> localModels = new List<JObject>();
+        private bool busy, closed, localReady;
         private bool? savedCloudKey;
         private string savedProvider = "gemini";
 
@@ -57,7 +63,7 @@ namespace Sakura.Unity
             scroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
             scroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             card.Add(scroll);
-            var body = scroll.contentContainer;
+            body = scroll.contentContainer;
             body.AddToClassList("startup-body");
             body.style.width = 618; body.style.height = 752; body.style.flexShrink = 0;
 
@@ -121,6 +127,7 @@ namespace Sakura.Unity
                     savedCloudKey = settings.Value<bool?>("gemini_key_set") == true || settings.Value<bool?>("cloud_key_set") == true;
                     string provider = settings.Value<string>("llm_provider") ?? "gemini";
                     savedProvider = provider == "ollama" ? settings.Value<string>("last_cloud_provider") ?? "gemini" : provider;
+                    studio.ApplyTheme(settings.Value<string>("ui_theme") ?? "system");
                 }
                 catch (Newtonsoft.Json.JsonException) { }
             });
@@ -158,6 +165,13 @@ namespace Sakura.Unity
         }
 
         private void Choose(string mode)
+        {
+            if (busy || closed) return;
+            if (mode == "local" && !localReady) { CheckLocalModels(); return; }
+            StartMode(mode);
+        }
+
+        private void StartMode(string mode)
         {
             if (busy || closed) return;
             string key = (keyField.value ?? "").Trim();
@@ -221,6 +235,111 @@ namespace Sakura.Unity
             });
         }
 
+        private void CheckLocalModels()
+        {
+            status.text = "Checking installed local models…";
+            backend.Api("/api/ollama/models", new JObject { ["folder"] = "" }.ToString(Newtonsoft.Json.Formatting.None), (json, error) =>
+            {
+                if (closed || busy) return;
+                if (error == null)
+                {
+                    try
+                    {
+                        var rows = JObject.Parse(json)["models"] as JArray;
+                        if (rows != null && rows.Count > 0) { localReady = true; status.text = ""; StartMode("local"); return; }
+                    }
+                    catch (Newtonsoft.Json.JsonException) { }
+                }
+                ShowLocalSetup();
+            });
+        }
+
+        private void ShowLocalSetup()
+        {
+            status.text = "";
+            if (localSetup != null) return;
+            localSetup = new VisualElement(); localSetup.AddToClassList("startup-local-setup");
+            body.Add(localSetup); Place(localSetup, 18, 238, 582, 390);
+            var heading = new Label("Set up local AI"); heading.AddToClassList("startup-local-title"); localSetup.Add(heading);
+            var copy = new Label("Local AI downloads an optional runtime and a vision model into your Sakura folder. Nothing is downloaded until you choose Download. Existing models and settings are kept."); copy.AddToClassList("startup-local-copy"); localSetup.Add(copy);
+            localCatalog = new DropdownField(new List<string> { "Reading local model catalog…" }, 0); localSetup.Add(localCatalog);
+            localStatus = new Label("Nothing is downloaded until you select Download."); localStatus.AddToClassList("startup-local-status"); localSetup.Add(localStatus);
+            var actions = new VisualElement(); actions.AddToClassList("startup-local-actions"); localSetup.Add(actions);
+            localDownload = new Button(DownloadLocal) { text = "Download and use local AI" }; localDownload.SetEnabled(false); actions.Add(localDownload);
+            actions.Add(new Button(CancelLocalSetup) { text = "Cancel" });
+            backend.Api("/api/ollama/manager", null, (json, error) =>
+            {
+                if (localSetup == null) return;
+                if (error != null) { localStatus.text = "The local model catalog is unavailable: " + error; return; }
+                try
+                {
+                    var rows = JObject.Parse(json)["catalog"] as JArray ?? new JArray();
+                    localModels.Clear(); var labels = new List<string>();
+                    foreach (var row in rows.OfType<JObject>())
+                    {
+                        string model = row.Value<string>("model"); if (string.IsNullOrEmpty(model)) continue;
+                        localModels.Add(row); labels.Add((row.Value<string>("name") ?? model) + " · " + (row.Value<string>("download") ?? "download"));
+                    }
+                    localCatalog.choices = labels.Count == 0 ? new List<string> { "No local catalog models" } : labels;
+                    localCatalog.SetValueWithoutNotify(localCatalog.choices[0]); localDownload.SetEnabled(localModels.Count > 0);
+                    localStatus.text = localModels.Count == 0 ? "No downloadable models were returned. You can add one later in Settings." : "Recommended: choose a vision model that fits your GPU memory.";
+                }
+                catch (Newtonsoft.Json.JsonException) { localStatus.text = "The local model catalog returned an unreadable response."; }
+            });
+        }
+
+        private void DownloadLocal()
+        {
+            if (localSetup == null || localModels.Count == 0) return;
+            int index = Mathf.Clamp(localCatalog.index, 0, localModels.Count - 1);
+            string model = localModels[index].Value<string>("model");
+            if (string.IsNullOrEmpty(model)) return;
+            localDownload.SetEnabled(false); localCatalog.SetEnabled(false); localStatus.text = "Starting download…";
+            backend.Api("/api/ollama/manager/download", new JObject { ["model"] = model, ["folder"] = "" }.ToString(Newtonsoft.Json.Formatting.None), (_, error) =>
+            {
+                if (localSetup == null) return;
+                if (error != null) { localStatus.text = "Download could not start: " + error; localDownload.SetEnabled(true); localCatalog.SetEnabled(true); return; }
+                localPoll?.Pause(); localPoll = localSetup.schedule.Execute(() => PollLocal(model)).Every(1000); localPoll.ExecuteLater(500);
+            });
+        }
+
+        private void PollLocal(string model)
+        {
+            backend.Api("/api/ollama/manager", null, (json, error) =>
+            {
+                if (localSetup == null) return;
+                if (error != null) { localStatus.text = "Download status is unavailable: " + error; return; }
+                try
+                {
+                    var job = JObject.Parse(json)["job"] as JObject;
+                    if (job == null) return;
+                    string message = job.Value<string>("message") ?? "Downloading…";
+                    localStatus.text = message;
+                    if (job.Value<bool?>("running") == false)
+                    {
+                        if (message.StartsWith("Download failed", StringComparison.OrdinalIgnoreCase)) { localDownload.SetEnabled(true); localCatalog.SetEnabled(true); localPoll?.Pause(); return; }
+                        if (message.StartsWith("Downloaded", StringComparison.OrdinalIgnoreCase) || job.Value<double?>("percent") == 100)
+                        {
+                            localPoll?.Pause();
+                            backend.Api("/api/settings", new JObject { ["ollama_model"] = model }.ToString(Newtonsoft.Json.Formatting.None), (_, saveError) =>
+                            {
+                                if (localSetup == null) return;
+                                if (saveError != null) { localStatus.text = "The model downloaded, but could not be selected: " + saveError; localDownload.SetEnabled(true); localCatalog.SetEnabled(true); return; }
+                                localReady = true; localSetup.RemoveFromHierarchy(); localSetup = null; StartMode("local");
+                            });
+                        }
+                    }
+                }
+                catch (Newtonsoft.Json.JsonException) { localStatus.text = "Download status returned an unreadable response."; }
+            });
+        }
+
+        private void CancelLocalSetup()
+        {
+            localPoll?.Pause(); localPoll = null; localSetup?.RemoveFromHierarchy(); localSetup = null;
+            status.text = "";
+        }
+
         private static string DetectProvider(string key)
         {
             if (key.StartsWith("AIza", StringComparison.Ordinal)) return "gemini";
@@ -248,7 +367,7 @@ namespace Sakura.Unity
         private void Close()
         {
             if (closed) return;
-            closed = true;
+            closed = true; localPoll?.Pause();
             overlay.RemoveFromHierarchy();
         }
 

@@ -20,7 +20,10 @@ namespace Sakura.Unity
         private readonly Button objectsButton, trackingButton;
         private readonly Toggle access, comments, cameraStyle;
         private readonly DropdownField cameraChoice;
-        private readonly Label status, styleStatus;
+        private readonly Label status, styleStatus, phoneLabel;
+        private readonly VisualElement phoneHost;
+        private readonly Image phoneView;
+        private Texture2D phoneTexture;
         private IVisualElementScheduledItem timer;
         private bool objectMode;
         private string selectedCamera;
@@ -39,6 +42,11 @@ namespace Sakura.Unity
 
             objectHost = new VisualElement(); card.Add(objectHost);
             trackingHost = new VisualElement(); card.Add(trackingHost);
+
+            phoneHost = new VisualElement(); phoneHost.AddToClassList("card"); phoneHost.style.display = DisplayStyle.None; owner.Add(phoneHost);
+            var phoneTitle = new Label("Phone camera"); phoneTitle.AddToClassList("card-title"); phoneHost.Add(phoneTitle);
+            phoneLabel = new Label("Waiting for the phone camera…"); phoneLabel.AddToClassList("description"); phoneHost.Add(phoneLabel);
+            phoneView = new Image { pickingMode = PickingMode.Ignore }; phoneView.style.width = Length.Percent(100); phoneView.style.height = 220; phoneView.style.backgroundColor = new Color(0, 0, 0, .35f); phoneHost.Add(phoneView);
 
             var devices = WebCamTexture.devices.Select(device => device.name).ToList();
             selectedCamera = PlayerPrefs.GetString("sakura-camera-device", devices.FirstOrDefault() ?? "");
@@ -89,8 +97,8 @@ namespace Sakura.Unity
             SetMode(objectMode);
             LoadCameraStyle();
 
-            tracking.Changed += Refresh;
-            owner.RegisterCallback<DetachFromPanelEvent>(_ => { timer?.Pause(); tracking.Changed -= Refresh; });
+            tracking.Changed += Refresh; tracking.PhoneCameraFrame += ShowPhoneCamera;
+            owner.RegisterCallback<DetachFromPanelEvent>(_ => { timer?.Pause(); tracking.Changed -= Refresh; tracking.PhoneCameraFrame -= ShowPhoneCamera; if (phoneTexture != null) UnityEngine.Object.Destroy(phoneTexture); });
             timer = owner.schedule.Execute(IdleComment).Every(60000);
             Refresh();
         }
@@ -158,9 +166,23 @@ namespace Sakura.Unity
             backend.SendCameraReaction(jpeg, (reply, error) => { if (owner.panel != null && error != null) status.text = error; });
         }
 
+        private void ShowPhoneCamera(byte[] jpeg)
+        {
+            if (owner.panel == null || jpeg == null || jpeg.Length == 0 || jpeg.Length > 300000) return;
+            try
+            {
+                if (phoneTexture == null) phoneTexture = new Texture2D(2, 2, TextureFormat.RGB24, false);
+                if (!phoneTexture.LoadImage(jpeg)) return;
+                phoneView.image = phoneTexture; phoneHost.style.display = DisplayStyle.Flex;
+                phoneLabel.text = "Phone camera · object viewing only · face tracking off";
+            }
+            catch (Exception error) { phoneLabel.text = "Phone camera frame could not be shown: " + error.Message; }
+        }
+
         private void Refresh()
         {
             if (owner.panel == null) return;
+            phoneHost.style.display = tracking.PhoneCameraActive ? DisplayStyle.Flex : DisplayStyle.None;
             bool on = objectMode ? tracking.CameraActive : tracking.Source != SakuraTracking.InputSource.Off;
             access.SetValueWithoutNotify(on);
             if (!objectMode) status.text = tracking.Status;

@@ -35,6 +35,9 @@ namespace Sakura.Unity
             internal Channel(string id, string header) { Id = id; Header = header; }
         }
         public readonly Channel[] Channels = { new Channel("spout", "x-spout-session"), new Channel("ndi", "x-ndi-session"), new Channel("virtual-camera", "x-camera-session") };
+        public bool NdiActive => Array.Find(Channels, value => value.Id == "ndi")?.Enabled == true;
+        public bool NdiUseCustomResolution { get; private set; }
+        public Vector2Int NdiResolution { get; private set; } = new Vector2Int(1920, 1080);
         private RenderTexture capture;
         private Material backgroundComposite;
         private bool reading, screenshot, dead;
@@ -70,6 +73,11 @@ namespace Sakura.Unity
             if (Recording || SavingRecording) { Report("Stop recording before changing the capture rate."); return; }
             foreach (var channel in Channels) if (channel.Enabled || channel.Busy) { Report("Stop streaming before changing the capture rate."); return; }
             FrameRate = fps; Changed?.Invoke();
+        }
+        public void SetNdiResolution(bool custom, int width, int height)
+        {
+            if (custom && (width < 256 || width > 2560 || height < 256 || height > 2560 || width % 16 != 0 || height % 8 != 0)) throw new ArgumentException("NDI dimensions must be 256-2560, width divisible by 16 and height by 8.");
+            NdiUseCustomResolution = custom; if (custom) NdiResolution = new Vector2Int(width, height);
         }
         public void Configure(string id, bool enabled, string sender = "Sakura")
         {
@@ -116,6 +124,7 @@ namespace Sakura.Unity
             // The source virtual camera accepts dimensions no larger than 1280.
             foreach (var channel in Channels) if (channel.Id == "virtual-camera" && channel.Enabled) side = Mathf.Min(side, 1280);
             var size = recorder != null ? recorder.Size : Dimensions(source.width, source.height, side);
+            if (recorder == null && NdiActive && NdiUseCustomResolution) size = NdiResolution;
             if (capture == null || capture.width != size.x || capture.height != size.y)
             {
                 if (capture != null) { capture.Release(); Destroy(capture); }
@@ -123,9 +132,9 @@ namespace Sakura.Unity
             }
             bool shot = screenshot; screenshot = false; reading = true;
             var backdrop = GetComponent<SakuraBackdrop>();
+            if (backgroundComposite == null) backgroundComposite = new Material(Resources.Load<Shader>("Sakura/BackdropComposite"));
             if (backdrop != null && (backdrop.SolidOutput || backdrop.OutputMedia != null))
             {
-                if (backgroundComposite == null) backgroundComposite = new Material(Resources.Load<Shader>("Sakura/BackdropComposite"));
                 backgroundComposite.SetColor("_Background", backdrop.SolidOutput ? backdrop.Colour : Color.clear);
                 var media = backdrop.OutputMedia;
                 backgroundComposite.SetTexture("_Media", media);
@@ -133,9 +142,17 @@ namespace Sakura.Unity
                 float mediaAspect = media == null ? 1 : media.width / (float)Mathf.Max(1, media.height);
                 float aspect = size.x / (float)size.y;
                 backgroundComposite.SetVector("_MediaScale", new Vector4(Mathf.Min(1, aspect / mediaAspect), Mathf.Min(1, mediaAspect / aspect), 0, 0));
-                Graphics.Blit(source, capture, backgroundComposite);
             }
-            else Graphics.Blit(source, capture);
+            else
+            {
+                backgroundComposite.SetColor("_Background", Color.clear);
+                backgroundComposite.SetFloat("_UseMedia", 0);
+            }
+            float sourceAspect = source.width / (float)Mathf.Max(1, source.height);
+            float targetAspect = size.x / (float)Mathf.Max(1, size.y);
+            Vector2 avatarCrop = sourceAspect > targetAspect ? new Vector2(1, targetAspect / sourceAspect) : new Vector2(sourceAspect / targetAspect, 1);
+            backgroundComposite.SetVector("_MainTexScale", new Vector4(avatarCrop.x, avatarCrop.y, 0, 0));
+            Graphics.Blit(source, capture, backgroundComposite);
             AsyncGPUReadback.Request(capture, 0, TextureFormat.RGBA32, request =>
             {
                 reading = false;

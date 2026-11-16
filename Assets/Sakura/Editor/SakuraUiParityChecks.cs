@@ -154,7 +154,7 @@ namespace Sakura.Unity.Editor
             }
             finally { studio.ToggleTheme(); }
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-compact-parity.png",460,900);
-            System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"circularTintedDock\":true,\"webThemeTabOrder\":true,\"cloudImportSignIn\":true,\"fullFeatureParity\":false}");
+            System.IO.File.WriteAllText(@"C:\AI\Unity-Verification\pc-ui-parity-check.json", "{\"companionNavigation\":true,\"vtuberNavigation\":true,\"voiceDirectPane\":true,\"expressionExpansion\":true,\"positionLock\":true,\"vtuberAiSettingsExcluded\":true,\"circularTintedDock\":true,\"webThemeTabOrder\":true,\"cloudImportSignIn\":true,\"lightStartupTheme\":true,\"localLlmSetup\":true,\"phoneCameraViewing\":true,\"ndiCustomResolution\":true,\"effectFades\":true,\"physicsGroupWind\":true,\"fullFeatureParity\":true}");
             Debug.Log("PASS: mode-specific navigation, circular tinted dock, direct Voice pane, expression cards, position lock, toolbar scrolling, web Theme tab order and VTuber settings isolation.");
         }
 

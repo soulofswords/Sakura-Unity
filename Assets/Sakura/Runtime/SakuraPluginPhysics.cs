@@ -54,6 +54,7 @@ namespace Sakura.Unity
         {
             if (model == null || rig == null) return;
             for (int group = 0; group < rig.SubRigs.Length; group++)
+            {
                 for (int index = 0; index < rig.SubRigs[group].Output.Length; index++)
                 {
                     float factor = Value("strength:", 50) / 50 * Value("strength:" + ids[group], 1);
@@ -61,12 +62,15 @@ namespace Sakura.Unity
                     rig.SubRigs[group].Output[index].TranslationScale = translations[group][index] * factor;
                     rig.SubRigs[group].Output[index].InitializeGetter();
                 }
+                rig.SubRigs[group].WindOverride = overrides.Count == 0 ? null :
+                    wind + Vector2.right * (Value("wind:", 0) / 100 * Value("wind:" + ids[group], 1));
+            }
             rig.Wind = wind + Vector2.right * (Value("wind:", 0) / 100);
         }
         public JObject Query(SakuraAvatarViewport viewport, SakuraBackend backend)
         {
             Ensure(viewport, backend); Tick(viewport);
-            return new JObject { ["baseStrength"] = 50, ["baseWind"] = 0, ["apiPhysicsOverrideActive"] = overrides.Count > 0, ["apiPhysicsOverridePluginName"] = overrides.Count > 0 ? ownerName ?? "" : "", ["physicsGroups"] = new JArray(ids.Select((id, index) => new JObject { ["groupID"] = id, ["groupName"] = rig.SubRigs[index].Name ?? "", ["strengthMultiplier"] = 1, ["windMultiplier"] = 1 })) };
+            return new JObject { ["baseStrength"] = 50, ["baseWind"] = 0, ["apiPhysicsOverrideActive"] = overrides.Count > 0, ["apiPhysicsOverridePluginName"] = overrides.Count > 0 ? ownerName ?? "" : "", ["physicsGroups"] = new JArray(ids.Select((id, index) => new JObject { ["groupID"] = id, ["groupName"] = rig.SubRigs[index].Name ?? "", ["strengthMultiplier"] = Value("strength:" + id, 1), ["windMultiplier"] = Value("wind:" + id, 1) })) };
         }
         public JObject Set(SakuraAvatarViewport viewport, SakuraBackend backend, JObject args)
         {
@@ -84,7 +88,6 @@ namespace Sakura.Unity
                     if (row["setBaseValue"] != null && row["setBaseValue"].Type != JTokenType.Boolean) throw new ArgumentException("setBaseValue must be a boolean.");
                     bool baseValue = row.Value<bool?>("setBaseValue") == true; string id = baseValue ? "" : row.Value<string>("id");
                     if (!baseValue && !ids.Contains(id)) throw new ArgumentException("Unknown physics group: " + id);
-                    if (kind == "wind" && !baseValue) throw new NotSupportedException("Group-specific wind is unavailable in the native Cubism SDK. Base wind overrides are supported.");
                     float value = row.Value<float>("value"), seconds = row.Value<float?>("overrideSeconds") ?? 1;
                     if (!float.IsFinite(value) || !float.IsFinite(seconds)) throw new ArgumentException("Physics override values and durations must be finite.");
                     pending.Add((kind + ":" + id, new Override { Value = Mathf.Clamp(value, 0, baseValue ? 100 : 2), Until = Time.unscaledTime + Mathf.Clamp(seconds, .5f, 5) }));
@@ -96,7 +99,9 @@ namespace Sakura.Unity
         }
         public void Clear()
         {
-            overrides.Clear(); Apply(); model = null; rig = null; ids = null; angles = null; translations = null; owner = ownerName = null;
+            overrides.Clear();
+            if (rig != null) foreach (var subRig in rig.SubRigs) subRig.WindOverride = null;
+            Apply(); model = null; rig = null; ids = null; angles = null; translations = null; owner = ownerName = null;
         }
     }
 }

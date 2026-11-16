@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -40,6 +41,7 @@ namespace Sakura.Unity
         readonly Dictionary<string, float> customValues = new Dictionary<string, float>();
         readonly HashSet<string> selectedArtMeshes = new HashSet<string>();
         float injectedUntil;
+        float ndiNextWrite;
         readonly SakuraPluginPhysics physics = new SakuraPluginPhysics();
         GameObject injectionModel;
         public string Status { get; private set; } = "Plugin server is off.";
@@ -380,14 +382,28 @@ namespace Sakura.Unity
         {
             var output = UnityEngine.Object.FindFirstObjectByType<SakuraOutput>() ?? throw new InvalidOperationException("The output service is unavailable.");
             var channel = output.Channels.FirstOrDefault(value => value.Id == "ndi") ?? throw new InvalidOperationException("NDI output is unavailable.");
-            bool active = channel.Enabled;
+            bool active = channel.Enabled, custom = output.NdiUseCustomResolution;
+            Vector2Int resolution = output.NdiResolution;
             if (args.Value<bool?>("setNewConfig") == true)
             {
-                if (args.Value<bool?>("useNDI5") == false) throw new NotSupportedException("Switching NDI runtime versions is unavailable.");
-                if (args.Value<bool?>("useCustomResolution") == true) throw new NotSupportedException("Custom NDI resolutions are unavailable in this window.");
-                if (args["ndiActive"] != null) { bool want = args.Value<bool>("ndiActive"); if (want != channel.Enabled) { output.Configure("ndi", want); active = want; } }
+                if (args["ndiActive"]?.Type == JTokenType.Boolean) active = args.Value<bool>("ndiActive");
+                if (args["useNDI5"]?.Type == JTokenType.Boolean && !args.Value<bool>("useNDI5")) throw new ArgumentException("Switching NDI runtime versions is unavailable. Use the installed runtime version.");
+                if (args["useCustomResolution"]?.Type == JTokenType.Boolean) custom = args.Value<bool>("useCustomResolution");
+                int? width = args["customWidthNDI"]?.Type == JTokenType.Integer ? args.Value<int>("customWidthNDI") : null;
+                int? height = args["customHeightNDI"]?.Type == JTokenType.Integer ? args.Value<int>("customHeightNDI") : null;
+                bool retain = width == null && height == null || width == -1 && height == -1;
+                if (!retain)
+                {
+                    if (width == null || height == null) throw new ArgumentException("Set both customWidthNDI and customHeightNDI, or -1 for both to retain the resolution.");
+                    output.SetNdiResolution(true, width.Value, height.Value); custom = true; resolution = new Vector2Int(width.Value, height.Value);
+                }
+                else if (custom) output.SetNdiResolution(true, resolution.x, resolution.y);
+                else output.SetNdiResolution(false, resolution.x, resolution.y);
+                if (Time.unscaledTime < ndiNextWrite) throw new InvalidOperationException("NDIConfigCooldownNotOver. Wait 3 seconds between NDI configuration changes.");
+                ndiNextWrite = Time.unscaledTime + 3;
+                if (channel.Enabled != active) output.Configure("ndi", active);
             }
-            return new JObject { ["ndiActive"] = active, ["useNDI5"] = true, ["useCustomResolution"] = false, ["customWidthNDI"] = 1920, ["customHeightNDI"] = 1080 };
+            return new JObject { ["setNewConfig"] = false, ["ndiActive"] = active, ["useNDI5"] = true, ["useCustomResolution"] = custom, ["customWidthNDI"] = resolution.x, ["customHeightNDI"] = resolution.y };
         }
         void RestoreWrites()
         {
@@ -419,51 +435,161 @@ namespace Sakura.Unity
         }
         JObject EffectsInfo(JObject args)
         {
-            var settings = Tools().Effects;
-            if (args.Value<bool?>("_vtsCanonical") != true) return new JObject { ["postProcessing"] = new JArray(new JObject { ["name"] = "glow", ["value"] = settings.glow }, new JObject { ["name"] = "saturation", ["value"] = settings.saturation }, new JObject { ["name"] = "contrast", ["value"] = settings.contrast }) };
-            JObject Config(string id, float value, float min, float max, float fallback, bool activation) => new JObject { ["internalID"] = id, ["enumID"] = id, ["explanation"] = id, ["type"] = "Float", ["activationConfig"] = activation, ["floatValue"] = value, ["floatMin"] = min, ["floatMax"] = max, ["floatDefault"] = fallback, ["intValue"] = 0, ["intMin"] = 0, ["intMax"] = 0, ["intDefault"] = 0, ["boolValue"] = false, ["boolDefault"] = false, ["colorValue"] = "", ["colorDefault"] = "", ["colorHasAlpha"] = false, ["stringValue"] = "", ["stringDefault"] = "", ["sceneItemValue"] = "", ["sceneItemDefault"] = "" };
-            JObject Effect(string id, bool active, params JObject[] config) => new JObject { ["internalID"] = id, ["enumID"] = id, ["explanation"] = id, ["effectIsActive"] = active, ["effectIsRestricted"] = false, ["configEntries"] = new JArray(config) };
-            var effects = new JArray(Effect("Bloom", settings.glow > 0, Config("Bloom_Strength", settings.glow, 0, 1, 0, true)), Effect("ColorGrading", settings.saturation != 1 || settings.contrast != 1 || settings.overlayStrength > 0, Config("ColorGrading_Saturation", (settings.saturation - 1) * 100, -100, 100, 0, false), Config("ColorGrading_Contrast", (settings.contrast - 1) * 100, -100, 100, 0, false)));
-            if (args["effectIDFilter"] is JArray filter && filter.Count > 0) effects = new JArray(effects.Where(effect => filter.Values<string>().Contains(effect.Value<string>("enumID"))));
-            return new JObject { ["postProcessingSupported"] = true, ["postProcessingActive"] = true, ["canSendPostProcessingUpdateRequestRightNow"] = true, ["restrictedEffectsAllowed"] = false, ["presetIsActive"] = false, ["activePreset"] = "", ["presetCount"] = 0, ["activeEffectCount"] = effects.Count(effect => effect.Value<bool>("effectIsActive")), ["effectCountBeforeFilter"] = 2, ["configCountBeforeFilter"] = 3, ["effectCountAfterFilter"] = effects.Count, ["configCountAfterFilter"] = effects.Sum(effect => ((JArray)effect["configEntries"]).Count), ["postProcessingEffects"] = args.Value<bool?>("fillPostProcessingEffectsArray") == false ? new JArray() : effects, ["postProcessingPresets"] = new JArray() };
+            var tools = Tools();
+            var settings = tools.Effects;
+            bool on = tools.EffectsEnabled;
+            JObject ConfigFloat(string id, float value, float min, float max, float fallback, bool activation) => new JObject
+            {
+                ["internalID"] = id, ["enumID"] = id, ["explanation"] = id, ["type"] = "Float",
+                ["activationConfig"] = activation, ["floatValue"] = value, ["floatMin"] = min, ["floatMax"] = max, ["floatDefault"] = fallback,
+                ["intValue"] = 0, ["intMin"] = 0, ["intMax"] = 0, ["intDefault"] = 0, ["boolValue"] = false, ["boolDefault"] = false,
+                ["colorValue"] = "", ["colorDefault"] = "", ["colorHasAlpha"] = false, ["stringValue"] = "", ["stringDefault"] = "",
+                ["sceneItemValue"] = "", ["sceneItemDefault"] = ""
+            };
+            JObject ConfigColor(string id, Color color, float strength) => new JObject
+            {
+                ["internalID"] = id, ["enumID"] = id, ["explanation"] = id, ["type"] = "Color",
+                ["activationConfig"] = false, ["floatValue"] = 0, ["floatMin"] = 0, ["floatMax"] = 0, ["floatDefault"] = 0,
+                ["intValue"] = 0, ["intMin"] = 0, ["intMax"] = 0, ["intDefault"] = 0, ["boolValue"] = false, ["boolDefault"] = false,
+                ["colorValue"] = ColorUtility.ToHtmlStringRGB(color).ToUpperInvariant() + Mathf.RoundToInt(Mathf.Clamp01(strength) * 255).ToString("X2"),
+                ["colorDefault"] = "FFFFFFFF", ["colorHasAlpha"] = true, ["stringValue"] = "", ["stringDefault"] = "",
+                ["sceneItemValue"] = "", ["sceneItemDefault"] = ""
+            };
+            JObject ConfigBool(string id, bool value, bool fallback) => new JObject
+            {
+                ["internalID"] = id, ["enumID"] = id, ["explanation"] = id, ["type"] = "Bool",
+                ["activationConfig"] = true, ["floatValue"] = 0, ["floatMin"] = 0, ["floatMax"] = 0, ["floatDefault"] = 0,
+                ["intValue"] = 0, ["intMin"] = 0, ["intMax"] = 0, ["intDefault"] = 0, ["boolValue"] = value, ["boolDefault"] = fallback,
+                ["colorValue"] = "", ["colorDefault"] = "", ["colorHasAlpha"] = false, ["stringValue"] = "", ["stringDefault"] = "",
+                ["sceneItemValue"] = "", ["sceneItemDefault"] = ""
+            };
+            JObject Effect(string id, bool active, params JObject[] config) => new JObject
+            {
+                ["internalID"] = id, ["enumID"] = id, ["explanation"] = id, ["effectIsActive"] = on && active,
+                ["effectIsRestricted"] = false, ["configEntries"] = new JArray(config)
+            };
+            bool grading = settings.saturation != 1 || settings.contrast != 1 || settings.overlayStrength > 0;
+            var effects = new[]
+            {
+                Effect("Bloom", settings.glow > 0, ConfigFloat("Bloom_Strength", settings.glow, 0, 1, 0, true)),
+                Effect("ColorGrading", grading, ConfigFloat("ColorGrading_Strength", settings.gradeStrength, 0, 1, 0, true),
+                    ConfigFloat("ColorGrading_Saturation", (settings.saturation - 1) * 100, -100, 100, 0, false),
+                    ConfigFloat("ColorGrading_Contrast", (settings.contrast - 1) * 100, -100, 100, 0, false),
+                    ConfigColor("ColorGrading_ColorFilter", settings.overlayColor, settings.overlayStrength)),
+                Effect("SakuraOutline", settings.outline, ConfigBool("SakuraOutline_Enabled", settings.outline, false))
+            };
+            string Normalize(string value) => (value ?? "").ToLowerInvariant().Replace("_", "").Replace("-", "");
+            var filter = args["effectIDFilter"] is JArray rows ? rows.Values<string>().Select(Normalize).ToArray() : Array.Empty<string>();
+            var selected = effects.Where(effect => filter.Length == 0 || filter.Contains(Normalize(effect.Value<string>("enumID")))).ToArray();
+            return new JObject
+            {
+                ["postProcessingSupported"] = true, ["postProcessingActive"] = on,
+                ["canSendPostProcessingUpdateRequestRightNow"] = true, ["restrictedEffectsAllowed"] = false,
+                ["presetIsActive"] = false, ["activePreset"] = "", ["presetCount"] = 0,
+                ["activeEffectCount"] = effects.Count(effect => effect.Value<bool>("effectIsActive")),
+                ["effectCountBeforeFilter"] = effects.Length, ["configCountBeforeFilter"] = effects.Sum(effect => ((JArray)effect["configEntries"]).Count),
+                ["effectCountAfterFilter"] = selected.Length,
+                ["configCountAfterFilter"] = selected.Sum(effect => ((JArray)effect["configEntries"]).Count),
+                ["postProcessingEffects"] = args.Value<bool?>("fillPostProcessingEffectsArray") == false ? new JArray() : new JArray(selected),
+                ["postProcessingPresets"] = new JArray()
+            };
         }
         JObject UpdateEffects(JObject args)
         {
             var tools = Tools(); var current = tools.Effects;
-            var next = new SakuraModelTools.EffectSettings { glow = current.glow, saturation = current.saturation, contrast = current.contrast, overlayColor = current.overlayColor, overlayStrength = current.overlayStrength, outline = current.outline, authoredGlow = current.authoredGlow };
+            var next = new SakuraModelTools.EffectSettings
+            {
+                glow = current.glow, saturation = current.saturation, contrast = current.contrast,
+                overlayColor = current.overlayColor, overlayStrength = current.overlayStrength,
+                gradeStrength = current.gradeStrength, outline = current.outline, authoredGlow = current.authoredGlow
+            };
+            bool on = tools.EffectsEnabled;
             bool canonical = args.Value<bool?>("_vtsCanonical") == true;
             if (canonical)
             {
-                if (args.Value<bool?>("setPostProcessingPreset") == true || args.Value<bool?>("randomizeAll") == true || args["postProcessingFadeTime"] != null && Number(args["postProcessingFadeTime"], "Fade time") != 0 || args.Value<bool?>("postProcessingOn") == false) throw new NotSupportedException("Native effect presets, randomization, fades and global post-processing toggles are unavailable. Set supported config values directly.");
-                if (args.Value<bool?>("setPostProcessingValues") != true) return EffectsInfo(args);
-                if (args.Value<bool?>("setAllOtherValuesToDefault") == true) next = new SakuraModelTools.EffectSettings();
-                var entries = args["postProcessingValues"] as JArray ?? throw new ArgumentException("postProcessingValues must be an array.");
-                if (entries.Count > 3 || entries.Any(entry => !(entry is JObject))) throw new ArgumentException("Use at most three supported native effect config objects.");
-                var seen = new HashSet<string>();
-                foreach (var row in entries.OfType<JObject>())
+                foreach (string name in new[] { "postProcessingOn", "setPostProcessingPreset", "setPostProcessingValues", "setAllOtherValuesToDefault", "usingRestrictedEffects", "randomizeAll" })
+                    if (args[name] != null && args[name].Type != JTokenType.Boolean) throw new ArgumentException(name + " must be a boolean.");
+                if (args.Value<bool?>("setPostProcessingPreset") == true) throw new NotSupportedException("Post-processing presets are unavailable. Use the supported config IDs.");
+                if (args.Value<bool?>("randomizeAll") == true) throw new NotSupportedException("Randomized post-processing is unavailable.");
+                float fade = args["postProcessingFadeTime"] == null ? 0 : Number(args["postProcessingFadeTime"], "postProcessingFadeTime");
+                if (fade < 0 || fade > 2) throw new ArgumentException("postProcessingFadeTime must be between 0 and 2 seconds.");
+                if (args["postProcessingOn"]?.Type == JTokenType.Boolean) on = args.Value<bool>("postProcessingOn");
+                bool reset = args.Value<bool?>("setPostProcessingValues") == true && args.Value<bool?>("setAllOtherValuesToDefault") == true;
+                if (reset) next = new SakuraModelTools.EffectSettings { gradeStrength = 0 };
+                if (args.Value<bool?>("setPostProcessingValues") == true)
                 {
-                    string id = row.Value<string>("configID"); string text = row.Value<string>("configValue");
-                    if (id == null || !seen.Add(id)) throw new ArgumentException("Effect config IDs must be unique.");
-                    if (!float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float value) || !float.IsFinite(value)) throw new ArgumentException("Effect value must be finite numeric text.");
-                    if (id == "Bloom_Strength") next.glow = Mathf.Clamp01(value);
-                    else if (id == "ColorGrading_Saturation") next.saturation = 1 + Mathf.Clamp(value, -100, 100) / 100;
-                    else if (id == "ColorGrading_Contrast") next.contrast = 1 + Mathf.Clamp(value, -100, 100) / 100;
-                    else throw new NotSupportedException("Unsupported native effect config: " + id);
+                    var entries = args["postProcessingValues"] as JArray ?? throw new ArgumentException("postProcessingValues must be an array.");
+                    if (entries.Count > 6 || entries.Any(entry => !(entry is JObject))) throw new ArgumentException("Use at most six supported native effect config objects.");
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var row in entries.OfType<JObject>())
+                    {
+                        string id = row.Value<string>("configID"); string text = row.Value<string>("configValue");
+                        if (string.IsNullOrEmpty(id) || !seen.Add(id)) throw new ArgumentException("Effect config IDs must be unique.");
+                        string key = id.ToLowerInvariant().Replace("_", "");
+                        if (key == "bloomstrength") next.glow = Mathf.Clamp(ParseFloat(text), 0, 1);
+                        else if (key == "colorgradingstrength") next.gradeStrength = Mathf.Clamp01(ParseFloat(text));
+                        else if (key == "colorgradingsaturation") next.saturation = 1 + Mathf.Clamp(ParseFloat(text), -100, 100) / 100;
+                        else if (key == "colorgradingcontrast") next.contrast = 1 + Mathf.Clamp(ParseFloat(text), -100, 100) / 100;
+                        else if (key == "colorgradingcolorfilter")
+                        {
+                            if (text == null || !Regex.IsMatch(text, "^[0-9a-fA-F]{8}$")) throw new ArgumentException("ColorGrading_ColorFilter must be eight-digit RGBA hex.");
+                            next.overlayColor = new Color(Convert.ToInt32(text.Substring(0, 2), 16) / 255f, Convert.ToInt32(text.Substring(2, 2), 16) / 255f, Convert.ToInt32(text.Substring(4, 2), 16) / 255f, 1);
+                            next.overlayStrength = Convert.ToInt32(text.Substring(6, 2), 16) / 255f;
+                        }
+                        else if (key == "sakuraoutlineenabled")
+                        {
+                            if (!bool.TryParse(text, out bool outline)) throw new ArgumentException("SakuraOutline_Enabled must be true or false.");
+                            next.outline = outline;
+                        }
+                        else throw new NotSupportedException("Unsupported native effect config: " + id);
+                    }
                 }
+                if (fade > 0) StartCoroutine(FadeEffects(tools, current, next, on, fade));
+                else { tools.SetEffectsEnabled(on); tools.SetEffects(next); }
+                return EffectsInfo(args);
             }
-            else
+            var entries2 = args["postProcessing"] as JArray ?? throw new ArgumentException("postProcessing must be an array.");
+            if (entries2.Any(entry => !(entry is JObject))) throw new ArgumentException("Each post-processing entry must be an object.");
+            foreach (var row in entries2.OfType<JObject>())
             {
-                var entries = args["postProcessing"] as JArray ?? throw new ArgumentException("postProcessing must be an array.");
-                if (entries.Any(entry => !(entry is JObject))) throw new ArgumentException("Each post-processing entry must be an object.");
-                foreach (var row in entries.OfType<JObject>())
-                {
-                    string name = row.Value<string>("name"); float value = Number(row["value"], "Effect value");
-                    if (name == "glow") next.glow = Mathf.Clamp01(value); else if (name == "saturation") next.saturation = Mathf.Clamp(value, 0, 2); else if (name == "contrast") next.contrast = Mathf.Clamp(value, 0, 2); else throw new NotSupportedException("Unsupported native effect: " + name);
-                }
+                string name = row.Value<string>("name"); float value = Number(row["value"], "Effect value");
+                if (name == "glow") next.glow = Mathf.Clamp01(value);
+                else if (name == "saturation") next.saturation = Mathf.Clamp(value, 0, 2);
+                else if (name == "contrast") next.contrast = Mathf.Clamp(value, 0, 2);
+                else throw new NotSupportedException("Unsupported native effect: " + name);
             }
             tools.SetEffects(next); return EffectsInfo(args);
         }
-
+        float ParseFloat(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || !float.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float result) || !float.IsFinite(result))
+                throw new ArgumentException("Effect value must be finite numeric text.");
+            return result;
+        }
+        IEnumerator FadeEffects(SakuraModelTools tools, SakuraModelTools.EffectSettings from, SakuraModelTools.EffectSettings to, bool on, float duration)
+        {
+            float started = Time.unscaledTime;
+            while (tools != null)
+            {
+                float progress = Mathf.Clamp01((Time.unscaledTime - started) / Mathf.Max(.01f, duration));
+                var frame = new SakuraModelTools.EffectSettings
+                {
+                    glow = Mathf.Lerp(from.glow, to.glow, progress),
+                    saturation = Mathf.Lerp(from.saturation, to.saturation, progress),
+                    contrast = Mathf.Lerp(from.contrast, to.contrast, progress),
+                    overlayColor = Color.Lerp(from.overlayColor, to.overlayColor, progress),
+                    overlayStrength = Mathf.Lerp(from.overlayStrength, to.overlayStrength, progress),
+                    gradeStrength = Mathf.Lerp(from.gradeStrength, to.gradeStrength, progress),
+                    outline = progress >= 1 ? to.outline : from.outline,
+                    authoredGlow = to.authoredGlow
+                };
+                tools.SetEffects(frame, false);
+                tools.SetEffectsEnabled(progress >= 1 ? on : on || tools.EffectsEnabled);
+                if (progress >= 1) break;
+                yield return null;
+            }
+            if (tools != null) tools.SetEffects(to, true);
+        }
         public void Emit(string name, JObject data = null)
         {
             if (string.IsNullOrEmpty(name)) return;

@@ -32,7 +32,7 @@ namespace Sakura.Unity
         }
         [Serializable] public sealed class EffectSettings
         {
-            public float glow, saturation = 1, contrast = 1, overlayStrength;
+            public float glow, saturation = 1, contrast = 1, overlayStrength, gradeStrength = 1;
             public Color overlayColor = Color.white;
             public bool outline;
             public bool authoredGlow = true;
@@ -93,6 +93,7 @@ namespace Sakura.Unity
         public bool HasLive2DPhysics => liveSetup != null && liveSetup.PhysicsAvailable;
         public Live2D.Cubism.Framework.Physics.CubismPhysicsRig Live2DPhysicsRig => liveSetup?.Rig;
         public EffectSettings Effects => profile.effects;
+        public bool EffectsEnabled { get; private set; } = true;
         public bool HasEffects => Effects.glow > 0 || Effects.saturation != 1 || Effects.contrast != 1 || Effects.overlayStrength > 0;
         public string Warning { get; private set; }
         public IReadOnlyList<Part> Parts => parts;
@@ -505,19 +506,20 @@ namespace Sakura.Unity
         static void ValidateEffects(EffectSettings settings)
         {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
-            Finite(settings.glow); Finite(settings.saturation); Finite(settings.contrast); Finite(settings.overlayStrength); CheckColor(settings.overlayColor);
+            Finite(settings.glow); Finite(settings.saturation); Finite(settings.contrast); Finite(settings.overlayStrength); Finite(settings.gradeStrength); CheckColor(settings.overlayColor);
             settings.glow = Mathf.Clamp01(settings.glow); settings.saturation = Mathf.Clamp(settings.saturation, 0, 2);
-            settings.contrast = Mathf.Clamp(settings.contrast, 0, 2); settings.overlayStrength = Mathf.Clamp01(settings.overlayStrength);
+            settings.contrast = Mathf.Clamp(settings.contrast, 0, 2); settings.overlayStrength = Mathf.Clamp01(settings.overlayStrength); settings.gradeStrength = Mathf.Clamp01(settings.gradeStrength);
         }
-        public void SetEffects(EffectSettings settings)
+        public void SetEffects(EffectSettings settings, bool save = true)
         {
             ValidateEffects(settings);
             var previous = profile.effects;
-            profile.effects = new EffectSettings { glow = settings.glow, saturation = settings.saturation, contrast = settings.contrast, overlayColor = settings.overlayColor, overlayStrength = settings.overlayStrength, outline = settings.outline, authoredGlow = settings.authoredGlow };
-            try { Save(); } catch { profile.effects = previous; throw; }
+            profile.effects = new EffectSettings { glow = settings.glow, saturation = settings.saturation, contrast = settings.contrast, overlayColor = settings.overlayColor, overlayStrength = settings.overlayStrength, gradeStrength = settings.gradeStrength, outline = settings.outline, authoredGlow = settings.authoredGlow };
+            try { if (save) Save(); } catch { profile.effects = previous; throw; }
             ApplyOutline(profile.effects.outline);
             ApplyAuthoredGlow();
         }
+        public void SetEffectsEnabled(bool enabled) { EffectsEnabled = enabled; }
         SakuraOutlineRenderer outlineRenderer;
         void ApplyOutline(bool enabled)
         {
@@ -537,7 +539,7 @@ namespace Sakura.Unity
         public void ApplyEffects(RenderTexture source, RenderTexture destination)
         {
             if (source == null || destination == null) throw new ArgumentNullException("Model effects require source and destination textures.");
-            if (!HasEffects)
+            if (!EffectsEnabled || !HasEffects)
             {
                 var active = RenderTexture.active;
                 try { if (source != destination) Graphics.Blit(source, destination); }
@@ -550,7 +552,8 @@ namespace Sakura.Unity
                 if (shader == null || !shader.isSupported) throw new InvalidOperationException("The native model effects shader is unavailable on this renderer.");
                 effectMaterial = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             }
-            effectMaterial.SetVector("_Effects", new Vector4(Effects.glow, Effects.saturation, Effects.contrast, Effects.overlayStrength));
+            float grade = Effects.gradeStrength;
+            effectMaterial.SetVector("_Effects", new Vector4(Effects.glow, 1 + (Effects.saturation - 1) * grade, 1 + (Effects.contrast - 1) * grade, Effects.overlayStrength * grade));
             effectMaterial.SetColor("_Overlay", Effects.overlayColor);
             var previous = RenderTexture.active;
             RenderTexture temporary = null;

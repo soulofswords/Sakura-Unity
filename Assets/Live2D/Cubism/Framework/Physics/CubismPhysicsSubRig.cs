@@ -26,6 +26,12 @@ namespace Live2D.Cubism.Framework.Physics
         public string Name;
 
         /// <summary>
+        /// Per-sub-rig wind override used by the native plugin bridge.
+        /// </summary>
+        [NonSerialized]
+        public Vector2? WindOverride;
+
+        /// <summary>
         /// Input.
         /// </summary>
         [SerializeField]
@@ -400,7 +406,7 @@ namespace Live2D.Cubism.Framework.Physics
                 Particles,
                 totalTranslation,
                 totalAngle,
-                Rig.Wind,
+                WindOverride ?? Rig.Wind,
                 CubismPhysics.MovementThreshold * Normalization.Position.Maximum,
                 deltaTime
                 );
@@ -492,7 +498,7 @@ namespace Live2D.Cubism.Framework.Physics
                 Particles,
                 totalTranslation,
                 totalAngle,
-                Rig.Wind,
+                WindOverride ?? Rig.Wind,
                 CubismPhysics.MovementThreshold * Normalization.Position.Maximum
                 );
 
