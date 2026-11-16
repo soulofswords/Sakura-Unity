@@ -406,7 +406,7 @@ namespace Sakura.Unity
                 else if (pose != null && actions != null && actions.Gesture(pose)) Notify("Phone hotkey · " + pose.Replace('_', ' '));
                 else Notify("This phone pose needs a compatible 3D character with tracking stopped.");
             }
-            else if (kind != "tracking-start" && kind != "companion-tracking-start" && kind != "tracking-stop" && kind != "companion-tracking-stop") Notify("Phone command not yet migrated: " + kind);
+            else if (kind != "tracking-start" && kind != "companion-tracking-start" && kind != "tracking-stop" && kind != "companion-tracking-stop") Notify("Unsupported phone command: " + kind);
         }
         public static bool ValidPhoneRequestId(string value) => value != null && value.Length == 32 && value.All(character => character >= '0' && character <= '9' || character >= 'a' && character <= 'f');
         public void StageModelForPhone(string path, string requestId, Action<bool, string> completed = null)
