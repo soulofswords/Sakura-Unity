@@ -1,6 +1,6 @@
 # Sakura Unity
 
-Unity 6 client for [Sakura](https://github.com/soulofswords/Sakura) — the local-first AI companion and VTuber studio. This repository is the native renderer and desktop shell: **Companion** and **VTuber** editions for Windows, plus an Android preview, all talking to the same Python service backend as the original web client.
+Unity 6 client for [Sakura](https://github.com/soulofswords/Sakura) — the local-first AI companion and VTuber studio. **Project site and downloads: [soulofswords.github.io/Sakura-website](https://soulofswords.github.io/Sakura-website/).** This repository is the native renderer and desktop shell: **Companion** and **VTuber** editions for Windows, plus an Android preview, all talking to the same Python service backend as the original web client.
 
 <p align="center">
   <img src="Docs/screenshots/companion-chat.png" alt="Sakura Companion on Unity: chat card and rendered VRM character" width="49%">
