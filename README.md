@@ -2,7 +2,7 @@
 
 Sakura's Unity 6 app is available as separate **Companion** and **standalone VTuber** installers for Windows x64. **Sakura Mobile** is available as an Android ARM64 preview. Both Windows installers include the backend and its Python runtime.
 
-[Download from GitHub Releases](https://github.com/soulofswords/Sakura-Unity/releases) · [Project site](https://soulofswords.github.io/Sakura-website/)
+[Download from Sakura-Downloads](https://github.com/soulofswords/Sakura-Downloads/releases/latest) · [Project site](https://soulofswords.github.io/Sakura-website/)
 
 <p align="center">
   <img src="Docs/screenshots/companion-chat.png" alt="Sakura Companion on Unity: chat card and rendered VRM character" width="49%">
