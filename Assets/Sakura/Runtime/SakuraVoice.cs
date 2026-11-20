@@ -60,9 +60,12 @@ namespace Sakura.Unity
         private string pendingSpeechText;
         private readonly PlaybackEchoGuard echoGuard = new PlaybackEchoGuard();
         private readonly BargeInDetector bargeIn = new BargeInDetector();
-        private bool bargeInTriggered, ducked;
+        private bool bargeInTriggered, ducked, bargeInHadPlayback;
+        private float bargeInLatchAt;
+        private AudioOutput captureOutput = AudioOutput.Speakers;
         private float savedVolume = 1f;
         private float[] playbackSamples;
+        private bool playbackRmsUnavailable;
         private string wakePhrase = "hey sakura";
         public string WakePhrase => wakePhrase;
         private string playbackMode;
@@ -161,8 +164,9 @@ namespace Sakura.Unity
                 if (microphone == null) { FailInput("Microphone could not start. " + startError); yield break; }
                 microphoneStartedAt = Time.realtimeSinceStartup; readFrame = 0;
                 captureInterruptOnly = BargeInEnabled && (Speaking || Backend.Busy);
+                captureOutput = Output; bargeInHadPlayback = Speaking;
                 gate = new SpeechGate(microphone.frequency, SpeechThreshold, .3f, .65f, 15f);
-                bargeIn.Reset(); bargeInTriggered = false; Unduck();
+                if (!captureInterruptOnly) { bargeIn.Reset(); bargeInTriggered = false; Unduck(); }
                 heldSpeech.Clear();
                 SetStatus(pushToTalk ? "Microphone ON · speak, then release" : ListeningText());
             }
@@ -196,7 +200,9 @@ namespace Sakura.Unity
                 return;
             }
             if (!Listening) return;
-            if (recognizing || ((Speaking || Backend.Busy) && !BargeInEnabled) || Time.realtimeSinceStartup < resumeAt)
+            if (bargeInTriggered && !Speaking && !recognizing && (gate == null || !gate.Active) && Time.realtimeSinceStartup - bargeInLatchAt > .8f)
+            { bargeInTriggered = false; bargeIn.Reset(); Unduck(); }
+            if (recognizing || ((Speaking || Backend.Busy) && (!BargeInEnabled || !captureInterruptOnly)) || Time.realtimeSinceStartup < resumeAt)
             {
                 if (microphone != null) CloseMicrophone();
                 return;
@@ -223,16 +229,16 @@ namespace Sakura.Unity
                 InputLevel = Rms(mono);
                 if (BargeInEnabled && !pushToTalk && captureInterruptOnly)
                 {
-                    if (Output == AudioOutput.Headphones && Speaking && !bargeInTriggered && InputLevel >= SpeechThreshold)
+                    if (captureOutput == AudioOutput.Headphones && Speaking && !bargeInTriggered && InputLevel >= SpeechThreshold)
                     {
-                        StopPlayback(false, true); bargeInTriggered = true; SetStatus("Listening to you…");
+                        StopPlayback(false, true); bargeInTriggered = true; bargeInLatchAt = Time.realtimeSinceStartup; SetStatus("Listening to you…");
                     }
-                    else if (Output == AudioOutput.Speakers && Speaking)
+                    else if (captureOutput == AudioOutput.Speakers && Speaking)
                     {
                         var state = bargeIn.Push(InputLevel, PlaybackRms(), block / (float)microphone.frequency);
-                        if (state == BargeInState.Confirmed) { bargeInTriggered = true; Duck(); SetStatus("Listening to you…"); }
-                        else if (state == BargeInState.Candidate) { bargeInTriggered = true; Duck(); }
-                        else if (!bargeInTriggered) Unduck();
+                        if (state == BargeInState.Confirmed) { bargeInTriggered = true; bargeInLatchAt = Time.realtimeSinceStartup; Duck(); SetStatus("Listening to you…"); }
+                        else if (state == BargeInState.Candidate) { bargeInTriggered = true; bargeInLatchAt = Time.realtimeSinceStartup; Duck(); }
+                        else if (state == BargeInState.Idle) Unduck();
                     }
                 }
                 if (pushToTalk)
@@ -244,7 +250,7 @@ namespace Sakura.Unity
                 {
                     var pcm = gate.Take();
                     bool barge = captureInterruptOnly;
-                    if (barge && Output == AudioOutput.Speakers && !bargeInTriggered)
+                    if (barge && captureOutput == AudioOutput.Speakers && bargeInHadPlayback && bargeIn.Armed && !bargeInTriggered)
                     { bargeIn.Reset(); Unduck(); bargeInTriggered = false; continue; }
                     bargeInTriggered = false;
                     Submit(pcm, microphone.frequency, barge);
@@ -289,7 +295,7 @@ namespace Sakura.Unity
                 if (!string.IsNullOrEmpty(result.error)) { Reject(result.error); return; }
                 string text = (result.text ?? "").Trim();
                 if (text.Length == 0) { Reject("No clear speech recognised. Check the selected microphone and try again."); return; }
-                if (!wasHeld && echoGuard.Matches(text, capturedAt) && (barge || ExtractWakeCommand(text, wakePhrase) == null))
+                if (!wasHeld && echoGuard.Matches(text, capturedAt, barge) && (barge || ExtractWakeCommand(text, wakePhrase) == null))
                 { Reject(barge ? "Speaker echo ignored · continuing" : "Speaker echo ignored · listening"); return; }
                 bool woke = false;
                 if (sleepActions != null && sleepActions.Sleeping)
@@ -390,7 +396,6 @@ namespace Sakura.Unity
         private void PlayAudio(string relativeAudio, string text = null)
         {
             StopSpeaking(); CloseMicrophone();
-            if (BargeInEnabled && Companion) resumeAt = 0;
             int playback = playbackGeneration;
             string mode = Backend.Mode;
             playbackMode = mode;
@@ -407,6 +412,8 @@ namespace Sakura.Unity
                 if (speaker == null) { Debug.LogWarning("[Sakura] speech audio source is missing."); Destroy(clip); return; }
                 Debug.Log("[Sakura] speech playing " + clip.length.ToString("0.00") + "s " + clip.frequency + "Hz, listener volume " + AudioListener.volume + " mute " + AudioListener.pause);
                 speaker.clip = clip; Backend?.ReleasePendingReply(); speaker.Play(); echoGuard.Remember(text, Time.realtimeSinceStartup);
+                if (BargeInEnabled && Companion) resumeAt = 0;
+                playbackRmsUnavailable = false;
                 bargeIn.Reset(); bargeInTriggered = false;
                 StartCoroutine(CompletePlayback(playback));
             });
@@ -418,6 +425,7 @@ namespace Sakura.Unity
             while (speaker != null && speaker.isPlaying && playback == playbackGeneration) yield return null;
             if (playback != playbackGeneration) yield break;
             echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); Unduck();
+            if (!Speaking && !recognizing && (gate == null || !gate.Active)) { bargeInTriggered = false; bargeIn.Reset(); }
             if (!bargeInTriggered) resumeAt = Time.realtimeSinceStartup + .65f;
             SetStatus(Listening ? ListeningText() : "Microphone OFF");
         }
@@ -428,7 +436,7 @@ namespace Sakura.Unity
         {
             playbackGeneration++; echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); Unduck();
             if (!keepBargeIn) { bargeIn.Reset(); bargeInTriggered = false; }
-            if (resume) resumeAt = Time.realtimeSinceStartup + .65f;
+            resumeAt = resume ? Time.realtimeSinceStartup + .65f : 0;
         }
 
         private void Duck()
@@ -447,12 +455,13 @@ namespace Sakura.Unity
         {
             var clip = speaker == null ? null : speaker.clip;
             if (clip == null || !speaker.isPlaying) return 0f;
+            if (playbackRmsUnavailable) return speaker.volume * .15f;
             int channels = Mathf.Max(1, clip.channels);
             int window = Mathf.Min(clip.samples, Mathf.Max(256, clip.frequency / 20));
             int start = Mathf.Clamp(speaker.timeSamples, 0, Mathf.Max(0, clip.samples - window));
             int length = window * channels;
             if (playbackSamples == null || playbackSamples.Length != length) playbackSamples = new float[length];
-            if (!clip.GetData(playbackSamples, start)) return 0f;
+            if (!clip.GetData(playbackSamples, start)) { playbackRmsUnavailable = true; return speaker.volume * .15f; }
             double sum = 0;
             foreach (float sample in playbackSamples) sum += sample * sample;
             return (float)Math.Sqrt(sum / length) * speaker.volume;
@@ -470,6 +479,7 @@ namespace Sakura.Unity
             if (enrolling) resumeAfterEnrolment = false;
             generation++; recognizing = false; wakeDeadline = 0;
             bool wasListening = Listening; Listening = false; CloseMicrophone(); heldSpeech.Clear();
+            Unduck(); bargeIn.Reset(); bargeInTriggered = false; captureInterruptOnly = false;
             if (wasListening) ListeningChanged?.Invoke(false);
             SetStatus("Microphone OFF");
         }
@@ -581,13 +591,18 @@ namespace Sakura.Unity
             }
             public void Finish(float now)
             { if (phrases.Count > 0) phrases[phrases.Count - 1].Until = Math.Min(phrases[phrases.Count - 1].Until, now + 1.8f); }
-            public bool Matches(string text, float capturedAt)
+            public bool Matches(string text, float capturedAt, bool relaxed = false)
             {
                 string[] words = Words(text);
-                if (words.Length < 1) return false;
-                string candidate = " " + string.Join(" ", words) + " ";
-                return phrases.Any(phrase => capturedAt >= phrase.Started && capturedAt <= phrase.Until
-                    && (words.Length == 1 ? candidate.Trim() == phrase.Text : (" " + phrase.Text + " ").Contains(candidate)));
+                if (words.Length < (relaxed ? 1 : 4)) return false;
+                string candidate = string.Join(" ", words);
+                return phrases.Any(phrase =>
+                {
+                    if (capturedAt < phrase.Started || capturedAt > phrase.Until) return false;
+                    if (words.Length == 1) return candidate == phrase.Text;
+                    var phraseWords = new HashSet<string>(phrase.Text.Split(' '));
+                    return words.All(phraseWords.Contains);
+                });
             }
         }
 
@@ -598,6 +613,7 @@ namespace Sakura.Unity
             private readonly List<float> segment = new List<float>();
             private int voiced, quiet;
             private bool active;
+            public bool Active => active;
             public SpeechGate(int rate, float threshold, float minimumSeconds, float silenceSeconds, float maximumSeconds)
             {
                 this.threshold = threshold; preRoll = rate * 3 / 10;

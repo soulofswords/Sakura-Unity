@@ -17,6 +17,8 @@ namespace Sakura.Unity
             private float voiced, quiet, echoFloor, priming;
             private bool wasPlaying, confirmed;
 
+            public bool Armed { get; private set; }
+
             public BargeInDetector(float speechFloor = .012f, float echoMargin = 1.8f, float attackSeconds = .25f, float releaseSeconds = .2f)
             {
                 this.speechFloor = Math.Max(.0001f, speechFloor);
@@ -31,6 +33,7 @@ namespace Sakura.Unity
             {
                 voiced = quiet = echoFloor = priming = 0;
                 wasPlaying = confirmed = false;
+                Armed = false;
                 State = BargeInState.Idle;
             }
 
@@ -45,6 +48,7 @@ namespace Sakura.Unity
                 {
                     voiced = quiet = priming = echoFloor = 0;
                     confirmed = false;
+                    Armed = false;
                     State = BargeInState.Idle;
                 }
                 wasPlaying = playing;
@@ -54,12 +58,13 @@ namespace Sakura.Unity
                 if (playing)
                 {
                     priming += seconds;
-                    if (priming < .35f)
+                    if (priming < .2f)
                     {
-                        echoFloor = Blend(echoFloor, micRms, seconds / .35f);
+                        echoFloor = Blend(echoFloor, micRms, seconds / .2f);
                         State = BargeInState.Idle;
                         return State;
                     }
+                    Armed = true;
                 }
 
                 float threshold = Math.Max(speechFloor * 1.2f, echoFloor * echoMargin);
