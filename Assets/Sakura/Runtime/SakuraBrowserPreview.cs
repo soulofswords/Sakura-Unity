@@ -1,3 +1,4 @@
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -10,10 +11,8 @@ namespace Sakura.Unity
 {
     public sealed class SakuraBrowserPreview : IDisposable
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         [DllImport("WebViewToolkit", CallingConvention = CallingConvention.Cdecl)] static extern int WebViewToolkit_RequestPreview(uint handle);
         [DllImport("WebViewToolkit", CallingConvention = CallingConvention.Cdecl)] static extern int WebViewToolkit_ReadPreview(uint handle, [Out] byte[] destination, int capacity);
-#endif
         static readonly List<SakuraBrowserPreview> active = new List<SakuraBrowserPreview>();
         readonly WebViewElement view;
         readonly Image image;
@@ -61,7 +60,6 @@ namespace Sakura.Unity
         }
         void Tick()
         {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             if (disposed || view.panel == null || !view.IsReady || Time.realtimeSinceStartupAsDouble < nextUpdate) return;
             nextUpdate = Time.realtimeSinceStartupAsDouble + .1;
             try
@@ -92,18 +90,16 @@ namespace Sakura.Unity
                 if (previous != null) UnityEngine.Object.Destroy(previous);
             }
             catch (Exception error) { LastError = error.ToString(); reportError?.Invoke("Browser preview failed: " + error.Message); Dispose(); }
-#endif
         }
         public void Dispose()
         {
             if (disposed) return; disposed = true; active.Remove(this);
             view.UnregisterCallback<KeyDownEvent>(KeyDown);
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             if (handle != 0) try { WebViewToolkit_ReadPreview(handle, null, -1); } catch (Exception) { }
-#endif
             image.RemoveFromHierarchy();
             if (texture != null) UnityEngine.Object.Destroy(texture);
             texture = null;
         }
     }
 }
+#endif

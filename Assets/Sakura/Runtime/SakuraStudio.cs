@@ -863,7 +863,9 @@ namespace Sakura.Unity
         {
             if (!splashDismissed && backend != null && backend.Connected && !initialCatalog) DismissSplash();
             if (!voicePrepStarted && backend != null && backend.Connected && !vtuberEdition && !SakuraInstances.IsSecondary) { voicePrepStarted = true; StartVoicePrep(); }
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             SakuraBrowserPreview.UpdateAll();
+#endif
             if (avatarActions != null) avatarActions.TrackingOwnsMotion = tracking != null && tracking.Source != SakuraTracking.InputSource.Off;
             if (handsButton != null && tracking != null) handsButton.text = tracking.Hands ? "Hands on" : "Hands off";
             var screen = GetComponent<SakuraScreenFeatures>();
