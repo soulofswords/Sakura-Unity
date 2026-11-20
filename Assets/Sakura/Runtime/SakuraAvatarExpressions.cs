@@ -292,6 +292,14 @@ namespace Sakura.Unity
         public bool SetReplyMood(string mood)
         {
             StopReplyMood();
+            return SetMood(mood, 6);
+        }
+        public void ReactToTouch(bool head)
+        {
+            if (head || !SetMood("surprised", 1.6f)) SetMood(head ? "happy" : "amused", 1.6f);
+        }
+        bool SetMood(string mood, float seconds)
+        {
             string pattern = mood switch
             {
                 "happy" => @"happy|joy|smile|cheer|笑|嬉|喜|开心|にこ",
@@ -312,7 +320,7 @@ namespace Sakura.Unity
                 if (reaction != null && applied.Remove(reaction) && cubism == null) reaction.Apply(0);
                 reaction = chosen; reactionWeight = 0;
             }
-            reactionUntil = Time.unscaledTime + 6; return true;
+            reactionUntil = Time.unscaledTime + seconds; return true;
         }
         public bool ApplyByLabel(JObject command)
         {

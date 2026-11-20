@@ -96,7 +96,8 @@ namespace Sakura.Unity
         }
         public async Task<JObject> Dispatch(JObject message, CancellationToken cancellation = default)
         {
-            string id = message?.Value<string>("id") ?? "";
+            string id = message?["id"]?.Type == JTokenType.String ? (string)message["id"] : "";
+            if (id == null || id.Length > 32) id = "";
             JObject reply;
             try { cancellation.ThrowIfCancellationRequested(); ValidateMessage(message); reply = await Execute(message.Value<string>("command"), message["args"] as JObject ?? new JObject(), cancellation); }
             catch (Exception error) { reply = Fail(error.Message); }
@@ -688,7 +689,7 @@ namespace Sakura.Unity
                                 catch (Exception error) { answer.TrySetException(error); }
                             });
                             var response = await answer.Task; byte[] payload = Encoding.UTF8.GetBytes(response.ToString(Formatting.None));
-                            if (payload.Length > 512 * 1024) payload = Encoding.UTF8.GetBytes(new JObject { ["id"] = message.Value<string>("id"), ["ok"] = false, ["error"] = "Native plugin response exceeds 512 KB." }.ToString(Formatting.None));
+                            if (payload.Length > 512 * 1024) payload = Encoding.UTF8.GetBytes(new JObject { ["id"] = response["id"], ["ok"] = false, ["error"] = "Native plugin response exceeds 512 KB." }.ToString(Formatting.None));
                             await sendLock.WaitAsync(cancel);
                     try { await socket.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true, cancel); }
                     finally { sendLock.Release(); }

@@ -15,6 +15,7 @@ namespace Sakura.Unity
     {
         public event Action<string> StatusChanged;
         public event Action ModelChanged;
+        public event Action<bool> AvatarTapped;
         public bool Loading { get; private set; }
         public bool HasAvatar => avatar != null;
         public string LoadedFormat { get; private set; }
@@ -32,6 +33,7 @@ namespace Sakura.Unity
         private float yaw, live2DRoll, zoom = 1, targetZoom = 1;
         private Vector3 framingOffset;
         public bool PositionLocked { get; set; }
+        public bool TouchReactionsEnabled { get; set; }
         private Bounds? modelBounds;
         private Bounds? framingBounds;
         private Action<int> pickedPart;
@@ -40,6 +42,11 @@ namespace Sakura.Unity
 
         public void BeginPartPick(bool bone, Action<int> completed) { pickBone = bone; pickedPart = completed; }
         public void CancelPartPick() { pickedPart = null; }
+
+        static bool WithinTapDistance(Vector2 movement) => movement.sqrMagnitude <= 64;
+        internal static bool IsTouchTap(Vector2 movement, float seconds) => WithinTapDistance(movement) && seconds <= .45f;
+        internal static bool IsHeadTouch(float y, float bottom, float top) =>
+            top > bottom && y >= Mathf.Lerp(bottom, top, .72f);
 
         public void Attach(VisualElement stage)
         {
@@ -73,7 +80,11 @@ namespace Sakura.Unity
                 else StatusChanged?.Invoke("Click a visible part of the model to select it.");
                 evt.StopImmediatePropagation();
             });
-            Vector2 dragStart = default; Vector3 offsetStart = default; float yawStart = 0; int dragButton = -1;
+            Vector2 dragStart = default; Vector3 offsetStart = default; float yawStart = 0;
+            float pressedAt = 0, lastTapAt = float.NegativeInfinity;
+            int dragButton = -1, dragPointer = -1;
+            bool dragged = false;
+            GameObject pressedAvatar = null;
             Vector2 Normalized(Vector2 point) => new Vector2(point.x / Mathf.Max(1,stage.layout.width),1 - point.y / Mathf.Max(1,stage.layout.height));
             bool Hit(Vector2 local)
             {
@@ -91,14 +102,22 @@ namespace Sakura.Unity
             }
             stage.RegisterCallback<PointerDownEvent>(evt =>
             {
-                if (pickedPart != null || PositionLocked || evt.button > 1 || !Hit(stage.WorldToLocal(evt.position))) return;
-                dragStart = stage.WorldToLocal(evt.position); offsetStart = framingOffset; yawStart = LoadedFormat == "Live2D" ? live2DRoll : yaw; dragButton = evt.button;
+                if (pickedPart != null || dragPointer != -1 || !evt.isPrimary || evt.button < 0 || evt.button > 1
+                    || (PositionLocked && (evt.button != 0 || !TouchReactionsEnabled))) return;
+                var point = stage.WorldToLocal(evt.position);
+                if (!Hit(point)) return;
+                dragStart = point; offsetStart = framingOffset; yawStart = LoadedFormat == "Live2D" ? live2DRoll : yaw;
+                dragButton = evt.button; dragPointer = evt.pointerId; dragged = false;
+                pressedAvatar = avatar; pressedAt = Time.unscaledTime;
                 stage.CapturePointer(evt.pointerId); evt.StopPropagation();
             });
             stage.RegisterCallback<PointerMoveEvent>(evt =>
             {
-                if (dragButton < 0 || !stage.HasPointerCapture(evt.pointerId)) return;
+                if (dragPointer != evt.pointerId || !stage.HasPointerCapture(evt.pointerId)) return;
                 Vector2 delta = stage.WorldToLocal(evt.position) - dragStart;
+                dragged |= !WithinTapDistance(delta);
+                evt.StopPropagation();
+                if (PositionLocked || pressedAvatar != avatar || (TouchReactionsEnabled && dragButton == 0 && !dragged)) return;
                 if (dragButton == 1)
                 {
                     if (LoadedFormat == "Live2D") live2DRoll = yawStart - delta.x * .35f;
@@ -111,10 +130,38 @@ namespace Sakura.Unity
                     framingOffset = offsetStart - avatarCamera.transform.right * delta.x * units + avatarCamera.transform.up * delta.y * units;
                     FrameAvatar();
                 }
-                evt.StopPropagation();
             });
-            stage.RegisterCallback<PointerUpEvent>(evt => { if (stage.HasPointerCapture(evt.pointerId)) { stage.ReleasePointer(evt.pointerId); dragButton = -1; evt.StopPropagation(); } });
-            stage.RegisterCallback<PointerCaptureOutEvent>(_ => dragButton = -1);
+            stage.RegisterCallback<PointerUpEvent>(evt =>
+            {
+                if (dragPointer != evt.pointerId || !stage.HasPointerCapture(evt.pointerId)
+                    || (evt.button != dragButton && (evt.pressedButtons & (1 << dragButton)) != 0)) return;
+                float now = Time.unscaledTime;
+                Vector2 movement = stage.WorldToLocal(evt.position) - dragStart;
+                bool tapped = TouchReactionsEnabled && evt.button == 0 && dragButton == 0 && !dragged && pressedAvatar == avatar && avatar != null
+                    && IsTouchTap(movement, now - pressedAt) && now - lastTapAt >= .45f;
+                stage.ReleasePointer(evt.pointerId);
+                dragPointer = -1; pressedAvatar = null;
+                evt.StopPropagation();
+                if (!tapped || AvatarTapped == null) return;
+                lastTapAt = now;
+                bool head = false;
+                if (framingBounds is Bounds bounds)
+                {
+                    var bottom = avatarCamera.WorldToViewportPoint(bounds.center - Vector3.up * bounds.extents.y);
+                    var top = avatarCamera.WorldToViewportPoint(bounds.center + Vector3.up * bounds.extents.y);
+                    head = IsHeadTouch(Normalized(dragStart).y, bottom.y, top.y);
+                }
+                AvatarTapped.Invoke(head);
+            });
+            stage.RegisterCallback<PointerCancelEvent>(evt =>
+            {
+                if (dragPointer != evt.pointerId) return;
+                stage.ReleasePointer(evt.pointerId); dragPointer = -1; pressedAvatar = null;
+            });
+            stage.RegisterCallback<PointerCaptureOutEvent>(evt =>
+            {
+                if (dragPointer == evt.pointerId) { dragPointer = -1; pressedAvatar = null; }
+            });
             stage.RegisterCallback<WheelEvent>(evt => { if (!PositionLocked && Hit(stage.WorldToLocal(evt.mousePosition))) { Zoom(Mathf.Exp(-evt.delta.y * .035f)); evt.StopPropagation(); } });
             stage.RegisterCallback<GeometryChangedEvent>(args => Resize((int)args.newRect.width, (int)args.newRect.height));
             Resize(1024, 1024);

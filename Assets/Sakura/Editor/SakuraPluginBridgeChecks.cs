@@ -89,6 +89,8 @@ namespace Sakura.Unity.Editor
                     if (rig.SubRigs[group].Output[index].AngleScale != scales[group][index].AngleScale || rig.SubRigs[group].Output[index].TranslationScale != scales[group][index].TranslationScale) throw new Exception("Plugin cleanup did not restore authored native physics output scales.");
             Debug.Log("SAKURA_PLUGIN_RENDERER_CHECKS_OK: native current state, Cubism injection, authored physics metadata, real strength override, plugin ownership, lease expiry, cleanup restoration. No external listener or WebSocket opened.");
         }
+        public static void RunBatch() => Verify().GetAwaiter().GetResult();
+
         public static async Task Verify()
         {
             var valid = JObject.Parse("{\"id\":\"abc\",\"command\":\"vts_state\",\"args\":{}}");
@@ -110,6 +112,8 @@ namespace Sakura.Unity.Editor
                 var bridge = root.AddComponent<SakuraPluginBridge>();
                 var reply = await bridge.Dispatch(valid);
                 if (reply.Value<string>("id") != "abc" || reply.Value<bool>("ok") != true || reply["data"].Value<bool>("modelLoaded")) throw new Exception("Empty native model state failed.");
+                reply = await bridge.Dispatch(new JObject { ["id"] = new JObject(), ["command"] = "vts_state" });
+                if (reply.Value<bool>("ok") || reply.Value<string>("id") != "") throw new Exception("Plugin dispatch did not reject a structured ID cleanly.");
                 reply = await bridge.Dispatch(JObject.Parse("{\"id\":\"x\",\"command\":\"unsupported_command\",\"args\":{}}"));
                 if (reply.Value<bool>("ok") || string.IsNullOrEmpty(reply.Value<string>("error"))) throw new Exception("Unsupported command pretended success.");
                 using (var cancelled = new CancellationTokenSource())

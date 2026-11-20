@@ -10,11 +10,13 @@ USER_DATA = ("models", "voices", "desktop-profile", "llm-models", "settings.json
 # Browser cookies, sessions and caches are not user documents. They stay behind
 # unless the owner explicitly opts in to carrying the signed-in browser profile.
 BROWSER_DATA = {
-    "Cookies", "Cookies-journal", "EBWebView", "DawnCache", "GPUCache", "Cache",
-    "Code Cache", "Service Worker", "Local Storage", "Session Storage",
-    "blob_storage", "Network", "Favicons", "History", "History-journal",
-    "Login Data", "Login Data For Account", "Web Data", "Web Data-journal",
-    "Preferences", "Local State", "TransportSecurity",
+    name.casefold() for name in (
+        "Cookies", "Cookies-journal", "EBWebView", "DawnCache", "GPUCache", "Cache",
+        "Code Cache", "Service Worker", "Local Storage", "Session Storage",
+        "blob_storage", "Network", "Favicons", "History", "History-journal",
+        "Login Data", "Login Data For Account", "Web Data", "Web Data-journal",
+        "Preferences", "Local State", "TransportSecurity",
+    )
 }
 
 
@@ -44,7 +46,7 @@ def migrate(source, destination, dry_run=False, include_browser=False):
             if not path.is_file():
                 continue
             relative = path.relative_to(source)
-            if not include_browser and any(part in BROWSER_DATA for part in relative.parts):
+            if not include_browser and any(part.casefold() in BROWSER_DATA for part in relative.parts):
                 continue
             if not path.resolve().is_relative_to(source):
                 raise ValueError("Source file escapes the selected installation.")

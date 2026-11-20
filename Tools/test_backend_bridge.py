@@ -325,6 +325,16 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual({name for name, _ in records}, {'model.pmx', 'textures/body.png'})
             self.assertEqual(list(self.bridge.package_files(root / 'model.pmx', 100, 10)), [('model.pmx', b'PMX ')])
 
+    def test_package_picker_rejects_linked_selection_before_traversal(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as folder:
+            selection = Path(folder)
+            with patch.object(type(selection), 'is_symlink', return_value=True), \
+                 patch.object(type(selection), 'rglob', side_effect=AssertionError('Traversed linked selection')):
+                with self.assertRaisesRegex(ValueError, 'symbolic links or junctions'):
+                    list(self.bridge.package_files(selection, 100, 10))
+
     def test_mode_switching_does_not_start_ai_in_vtuber(self):
         import asyncio
         import httpx

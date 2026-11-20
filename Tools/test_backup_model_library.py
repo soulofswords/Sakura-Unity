@@ -92,6 +92,15 @@ class BackupTests(unittest.TestCase):
                 self.skipTest("symlinks unavailable")
             self.assertEqual(backup.build_manifest([("library", root)]), [])
 
+    def test_manifest_excludes_linked_directories_on_windows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            linked = root / "linked"
+            linked.mkdir()
+            (linked / "model.pmx").write_bytes(b"model")
+            with patch.object(type(root), "is_junction", new=lambda path: path == linked, create=True):
+                self.assertEqual(backup.build_manifest([("library", root)]), [])
+
     def test_drive_index_matches_path_and_digest_and_identifies_changed_files(self):
         local = [{"path": "account-a/a.zip", "sha256": "same", "size": 3}]
         remote = {("account-a/a.zip", "same"): {"sha256": "same", "size": 3}, ("old.zip", "old"): {"sha256": "old", "size": 2}}
@@ -115,6 +124,18 @@ class BackupTests(unittest.TestCase):
             result = backup.restore_bytes(dest, "sub/model.zip", b"cloud")
             self.assertEqual(result.read_bytes(), b"cloud")
             self.assertFalse(list(dest.rglob("*.tmp")))
+
+    def test_restore_keeps_destination_when_presence_check_is_stale(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "model.zip"
+            target.write_bytes(b"owner")
+            original_exists = type(root).exists
+            with patch.object(type(root), "exists", autospec=True,
+                              side_effect=lambda path: path != target and original_exists(path)):
+                with self.assertRaises(FileExistsError):
+                    backup.restore_bytes(root, "model.zip", b"cloud")
+            self.assertEqual(target.read_bytes(), b"owner")
 
     def test_folder_id_parser_accepts_shared_drive_links_only(self):
         folder = "1-rY4kQdkQsfylSw9b_mfpKFiTWr_foe9"

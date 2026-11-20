@@ -81,6 +81,9 @@ def safe_relative(value: str) -> str:
 
 
 def build_manifest(roots):
+    def linked(path):
+        return path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+
     entries = []
     for label, root_value in roots:
         label = safe_relative(label)
@@ -89,10 +92,10 @@ def build_manifest(roots):
             raise ValueError(f"Not a library folder: {root}")
         for parent, dirs, files in os.walk(root, followlinks=False):
             parent_path = Path(parent)
-            dirs[:] = sorted(d for d in dirs if d.lower() not in EXCLUDED_PARTS and not (parent_path / d).is_symlink())
+            dirs[:] = sorted(d for d in dirs if d.lower() not in EXCLUDED_PARTS and not linked(parent_path / d))
             for name in sorted(files):
                 path = parent_path / name
-                if path.is_symlink() or name.lower() in SECRET_PARTS or any(word in name.lower() for word in ("owner-session", "credential", "token")):
+                if linked(path) or name.lower() in SECRET_PARTS or any(word in name.lower() for word in ("owner-session", "credential", "token")):
                     continue
                 stat = path.stat()
                 if not path.is_file() or stat.st_size > MAX_FILE_BYTES:
@@ -135,6 +138,15 @@ def safe_restore_path(root: Path, relative: str) -> Path:
     return candidate
 
 
+def publish_restore(temporary, target, overwrite):
+    if overwrite:
+        os.replace(temporary, target)
+    elif os.name == "nt":
+        os.rename(temporary, target)
+    else:
+        os.link(temporary, target)
+
+
 def restore_bytes(root: Path, relative: str, data: bytes, overwrite=False) -> Path:
     target = safe_restore_path(root, relative)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -144,9 +156,7 @@ def restore_bytes(root: Path, relative: str, data: bytes, overwrite=False) -> Pa
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(data); stream.flush(); os.fsync(stream.fileno())
-        if target.exists() and not overwrite:
-            raise FileExistsError(str(target))
-        os.replace(temp_name, target)
+        publish_restore(temp_name, target, overwrite)
         return target
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
@@ -413,8 +423,14 @@ def main(argv=None):
                             out.write(block); digest.update(block); size += len(block)
                         out.flush(); os.fsync(out.fileno())
                     if digest.hexdigest() != item["sha256"] or size != int(item["size"]): raise RuntimeError(f"Checksum/size mismatch while restoring {item['path']}.")
-                    if target_path.exists() and not args.overwrite: skipped += 1; continue
-                    os.replace(tmp_name, target_path); restored += 1
+                    try:
+                        publish_restore(tmp_name, target_path, args.overwrite)
+                    except FileExistsError:
+                        if args.overwrite:
+                            raise
+                        skipped += 1
+                        continue
+                    restored += 1
                 finally:
                     if os.path.exists(tmp_name): os.unlink(tmp_name)
             print(f"Restore complete: {restored} restored, {skipped} already existed; no local files were deleted.")

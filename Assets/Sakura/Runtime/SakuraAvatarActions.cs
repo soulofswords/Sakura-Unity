@@ -123,6 +123,12 @@ namespace Sakura.Unity
             if (name == "greeting_wave" && SakuraHandRaising.Play(avatar, this)) return true;
             Stop(); Begin(name); duration = 0; looping = new[] { "groove", "step", "wave", "twist", "disco", "march", "hands_both", "hand_left", "hand_right" }.Contains(name); return true;
         }
+        public void ReactToTouch(bool head)
+        {
+            if (Active || TrackingOwnsMotion || !Bind() || !bones.ContainsKey("head")) return;
+            Begin(head ? "touch_headpat" : "touch_poke");
+            duration = 0;
+        }
         void Begin(string next)
         {
             Restore();
@@ -197,6 +203,14 @@ namespace Sakura.Unity
                 Rotate("leftThigh", gait); Rotate("rightThigh", -gait); Rotate("leftKnee", Mathf.Max(0, -gait) * 1.35f); Rotate("rightKnee", Mathf.Max(0, gait) * 1.35f); Rotate("leftArm", -gait * .4f); Rotate("rightArm", gait * .4f); return;
             }
             float after = Mathf.Max(0, elapsed - duration), blend = Smooth(after / .6f), wave = Mathf.Sin(after * 5);
+            if (action == "touch_headpat" || action == "touch_poke")
+            {
+                const float seconds = .65f;
+                float weight = Mathf.Sin(Mathf.PI * Mathf.Clamp01(after / seconds));
+                Rotate("head", (action == "touch_headpat" ? .17f : -.23f) * weight, 0, .10f * weight);
+                if (after >= seconds) { Restore(); action = null; if (idle != null) idle.MotionOwned = false; }
+                return;
+            }
             if (duration > 0) { avatar.transform.position = target; avatar.transform.rotation = Quaternion.Slerp(homeRotation, targetRotation, blend); }
             if (action == "bed")
             {

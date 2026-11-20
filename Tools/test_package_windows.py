@@ -1,17 +1,30 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import types
 import unittest
 from unittest.mock import patch
 import zipfile
-from package_windows import safe_target, stage
+from package_windows import cleanup_stale, safe_target, stage
 
 
 class PackageTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows uses case-insensitive package paths')
+    def test_cleanup_keeps_files_present_under_new_capitalization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / 'Tools'
+            tools.mkdir()
+            current = tools / 'Bridge.py'
+            current.write_text('new content')
+            cleanup_stale(root, ['Tools/bridge.py'], {'Tools/Bridge.py'})
+            self.assertEqual(current.read_text(), 'new content')
+
     def test_unsafe_destinations_and_links(self):
         with tempfile.TemporaryDirectory() as directory:
-            for name in ('../secret', '/absolute', 'C:/file', 'a\\file'):
+            for name in ('../secret', '/absolute', 'C:/file', 'a\\file', 'Tools//bridge.py', 'Tools/./bridge.py',
+                         'Tools/bridge.py.', 'Tools/bridge.py '):
                 with self.assertRaises(ValueError):
                     safe_target(directory, name)
             self.assertEqual(safe_target(directory, 'Sakura/app.py'), Path(directory)/'Sakura/app.py')
@@ -85,6 +98,27 @@ class PackageTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     stage(source, player, output, 'companion')
                 self.assertEqual(private.read_text(), 'keep this')
+
+    def test_generated_paths_are_checked_before_packaging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            player = root / 'player'
+            output = root / 'install'
+            (player / 'Tools').mkdir(parents=True)
+            (player / 'Sakura Companion.exe').touch()
+            (player / 'Tools/backend_bridge.py').touch()
+
+            def validate(root, path):
+                if path.endswith('python312._pth'):
+                    raise ValueError('Blocked generated path')
+                return safe_target(root, path)
+
+            with patch('package_windows.safe_target', side_effect=validate), \
+                 patch('package_windows.load_builder', side_effect=AssertionError('Started packaging before validation')):
+                with self.assertRaisesRegex(ValueError, 'Blocked generated path'):
+                    stage(source, player, output, 'companion')
+            self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':

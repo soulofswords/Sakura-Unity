@@ -54,6 +54,7 @@ namespace Sakura.Unity
         private string activeDevice;
         private int readFrame, generation, playbackGeneration;
         private bool pushToTalk, recognizing, starting, loadingSettings, settingsReady, wakeEnabled;
+        private bool microphoneHasSamples;
         private bool enrolling, resumeAfterEnrolment;
         private bool captureInterruptOnly;
         private SakuraAvatarActions sleepActions;
@@ -162,7 +163,7 @@ namespace Sakura.Unity
                 try { microphone = Microphone.Start(activeDevice, true, 2, 16000); }
                 catch (Exception error) { startError = error.Message; }
                 if (microphone == null) { FailInput("Microphone could not start. " + startError); yield break; }
-                microphoneStartedAt = Time.realtimeSinceStartup; readFrame = 0;
+                microphoneStartedAt = Time.realtimeSinceStartup; readFrame = 0; microphoneHasSamples = false;
                 captureInterruptOnly = BargeInEnabled && (Speaking || Backend.Busy);
                 captureOutput = Output; bargeInHadPlayback = Speaking;
                 gate = new SpeechGate(microphone.frequency, SpeechThreshold, .3f, .65f, 15f);
@@ -179,7 +180,7 @@ namespace Sakura.Unity
             if (Speaking) return BargeInEnabled
                 ? (Output == AudioOutput.Speakers ? "Sakura speaking · say something to interrupt" : "Sakura speaking · talk to interrupt")
                 : "Sakura speaking · microphone paused to prevent echo";
-            if (Backend.Busy) return BargeInEnabled ? "Working · talk to interrupt" : "Working · listening for stop or wait";
+            if (Backend.Busy) return BargeInEnabled ? "Working · talk to interrupt" : "Working · microphone paused";
             return wakeEnabled ? "Microphone ON · say " + wakePhrase : "Microphone ON · listening";
         }
 
@@ -202,7 +203,7 @@ namespace Sakura.Unity
             if (!Listening) return;
             if (bargeInTriggered && !Speaking && !recognizing && (gate == null || !gate.Active) && Time.realtimeSinceStartup - bargeInLatchAt > .8f)
             { bargeInTriggered = false; bargeIn.Reset(); Unduck(); }
-            if (recognizing || ((Speaking || Backend.Busy) && (!BargeInEnabled || !captureInterruptOnly)) || Time.realtimeSinceStartup < resumeAt)
+            if (recognizing || ((Speaking || Backend.Busy) && !BargeInEnabled) || Time.realtimeSinceStartup < resumeAt)
             {
                 if (microphone != null) CloseMicrophone();
                 return;
@@ -215,7 +216,9 @@ namespace Sakura.Unity
             if (!pushToTalk && captureInterruptOnly != (BargeInEnabled && (Speaking || Backend.Busy || bargeInTriggered))) { CloseMicrophone(); return; }
             int position = Microphone.GetPosition(activeDevice);
             if (position < 0 || !Microphone.IsRecording(activeDevice)) { FailInput("Microphone disconnected or stopped. Check the selected device and retry."); return; }
-            if (position == 0 && Time.realtimeSinceStartup - microphoneStartedAt > 3) { FailInput("Microphone produced no audio. Check Windows microphone access and the selected device."); return; }
+            if (position > 0) microphoneHasSamples = true;
+            if (!microphoneHasSamples && Time.realtimeSinceStartup - microphoneStartedAt > 3)
+            { FailInput("Microphone produced no audio. Check Windows microphone access and the selected device."); return; }
             int available = (position - readFrame + microphone.samples) % microphone.samples;
             int block = Mathf.Max(1, microphone.frequency / 50);
             while (available >= block && microphone != null)
@@ -331,7 +334,7 @@ namespace Sakura.Unity
                 bargeIn.Reset(); bargeInTriggered = false; Unduck();
                 TranscriptReceived?.Invoke(text);
                 Backend.SendChat(text);
-                SetStatus("Speech sent · microphone paused during Sakura’s reply");
+                SetStatus(Listening ? ListeningText() : "Speech sent · microphone OFF");
             });
             if (wakeEnabled && !wasHeld && !barge && Time.realtimeSinceStartup >= wakeDeadline)
             {

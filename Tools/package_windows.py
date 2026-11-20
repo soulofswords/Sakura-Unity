@@ -15,11 +15,11 @@ import zipfile
 
 
 def safe_target(root, name):
-    path = PurePosixPath(name)
-    if not name or '\\' in name or ':' in name or path.is_absolute() or any(part in ('..', '') for part in path.parts):
+    parts = name.split('/')
+    if '\\' in name or ':' in name or any(part in ('', '.', '..') or part.endswith(('.', ' ')) for part in parts):
         raise ValueError('Invalid package destination.')
     root = Path(root).resolve()
-    result = root.joinpath(*path.parts)
+    result = root.joinpath(*parts)
     current = result
     while current != root:
         if current.is_symlink() or getattr(current, 'is_junction', lambda: False)():
@@ -87,8 +87,9 @@ def managed_name(name):
 def cleanup_stale(output, old_names, new_names):
     blocked = ('Sakura/settings.json', 'Sakura/models/', 'Sakura/voices/',
                'Sakura/desktop-profile/', 'Sakura/llm-models/')
+    current_names = {os.path.normcase(name) for name in new_names}
     for name in old_names:
-        if name in new_names or name.startswith(blocked) or not managed_name(name):
+        if os.path.normcase(name) in current_names or name.startswith(blocked) or not managed_name(name):
             continue
         target = safe_target(output, name)
         if target.is_file():
@@ -154,7 +155,10 @@ def stage(source, player, output, edition, dry_run=False):
         raise ValueError('Build this Unity edition before packaging it.')
     if source == output or source in output.parents or player == output or player in output.parents:
         raise ValueError('Package output must be outside the source and clean player folders.')
-    marker = output/'.sakura-unity-package.json'
+    marker = safe_target(output, '.sakura-unity-package.json')
+    settings = safe_target(output, 'Sakura/settings.json')
+    runtime_config = safe_target(output, 'Sakura/runtime/python312._pth')
+    product = safe_target(output, 'Sakura/product.json')
     identity = {'edition': edition, 'format': 1}
     old_names = []
     if output.exists():
@@ -171,9 +175,6 @@ def stage(source, player, output, edition, dry_run=False):
             safe_target(output, name)
     builder = load_builder(source)
     files = list(records(source, player, builder))
-    names = [name.casefold() for _, name in files]
-    if len(names) != len(set(names)):
-        raise ValueError('Duplicate package destinations.')
     blocked = ('Sakura/settings.json', 'Sakura/models/', 'Sakura/voices/', 'Sakura/desktop-profile/', 'Sakura/llm-models/')
     for file, name in files:
         safe_target(output, name)
@@ -183,8 +184,13 @@ def stage(source, player, output, edition, dry_run=False):
     with zipfile.ZipFile(runtime_path) as runtime:
         runtime_files = [(name, 'Sakura/runtime/' + name) for name in runtime.namelist()
                          if name != 'python312._pth' and not name.endswith('/')]
-    generated_names = {'Sakura/runtime/python312._pth', 'Sakura/product.json'}
-    new_names = {name for _, name in files} | {target for _, target in runtime_files} | generated_names
+    for _, target in runtime_files:
+        safe_target(output, target)
+    destinations = ([name for _, name in files] + [target for _, target in runtime_files]
+                    + ['Sakura/runtime/python312._pth', 'Sakura/product.json'])
+    if len(destinations) != len({name.casefold() for name in destinations}):
+        raise ValueError('Duplicate package destinations.')
+    new_names = set(destinations)
     if dry_run:
         with zipfile.ZipFile(runtime_path) as runtime:
             runtime_bytes = sum(item.file_size for item in runtime.infolist() if item.filename in {name for name, _ in runtime_files})
@@ -206,12 +212,13 @@ def stage(source, player, output, edition, dry_run=False):
                 os.replace(temporary_path, target)
             finally:
                 temporary_path.unlink(missing_ok=True)
-    (output/'Sakura/runtime/python312._pth').write_text('python312.zip\n.\nLib/site-packages\n..\nimport site\n', encoding='utf-8')
-    settings = output/'Sakura/settings.json'
-    if not settings.exists():
-        settings.write_text(json.dumps(dict(builder.DEFAULTS, vtuber_tracking_only=edition == 'vtuber'), indent=2), encoding='utf-8')
-    atomic_write(output/'Sakura/runtime/python312._pth', b'python312.zip\n.\nLib/site-packages\n..\nimport site\n')
-    atomic_write(output/'Sakura/product.json', json.dumps({'edition': edition, 'display_name': executable[:-4], 'version': '2.2'}).encode('utf-8'))
+    try:
+        with settings.open('x', encoding='utf-8') as stream:
+            json.dump(dict(builder.DEFAULTS, vtuber_tracking_only=edition == 'vtuber'), stream, indent=2)
+    except FileExistsError:
+        pass
+    atomic_write(runtime_config, b'python312.zip\n.\nLib/site-packages\n..\nimport site\n')
+    atomic_write(product, json.dumps({'edition': edition, 'display_name': executable[:-4], 'version': '2.2'}).encode('utf-8'))
     cleanup_stale(output, old_names, new_names)
     atomic_write(marker, json.dumps({**identity, 'files': sorted(new_names)}, separators=(',', ':')).encode('utf-8'))
     return {'files': len(files), 'output': str(output), 'edition': edition}

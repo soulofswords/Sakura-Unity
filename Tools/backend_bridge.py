@@ -49,13 +49,18 @@ def package_files(selection, max_bytes, max_files):
     """Read a selected package with the same bounds as the existing importer."""
     import stat
     selection = Path(selection)
+    def linked(path):
+        return path.is_symlink() or getattr(path, 'is_junction', lambda: False)()
+
+    if linked(selection):
+        raise ValueError('Model imports cannot include symbolic links or junctions.')
     root = selection if selection.is_dir() else selection.parent
     files = selection.rglob('*') if selection.is_dir() else [selection]
     total = count = 0
     for file in files:
         # Path.is_junction() is only available on newer Python versions.
         # Keep the importer compatible with the bundled Python runtime.
-        if file.is_symlink() or getattr(file, 'is_junction', lambda: False)():
+        if linked(file):
             raise ValueError('Model imports cannot include symbolic links or junctions.')
         if not file.is_file():
             continue

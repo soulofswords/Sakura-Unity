@@ -127,6 +127,14 @@ namespace Sakura.Unity
             avatarActions = GetComponent<SakuraAvatarActions>() ?? gameObject.AddComponent<SakuraAvatarActions>();
             avatarActions.Viewport = viewport;
             avatarActions.Stage = stage;
+            viewport.TouchReactionsEnabled = !vtuberEdition;
+            viewport.AvatarTapped += head =>
+            {
+                if (CurrentMode != "Companion" || avatarActions.Sleeping) return;
+                viewport.Expressions?.ReactToTouch(head);
+                avatarActions.TrackingOwnsMotion = tracking.Source != SakuraTracking.InputSource.Off;
+                avatarActions.ReactToTouch(head);
+            };
             backend.ReplyDataReceived += ApplyAvatarReply;
             if (vtuberEdition) SwitchMode("VTuber");
             backend.RefreshCatalog();
@@ -498,6 +506,7 @@ namespace Sakura.Unity
             viewport?.Expressions?.StopReplyMood();
             PanelsHidden?.Invoke();
             CurrentMode = mode;
+            if (viewport != null) viewport.TouchReactionsEnabled = mode == "Companion";
             if (liveChat.Active) liveChat.Disconnect();
             backend.SetMode(mode);
             if (mode != "Companion") avatarActions?.DisableRoom();
