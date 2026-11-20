@@ -184,6 +184,12 @@ namespace Sakura.Unity
                 Changed?.Invoke();
             });
         }
+
+        internal void PhonePermissions(string body, Action<string, string> completed)
+        {
+            if (backend == null) { completed(null, "PC backend is unavailable."); return; }
+            backend.Api("/api/settings", body, completed);
+        }
         public void PhoneControl(string action, bool enabled)
         {
             if (backend == null) { Notify("PC backend is unavailable."); return; }

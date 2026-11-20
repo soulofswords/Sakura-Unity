@@ -199,7 +199,7 @@ namespace Sakura.Unity.Editor
             studio.ShowPanel("Model Settings");
             var root = studio.GetComponent<UIDocument>().rootVisualElement;
             var tabs = root.Query<Button>(className:"model-tab").ToList();
-            string[] expected = { "Texture remapping","Texture coloring","Expressions & hotkeys","Bones","Mouth" };
+            string[] expected = { "Texture remapping","Texture coloring","Expressions & hotkeys","Bones","Mouth","Effects" };
             if (!tabs.Select(button => button.text).SequenceEqual(expected)) throw new Exception("PMX tabs differ from the reference app.");
             if (root.Q<IntegerField>("model-zoom-percent") == null) throw new Exception("Numeric model zoom is missing.");
             await Task.Delay(250);
@@ -214,6 +214,8 @@ namespace Sakura.Unity.Editor
             Submit(tabs[0]);
             await Task.Delay(100);
             if (!root.Query<Button>().ToList().Any(button => button.text == "Apply replacement")) throw new Exception("Texture selection/apply flow differs from the reference.");
+            if (root.Q<DropdownField>("pmx-material-slot") == null || root.Q<DropdownField>("pmx-texture-choice") == null ||
+                !root.Query<Button>().ToList().Any(button => button.text == "Restore original")) throw new Exception("PMX package texture assignments are missing.");
             await SakuraSetup.CaptureReference(@"C:\AI\Unity-Verification\pc-model-remapping-parity.png");
             Debug.Log("PASS: reference PMX tab order, numeric zoom, unclipped tabs, model-only material picking, colour wheel/RGB and separate texture selection/apply.");
         }

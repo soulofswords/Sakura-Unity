@@ -19,6 +19,36 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.bridge.validate_source(folder)
 
+    def test_camera_driver_status_and_setup_use_the_desktop_backend(self):
+        import asyncio
+        import httpx
+        import sys
+        from fastapi import FastAPI
+        from unittest.mock import Mock
+        app = FastAPI()
+        self.bridge.install_unity_lifecycle(types.SimpleNamespace(app=app))
+        install = Mock(return_value={'installed': True, 'device': 'Sakura Virtual Camera'})
+        remove = Mock(return_value={'installed': False, 'device': 'Sakura Virtual Camera'})
+        driver = types.SimpleNamespace(CAMERA_NAME='Sakura Virtual Camera', DRIVER_DLL=Path(__file__),
+                                       driver_installed=lambda: False, install_driver=install, uninstall_driver=remove)
+        capability = types.SimpleNamespace(desktop_access_allowed=lambda request: request.headers.get('x-test-desktop') == 'yes')
+        route = '/api/unity/camera-driver'
+
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                self.assertFalse((await client.get(route)).json()['installed'])
+                self.assertEqual((await client.post(route, json={'action': 'install'})).status_code, 403)
+                install.assert_not_called()
+                headers = {'x-test-desktop': 'yes'}
+                self.assertEqual((await client.post(route, json={'action': 'invalid'}, headers=headers)).status_code, 400)
+                self.assertTrue((await client.post(route, json={'action': 'install'}, headers=headers)).json()['installed'])
+                self.assertFalse((await client.post(route, json={'action': 'remove'}, headers=headers)).json()['installed'])
+
+        with patch.dict(sys.modules, sakura_camera_native=driver, local_api_security=capability):
+            asyncio.run(run())
+        install.assert_called_once_with()
+        remove.assert_called_once_with()
+
     def test_offline_wake_route_is_bounded_and_mode_gated(self):
         import asyncio
         import httpx
@@ -190,9 +220,12 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual((await client.post('/api/unity/game-vram/confirm', json={'adapter': 'fixture GPU'})).status_code, 409)
         asyncio.run(run())
 
-    def test_real_source_resolves(self):
-        source = self.bridge.validate_source(r'F:\AI\assistant\Sakura')
-        self.assertTrue((source / 'app.py').is_file())
+    def test_source_with_backend_entry_point_resolves(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)
+            (source / 'app.py').touch()
+            (source / 'local_api_security.py').touch()
+            self.assertEqual(self.bridge.validate_source(folder), source.resolve())
 
     def test_local_catalog_retains_format_and_relative_path(self):
         with tempfile.TemporaryDirectory() as folder:

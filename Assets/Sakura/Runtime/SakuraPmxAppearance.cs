@@ -73,10 +73,10 @@ namespace Sakura.Unity
                 }
                 Show(-1); return values.ToArray();
             }
-            float[] Read() { var s = model.Settings; return new[] { s.brightness,s.ambient,s.diffuse,s.toon,s.directional,s.sphere,s.specular,s.saturation }; }
             void Apply(float[] values)
             {
-                var s = model.Settings; s.brightness=values[0];s.ambient=values[1];s.diffuse=values[2];s.toon=values[3];s.directional=values[4];s.sphere=values[5];s.specular=values[6];s.saturation=values[7]; model.Apply();
+                model.Settings.SetAppearance(values);
+                model.Apply();
             }
             try
             {
@@ -86,7 +86,7 @@ namespace Sakura.Unity
                 for (int i = targets.Count - 1; i > 0; i--) if (!float.IsFinite(baseline[i])) targets.RemoveAt(i);
                 baseline = await Measure();
                 if (!float.IsFinite(baseline[0])) throw new InvalidOperationException("The current view contains no measurable avatar.");
-                float before = baseline.Average(), bestLoss = before; var start = Read(); var best = (float[])start.Clone(); int evaluated = 0;
+                float before = baseline.Average(), bestLoss = before; var start = model.Settings.Appearance(); var best = (float[])start.Clone(); int evaluated = 0;
                 foreach (float step in new[] { .3f, .12f, .05f })
                     for (int key = 0; key < best.Length; key++)
                     {
@@ -101,7 +101,8 @@ namespace Sakura.Unity
                         best = chosen; bestLoss = chosenLoss; progress("Matching editor colours… " + evaluated + " measurements");
                     }
                 bool improved = bestLoss < before * .995f && before - bestLoss > .00001f;
-                Apply(improved ? best : start); model.Save();
+                Apply(improved ? best : start);
+                if (improved) { model.Settings.previousMatch = start; model.Save(); }
                 return improved ? "Appearance matched and saved. Measured colour error " + before.ToString("F5") + " → " + bestLoss.ToString("F5") + "." : "Current sliders already give the closest measured match. No changes saved.";
             }
             catch { if (model != null) { JsonUtility.FromJsonOverwrite(initial, model.Settings); model.Apply(); } throw; }

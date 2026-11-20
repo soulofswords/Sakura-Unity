@@ -424,14 +424,22 @@ namespace Sakura.Unity
             zoom = Mathf.Lerp(zoom,targetZoom,1 - Mathf.Exp(-Mathf.Min(Time.unscaledDeltaTime,.1f) / .075f)); FrameAvatar();
         }
 
+        public string SnapshotDirectory
+        {
+            get
+            {
+                string folder = System.IO.Path.Combine(Application.persistentDataPath, "snapshots");
+                using (var digest = System.Security.Cryptography.SHA256.Create())
+                    return System.IO.Path.Combine(folder, BitConverter.ToString(digest.ComputeHash(System.Text.Encoding.UTF8.GetBytes(LoadedModelPath ?? ""))).Replace("-", ""));
+            }
+        }
+
         public string SaveSnapshot(string purpose)
         {
             if (target == null || avatar == null) throw new InvalidOperationException("Load a model first.");
             if (string.IsNullOrEmpty(purpose) || purpose.Any(character => !char.IsLetterOrDigit(character) && character != '-' && character != '_'))
                 throw new ArgumentException("Invalid snapshot name.");
-            string folder = System.IO.Path.Combine(Application.persistentDataPath, "snapshots");
-            using (var digest = System.Security.Cryptography.SHA256.Create())
-                folder = System.IO.Path.Combine(folder, BitConverter.ToString(digest.ComputeHash(System.Text.Encoding.UTF8.GetBytes(LoadedModelPath))).Replace("-", ""));
+            string folder = SnapshotDirectory;
             System.IO.Directory.CreateDirectory(folder);
             string file = System.IO.Path.Combine(folder, purpose + ".png");
             var previous = RenderTexture.active;
@@ -456,6 +464,25 @@ namespace Sakura.Unity
                 await Task.Yield();
             }
             return SaveSnapshot(purpose);
+        }
+
+        public async Task<string> SaveTextureDiagnosticSnapshot(string purpose)
+        {
+            var model = avatar;
+            float previousZoom = zoom, previousTarget = targetZoom;
+            Vector3 previousOffset = framingOffset;
+            try
+            {
+                zoom = targetZoom = 1; framingOffset = Vector3.zero; FrameAvatar();
+                return await SaveSnapshotNextFrame(purpose);
+            }
+            finally
+            {
+                if (avatar == model)
+                {
+                    zoom = previousZoom; targetZoom = previousTarget; framingOffset = previousOffset; FrameAvatar();
+                }
+            }
         }
 
         public float[] EditorDirection()

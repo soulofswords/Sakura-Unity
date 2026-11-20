@@ -50,7 +50,7 @@ namespace Sakura.Unity.Editor
             var owner = root.Q("agent-workspace");
             if (owner == null || owner.styleSheets.count == 0) throw new Exception("Agent workspace stylesheet is missing.");
             var pages = owner.Query<Button>(className: "agent-page").ToList();
-            string[] expected = { "Tasks", "Local AI", "Connections", "Skills", "Memory & learning", "Automations", "Task history", "Browser" };
+            string[] expected = { "Tasks", "Local AI", "Connections", "Integrations", "Skills", "Memory & learning", "Automations", "Task history", "Browser" };
             if (!pages.Select(button => button.text).SequenceEqual(expected)) throw new Exception("Agent navigation differs from the reference.");
             if (pages.Any(button => button.Q(className: "agent-nav-icon") == null)) throw new Exception("Agent navigation outline icons are missing.");
             if (pages.Any(button => button.resolvedStyle.paddingLeft < 35)) throw new Exception("Agent navigation text overlaps its icon.");

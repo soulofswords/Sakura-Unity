@@ -30,6 +30,13 @@ namespace Sakura.Unity
         CancellationTokenSource lifetime = new CancellationTokenSource();
         int revision;
         string profileKey;
+        bool characterOnly;
+
+        public void SetCharacterOnly(bool value)
+        {
+            characterOnly = value;
+            foreach (var item in Settings.items) if (item.root != null) item.root.SetActive(Settings.enabled && !value);
+        }
         public void Initialize(string source, bool restore = true)
         {
             string resolved = Path.GetFullPath(source);
@@ -61,7 +68,7 @@ namespace Sakura.Unity
         public async Task SetEnabled(bool enabled)
         {
             Settings.enabled = enabled; ++revision; Save();
-            foreach (var item in Settings.items) if (item.root != null) item.root.SetActive(enabled);
+            foreach (var item in Settings.items) if (item.root != null) item.root.SetActive(enabled && !characterOnly);
             if (enabled) await Sync();
         }
         public async Task Add(string path, string name = null)
@@ -109,7 +116,8 @@ namespace Sakura.Unity
                         if (this == null || generation != revision || !Settings.enabled || !Settings.items.Contains(item)) { Destroy(loaded); continue; }
                         loaded.name = "Stage · " + item.name; loaded.transform.SetParent(transform, false);
                         foreach (var child in loaded.GetComponentsInChildren<Transform>(true)) child.gameObject.layer = 30;
-                        item.root = loaded; Apply(item); StatusChanged?.Invoke("Loaded " + item.name + ". Static scenery; room collision is not automatic.");
+                        item.root = loaded; Apply(item); loaded.SetActive(!characterOnly);
+                        StatusChanged?.Invoke("Loaded " + item.name + ". Static scenery; room collision is not automatic.");
                     }
                     catch (OperationCanceledException) { if (loaded != null) Destroy(loaded); }
                     catch (Exception error) { if (loaded != null) Destroy(loaded); StatusChanged?.Invoke(error.Message); }

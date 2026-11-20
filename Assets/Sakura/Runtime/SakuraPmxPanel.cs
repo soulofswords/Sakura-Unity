@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.IO;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -14,16 +15,18 @@ namespace Sakura.Unity
         readonly SakuraBackend backend;
         readonly SakuraPmxModel model;
         readonly VisualElement body;
+        readonly VisualElement owner;
         readonly Label status;
         readonly VisualElement previews;
         readonly List<Texture2D> previewTextures = new List<Texture2D>();
         string tab = "Texture remapping";
         int part, bone;
         bool alive = true;
+        bool diagnosing;
         byte[] selectedTexture;
         public SakuraPmxPanel(SakuraAvatarViewport viewport, SakuraBackend backend, VisualElement host, string initialTab = "Texture remapping", bool showTabs = true)
         {
-            var owner = new VisualElement(); host.Add(owner); host = owner;
+            owner = new VisualElement(); host.Add(owner); host = owner;
             this.viewport = viewport; this.backend = backend; model = viewport.Pmx;
             tab = initialTab;
             if (showTabs)
@@ -60,7 +63,10 @@ namespace Sakura.Unity
         }
         void Render()
         {
-            body.Clear(); if (model == null) { Text("Select a PMX model first."); return; }
+            body.Clear();
+            if (status.parent != owner) owner.Add(status);
+            if (previews.parent != owner) owner.Add(previews);
+            if (model == null) { Text("Select a PMX model first."); return; }
             if (tab == "Bones") { Bones(); return; }
             if (tab == "Appearance") { Appearance(); return; }
             Button("Import appearance package from legacy Sakura", () => Run(() =>
@@ -82,6 +88,8 @@ namespace Sakura.Unity
             {
                 var snapshot = new Button(Diagnose) { text = "Take snapshot and check textures" };
                 body.Insert(0,snapshot);
+                if (string.IsNullOrEmpty(status.text)) status.text = "Check texture decoding and repair confirmed PMX paths. This preserves original artwork and your saved colour overrides.";
+                body.Insert(1, status); body.Insert(2, previews);
                 Text("Replace the diffuse image for this material. Use a texture designed for this model’s UV layout.");
                 var fileRow = new VisualElement(); fileRow.AddToClassList("row"); body.Add(fileRow);
                 var filename = new Label("No file chosen");
@@ -106,6 +114,7 @@ namespace Sakura.Unity
                 }), fileRow);
                 fileRow.Add(filename); body.Add(apply);
                 Button("Restore original texture", () => Run(() => { model.RestoreTexture(part); status.text = "Original texture restored."; }), body);
+                PackageTextures();
             }
             else
             {
@@ -139,6 +148,67 @@ namespace Sakura.Unity
                 Text("PMX appearance"); Appearance();
             }
         }
+        void PackageTextures()
+        {
+            var card = new VisualElement(); card.AddToClassList("card"); body.Add(card);
+            var heading = new Label("PMX material texture:"); heading.AddToClassList("card-title"); card.Add(heading);
+            var slots = model.Definition.materials.SelectMany(item => new[] { "diffuse", "sphere", "toon" }
+                .Select(slot => (index: item.index, name: item.name, slot))).ToList();
+            var slotChoice = new DropdownField(slots.Select(item => (item.index + 1) + ". " + item.name + " — " + item.slot).ToList(), 0);
+            slotChoice.name = "pmx-material-slot"; card.Add(slotChoice);
+            var original = new Label(); original.AddToClassList("description"); card.Add(original);
+            var imageChoice = new DropdownField("Replacement image", new List<string> { "Reading texture files…" }, 0);
+            imageChoice.name = "pmx-texture-choice"; card.Add(imageChoice);
+            bool ready = false, saving = false;
+            void Selection()
+            {
+                var item = slots[slotChoice.index];
+                string authored = model.OriginalTextureReference(item.index, item.slot) ?? "";
+                var definition = model.Definition.materials[item.index];
+                string current = item.slot == "diffuse" ? definition.texture : item.slot == "sphere" ? definition.sphereTexture : definition.toonShared ? "Shared toon " + (definition.sharedToonIndex + 1) : definition.toonTexture;
+                original.text = "Original: " + (string.IsNullOrEmpty(authored) ? "(none)" : authored) + ". Current override: " + (current == authored || string.IsNullOrEmpty(current) ? "none" : current) + ".";
+                if (ready) imageChoice.SetValueWithoutNotify(imageChoice.choices.Contains(current) ? current : "");
+            }
+            void Refresh()
+            {
+                backend.Api("/api/models/texture-options?model=" + Uri.EscapeDataString(viewport.LoadedModelPath), null, (json, error) => Run(() =>
+                {
+                    if (error != null) throw new InvalidOperationException(error);
+                    var files = (JArray)JObject.Parse(json)["textures"];
+                    imageChoice.choices = files.Values<string>().ToList(); ready = imageChoice.choices.Count > 0;
+                    imageChoice.SetEnabled(ready); Selection();
+                }));
+            }
+            void Save(bool reset)
+            {
+                if (saving || viewport.Loading) { status.text = "Wait for the texture assignment to finish loading."; return; }
+                if (!reset && (!ready || string.IsNullOrEmpty(imageChoice.value))) { status.text = "Choose a material and replacement image first."; return; }
+                saving = true;
+                var item = slots[slotChoice.index]; string path = viewport.LoadedModelPath;
+                backend.Api("/api/models/texture-material", new JObject { ["model"] = path, ["material"] = item.index, ["slot"] = item.slot,
+                    ["texture"] = reset ? JValue.CreateNull() : new JValue(imageChoice.value) }.ToString(), async (json, error) =>
+                {
+                    try
+                    {
+                        if (!alive || model == null || viewport.Pmx != model) return;
+                        if (error != null) { status.text = error; return; }
+                        var framing = viewport.PluginPosition();
+                        await viewport.LoadModel(backend.SourceFolder, path);
+                        if (viewport.LoadedModelPath == path && viewport.LastImportError == null) viewport.PluginMove(framing);
+                    }
+                    catch (Exception failure) { if (alive) status.text = failure.Message; }
+                    finally { saving = false; }
+                });
+            }
+            slotChoice.RegisterValueChangedCallback(_ => Selection());
+            var actions = new VisualElement(); actions.AddToClassList("row"); card.Add(actions);
+            Button("Apply texture", () => Run(() => Save(false)), actions);
+            Button("Restore original", () => Run(() => Save(true)), actions);
+            Button("Refresh files", () => Run(Refresh), actions);
+            var hint = new Label("Choose a loaded PMX model. To use a new image, copy it into the model folder and refresh files. Original PMX files are unchanged."); hint.AddToClassList("description"); card.Add(hint);
+            Selection(); Refresh();
+        }
+
         void Bones()
         {
             Text("Freeze a bone at its local rest pose. Duplicate bone names retain separate indexed controls.");
@@ -257,35 +327,74 @@ namespace Sakura.Unity
                     catch (Exception failure) { status.text = failure.Message; }
                 }, viewport.EditorDirection());
             }), body);
+            if (s.previousMatch?.Length == 8)
+                Button("Undo automatic appearance match", () => Run(() =>
+                {
+                    model.UndoAppearanceMatch();
+                    status.text = "Restored appearance from before automatic matching.";
+                    Render();
+                }), body);
         }
-        void Diagnose() => Run(() =>
+        async void Diagnose()
         {
-            Preview(viewport.SaveSnapshot("textures-before")); status.text = "Checking every referenced texture…"; var slots = new JArray();
-            foreach (var item in model.Definition.materials)
+            if (diagnosing || !alive || model == null || model != viewport.Pmx || model.AppearanceMatching) return;
+            diagnosing = true;
+            bool Current() => alive && model != null && viewport.Pmx == model;
+            void RequireCurrent() { if (!Current()) throw new InvalidOperationException("Model changed. Run the texture check on the selected model."); }
+            Task<string> Api(string route, JObject payload)
             {
-                void Add(string slot, string reference) { if (!string.IsNullOrEmpty(reference)) slots.Add(new JObject { ["material"] = item.index, ["slot"] = slot, ["reference"] = reference }); }
-                Add("diffuse", item.texture); Add("sphere", item.sphereTexture); if (!item.toonShared) Add("toon", item.toonTexture);
+                var done = new TaskCompletionSource<string>();
+                backend.Api(route, payload.ToString(), (json, error) => { if (error == null) done.TrySetResult(json); else done.TrySetException(new InvalidOperationException(error)); });
+                return done.Task;
             }
-            backend.Api("/api/models/texture-diagnose", new JObject { ["model"] = viewport.LoadedModelPath, ["slots"] = slots }.ToString(), FinishDiagnostics);
-        });
-        async void FinishDiagnostics(string json, string error)
-        {
-            if (!alive || model == null || viewport.Pmx != model) return;
             try
             {
-                if (error != null) throw new InvalidOperationException(error);
-                var results = (JArray)JObject.Parse(json)["slots"];
-                int repaired = 0;
-                foreach (var item in results.Where(item => item.Value<string>("status") == "repairable"))
+                string path = viewport.LoadedModelPath;
+                string before = await viewport.SaveTextureDiagnosticSnapshot("textures-before"); RequireCurrent(); Preview(before);
+                status.text = "Checking every referenced texture…";
+                var slots = new JArray();
+                foreach (var item in model.Definition.materials)
                 {
-                    model.RepairTexture(item.Value<int>("material"), item.Value<string>("slot"), item.Value<string>("resolved")); repaired++;
+                    void Add(string slot, string reference) { if (!string.IsNullOrEmpty(reference)) slots.Add(new JObject { ["material"] = item.index, ["slot"] = slot, ["reference"] = reference }); }
+                    Add("diffuse", item.texture); Add("sphere", item.sphereTexture); if (!item.toonShared) Add("toon", item.toonTexture);
                 }
-                Preview(await viewport.SaveSnapshotNextFrame("textures-after"));
-                int missing = results.Count(item => item.Value<string>("status") != "ok" && item.Value<string>("status") != "repairable");
-                status.text = "Checked " + results.Count + " references. " + missing + " need attention. " + repaired + " confirmed path repairs saved.";
-                backend.RunPmxTool("editor", viewport.LoadedModelPath, (reply, failure) => { if (failure != null) status.text += " " + failure; });
+                var report = JObject.Parse(await Api("/api/models/texture-diagnose", new JObject { ["model"] = path, ["slots"] = slots })); RequireCurrent();
+                var results = report["slots"] as JArray ?? throw new InvalidDataException("Texture diagnosis returned no references.");
+                int repaired = 0;
+                var issues = new JArray();
+                foreach (var item in results)
+                {
+                    RequireCurrent();
+                    string state = item.Value<string>("status"), slot = item.Value<string>("slot");
+                    int material = item.Value<int>("material");
+                    if (state != "ok" && state != "repairable") { issues.Add("Material " + (material + 1) + " / " + slot + ": " + item.Value<string>("message")); continue; }
+                    string resolved = item.Value<string>("resolved") ?? item.Value<string>("reference");
+                    if (state == "repairable")
+                    {
+                        await Api("/api/models/texture-material", new JObject { ["model"] = path, ["material"] = material, ["slot"] = slot, ["texture"] = resolved }); RequireCurrent(); repaired++;
+                    }
+                    model.RefreshTexture(material, slot, resolved);
+                }
+                status.text = "Texture paths checked. Comparing rendered appearance with PMX Editor…";
+                var reference = new TaskCompletionSource<string>();
+                backend.RunPmxTool("reference", path, (json, error) => { if (error == null) reference.TrySetResult(json); else reference.TrySetException(new InvalidOperationException(error)); }, viewport.EditorDirection());
+                try
+                {
+                    string json = await reference.Task; RequireCurrent();
+                    report["appearance"] = await SakuraPmxAppearance.Match(viewport, json, text => { if (Current()) status.text = text; }); RequireCurrent();
+                }
+                catch (Exception error) { RequireCurrent(); issues.Add("PMX Editor appearance comparison: " + error.Message); }
+                string after = await viewport.SaveTextureDiagnosticSnapshot("textures-after"); RequireCurrent(); Preview(after);
+                var loaded = SakuraTextureDiagnostics.Inspect(viewport.AvatarRoot);
+                foreach (var issue in (JArray)loaded["issues"]) issues.Add(issue);
+                report["checked"] = results.Count; report["repaired"] = repaired; report["issues"] = issues; report["loadedImages"] = loaded["checked"];
+                SakuraTextureDiagnostics.Save(before, after, report);
+                status.text = "Checked all " + results.Count + " texture references. " + repaired + " confirmed path repairs saved. "
+                    + (issues.Count == 0 ? "No missing or unreadable textures detected." : "Needs attention: " + string.Join(" ", issues.Values<string>()))
+                    + " Snapshots and report saved locally for this model.";
             }
-            catch (Exception failure) { status.text = failure.Message; }
+            catch (Exception failure) { if (Current()) status.text = failure.Message; }
+            finally { diagnosing = false; }
         }
     }
 }

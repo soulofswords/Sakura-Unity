@@ -16,11 +16,41 @@ namespace Sakura.Unity
         static void Install()
         {
             if (Environment.GetCommandLineArgs().Contains("--sakura-verify")) new GameObject("Owned preview verification").AddComponent<SakuraPlayerVerification>();
+            else if (Environment.GetCommandLineArgs().Contains("--sakura-frame-sample"))
+                new GameObject("Frame timing sampler").AddComponent<SakuraPlayerVerification>();
         }
         IEnumerator Start()
         {
             string folder = @"C:\AI\Unity-Verification";
             Directory.CreateDirectory(folder);
+            if (Environment.GetCommandLineArgs().Contains("--sakura-frame-sample"))
+            {
+                yield return new WaitForSecondsRealtime(25);
+                var frames = new System.Collections.Generic.List<float>(1500);
+                float until = Time.realtimeSinceStartup + 15;
+                while (Time.realtimeSinceStartup < until)
+                {
+                    yield return null;
+                    if (Application.isFocused) frames.Add(Time.unscaledDeltaTime * 1000);
+                }
+                frames.Sort();
+                var sampledAvatar = FindFirstObjectByType<SakuraAvatarViewport>();
+                var summary = new JObject {
+                    ["frames"] = frames.Count, ["focusedSeconds"] = frames.Sum() / 1000,
+                    ["width"] = Screen.width, ["height"] = Screen.height,
+                    ["modelFormat"] = sampledAvatar?.LoadedFormat, ["avatarLoaded"] = sampledAvatar?.HasAvatar == true,
+                    ["targetFps"] = Application.targetFrameRate
+                };
+                if (frames.Count > 0)
+                {
+                    summary["fps"] = 1000 / frames.Average();
+                    summary["medianMs"] = frames[frames.Count / 2];
+                    summary["p95Ms"] = frames[Mathf.CeilToInt(frames.Count * .95f) - 1];
+                    summary["over33Ms"] = frames.Count(frame => frame > 33.33f);
+                }
+                File.WriteAllText(Path.Combine(folder, "parity-frame-sample-" + (SakuraInstances.IsVtuber ? "vtuber" : "companion") + ".json"), summary.ToString());
+                yield break;
+            }
             var report = new JObject { ["edition"] = SakuraInstances.IsVtuber ? "vtuber" : "companion", ["instance"] = SakuraInstances.Index };
             float deadline = Time.realtimeSinceStartup + 40;
             SakuraStudio studio = null;
@@ -149,8 +179,36 @@ namespace Sakura.Unity
                 }
                 report["panelsCaptured"] = true;
             }
+            if (!SakuraInstances.IsVtuber && Environment.GetCommandLineArgs().Contains("--sakura-verify-voice"))
+                yield return VerifyVoice(backend, studio.GetComponent<SakuraVoice>(), report);
             Finish(report, folder);
             if (!Environment.GetCommandLineArgs().Contains("--sakura-verify-hold")) Application.Quit();
+        }
+        static IEnumerator VerifyVoice(SakuraBackend backend, SakuraVoice voice, JObject report)
+        {
+            string response = null, failure = null; bool done = false;
+            backend.Api("/api/unity/start-services", "{}", (json, error) => { failure = error; done = true; });
+            float deadline = Time.realtimeSinceStartup + 120;
+            while (!done && Time.realtimeSinceStartup < deadline) yield return null;
+            if (!done || failure != null) { report["voiceError"] = failure ?? "Voice services timed out."; yield break; }
+            done = false;
+            backend.Api("/api/tts/speak", "{\"text\":\"Sakura voice playback check.\"}", (json, error) => { response = json; failure = error; done = true; });
+            deadline = Time.realtimeSinceStartup + 120;
+            while (!done && Time.realtimeSinceStartup < deadline) yield return null;
+            if (!done || failure != null) { report["voiceError"] = failure ?? "TTS timed out."; yield break; }
+            string audio = null;
+            try { audio = JObject.Parse(response).Value<string>("audio"); }
+            catch (Exception) { failure = "TTS response was not JSON."; }
+            if (!SakuraBackend.ValidAudioPath(audio)) { report["voiceError"] = failure ?? "TTS returned no local audio."; yield break; }
+            report["ttsGeneratedAudio"] = true;
+            voice.PlayCohost(audio);
+            deadline = Time.realtimeSinceStartup + 15;
+            while (!voice.Speaking && Time.realtimeSinceStartup < deadline) yield return null;
+            report["voicePlaybackStarted"] = voice.Speaking;
+            report["voiceListenerActive"] = FindObjectsByType<AudioListener>(FindObjectsSortMode.None).Any(item => item.isActiveAndEnabled);
+            if (!voice.Speaking) { report["voiceError"] = voice.Status; yield break; }
+            report["voiceClipSeconds"] = voice.SpeechSource.clip.length;
+            while (voice.Speaking && Time.realtimeSinceStartup < deadline) yield return null;
         }
         static IEnumerator Shot(string folder, string name)
         {

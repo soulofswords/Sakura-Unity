@@ -21,6 +21,7 @@ namespace Sakura.Unity
         readonly ProgressBar progress;
         readonly Label status;
         Process process;
+        string converterError;
         bool alive = true;
 
         public SakuraModelConverterPanel(SakuraBackend backend, CharacterEntry[] catalog, string loadedPath, VisualElement host, Action refreshCatalog)
@@ -99,6 +100,7 @@ namespace Sakura.Unity
                 process = new Process { StartInfo = info, EnableRaisingEvents = true };
                 process.OutputDataReceived += OnOutput;
                 process.ErrorDataReceived += OnError;
+                converterError = null;
                 progress.value = 0; status.text = "Starting converter…";
                 process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
                 await Task.Run(() => process.WaitForExit());
@@ -111,7 +113,8 @@ namespace Sakura.Unity
                     var buttons = host.userData as Tuple<Button, Button>;
                     buttons?.Item1.SetEnabled(candidates.Length > 0); buttons?.Item2.SetEnabled(false);
                     if (exitCode == 0) { progress.value = 100; status.text = "Conversion complete. Review the mapping report and inspect models/converted/ before using the model."; refreshCatalog?.Invoke(); }
-                    else status.text = "Conversion did not complete. Check the converter installation and revision; source files were preserved.";
+                    else status.text = exitCode == 130 ? "Conversion cancelled; source files were preserved."
+                        : converterError ?? "Conversion did not complete. Check the converter installation and revision; source files were preserved.";
                 });
             }
             catch (Exception error)
@@ -138,6 +141,7 @@ namespace Sakura.Unity
         {
             if (args.Data == null || !alive || !args.Data.StartsWith("SAKURA_CONVERTER_ERROR ", StringComparison.Ordinal)) return;
             string message = args.Data.Substring("SAKURA_CONVERTER_ERROR ".Length);
+            converterError = message;
             host.schedule.Execute(() => { if (alive) status.text = message; });
         }
         void Cancel()

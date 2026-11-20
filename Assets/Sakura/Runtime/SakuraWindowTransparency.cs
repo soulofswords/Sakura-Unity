@@ -168,6 +168,8 @@ namespace Sakura.Unity
         {
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
             MaintainWindowFrame();
+            int shortcut = System.Threading.Interlocked.Exchange(ref visibilityRequest, 0);
+            if (shortcut != 0) VisibilityShortcut?.Invoke(shortcut == 2);
             if ((!transparencyRequested && !Transparent) || Time.unscaledTime < nextTransparencyCheck) return;
             nextTransparencyCheck = Time.unscaledTime + .5f;
             if (!transparencyAgentMode && (Screen.fullScreenMode != lastFullScreenMode || !Transparent)) RefreshTransparency();
@@ -185,7 +187,14 @@ namespace Sakura.Unity
             if (handle != IntPtr.Zero && transparencyRequested) RefreshTransparency();
 #endif
         }
-        void OnDisable() => DisableTransparency();
+        void OnDisable()
+        {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            RemoveVisibilityShortcuts();
+            styledHandle = IntPtr.Zero;
+#endif
+            DisableTransparency();
+        }
         void OnDestroy() => DisableTransparency();
     }
 }

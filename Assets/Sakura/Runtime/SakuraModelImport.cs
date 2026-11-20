@@ -36,6 +36,7 @@ namespace Sakura.Unity
             if (new FileInfo(path).Length > 512L * 1024 * 1024) throw new InvalidDataException("PMX file exceeds the 512 MB import limit.");
             var model = await Task.Run(() => new NativeMmdParser().LoadModel(File.ReadAllBytes(path)), token);
             token.ThrowIfCancellationRequested();
+            var authoredTextures = model.materials.Select(item => new[] { item.texture, item.sphereTexture, item.toonShared ? "Shared toon " + (item.sharedToonIndex + 1) : item.toonTexture }).ToArray();
             ApplyPackageTextureOverrides(path, model);
             var instance = model.bones.Count == 0
                 ? MmdUnityModelFactory.CreateStaticModel(model, path, .08f, MmdMaterialPreset.MmdToonLit)
@@ -44,7 +45,7 @@ namespace Sakura.Unity
             resources.Owned.Add(instance.Mesh);
             resources.Owned.AddRange(instance.Materials);
             resources.Owned.AddRange(instance.OwnedTextures);
-            instance.Root.AddComponent<SakuraPmxModel>().Initialize(instance, model, path);
+            instance.Root.AddComponent<SakuraPmxModel>().Initialize(instance, model, path, authoredTextures);
             if (instance.ShaderDiagnostics.shaderFallbackUsed)
             {
                 Object.Destroy(instance.Root);

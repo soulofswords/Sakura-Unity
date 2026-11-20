@@ -6,6 +6,7 @@ from pathlib import Path
 import socket
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 import asyncio
 
@@ -147,6 +148,29 @@ def install_unity_lifecycle(module, source=None):
     async def service_status():
         return {'services_started': service_context is not None, 'mode': mode,
                 'tracking_only': getattr(module.app.state, 'tracking_only', False)}
+
+    camera_driver_lock = asyncio.Lock()
+
+    @module.app.get('/api/unity/camera-driver')
+    async def camera_driver_status():
+        from sakura_camera_native import CAMERA_NAME, DRIVER_DLL, driver_installed
+        return {'installed': driver_installed(), 'available': sys.platform == 'win32' and DRIVER_DLL.is_file(),
+                'device': CAMERA_NAME}
+
+    @module.app.post('/api/unity/camera-driver')
+    async def manage_camera_driver(request: Request, payload: dict):
+        from local_api_security import desktop_access_allowed
+        from sakura_camera_native import install_driver, uninstall_driver
+        if not desktop_access_allowed(request):
+            return JSONResponse({'error': 'Use the Sakura desktop window.'}, 403)
+        action = payload.get('action')
+        if action not in ('install', 'remove'):
+            return JSONResponse({'error': 'Choose install or remove.'}, 400)
+        async with camera_driver_lock:
+            try:
+                return await asyncio.to_thread(install_driver if action == 'install' else uninstall_driver)
+            except (OSError, RuntimeError) as error:
+                return JSONResponse({'error': str(error)}, 409)
 
     @module.app.post('/api/unity/mode')
     async def set_mode(payload: dict):
@@ -400,7 +424,13 @@ def serve(source, edition='companion'):
     install_unity_lifecycle(app, source)
     from unity_tracking_api import install as install_tracking
     install_tracking(app.app, source)
-    print('SAKURA_BRIDGE ' + json.dumps({'port': gui_server.port,
+    if sys.platform == 'win32':
+        import agent_computer_use
+        def focus_from_player(handle):
+            print('SAKURA_FOCUS ' + json.dumps({'handle': handle, 'expires': int(time.time() * 1000) + 850}),
+                  flush=True)
+        agent_computer_use._unity_focus_request = focus_from_player
+    print('SAKURA_BRIDGE ' + json.dumps({'port': gui_server.port, 'pid': os.getpid(),
           'token': local_api_security.DESKTOP_TOKEN}), flush=True)
     server = uvicorn.Server(uvicorn.Config(app.app, log_level='warning', access_log=False))
     def watch_parent():

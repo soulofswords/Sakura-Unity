@@ -68,7 +68,9 @@ namespace Sakura.Unity
         public event Action Changed;
         public string Status { get; private set; } = "Add an image or imported Live2D asset. Drag an unlocked item to position it.";
         public bool Hidden { get; private set; }
+        private bool characterOnly;
         public void SetHidden(bool hidden) { Hidden = hidden; LayoutItems(); Changed?.Invoke(); }
+        public void SetCharacterOnly(bool value) { characterOnly = value; LayoutItems(); }
         public IReadOnlyList<Item> Items => profile.items;
         public Item Selected => profile.items.FirstOrDefault(item => item.id == profile.selected);
         private Profile profile = new Profile();
@@ -534,7 +536,7 @@ namespace Sakura.Unity
         }
         private void LayoutItems()
         {
-            if (Hidden) { foreach (var hidden in profile.items) hidden.quad?.SetActive(false); return; }
+            if (Hidden || characterOnly) { foreach (var hidden in profile.items) hidden.quad?.SetActive(false); return; }
             var camera = viewport?.RenderCamera; if (camera == null) return;
             float depth = Mathf.Max(camera.nearClipPlane + .1f, 1);
             float worldWidth = Vector3.Distance(camera.ViewportToWorldPoint(new Vector3(0, .5f, depth)), camera.ViewportToWorldPoint(new Vector3(1, .5f, depth)));

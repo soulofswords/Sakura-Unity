@@ -49,6 +49,60 @@ namespace Sakura.Unity
             AddButton("Existing devices", () => tracking.PhoneLink(), phoneActions);
             AddButton("New device", () => tracking.PhoneLink("{\"new\":true}"), phoneActions);
             AddButton("Turn off phone connection", () => tracking.PhoneLink("{\"enabled\":false}"), phone);
+            bool forgetArmed = false;
+            var forgetAll = new Button();
+            forgetAll.text = "Forget all phones & turn off";
+            forgetAll.clicked += () =>
+            {
+                if (!forgetArmed) { forgetArmed = true; forgetAll.text = "Click again to forget every phone"; return; }
+                forgetArmed = false; forgetAll.text = "Forget all phones & turn off";
+                tracking.PhoneLink("{\"forget_all\":true}");
+            };
+            phone.Add(forgetAll);
+            var permissions = new Foldout { text = "Phone permissions", value = false }; phone.Add(permissions);
+            var permissionStatus = new Label(); permissionStatus.AddToClassList("description");
+            var system = new Toggle("Allow paired phones to use PC system tools");
+            var clipboard = new Toggle("Allow paired phones to read and write the PC clipboard");
+            permissions.Add(system); permissions.Add(clipboard); permissions.Add(permissionStatus);
+            bool reading = false;
+            void LoadPermissions()
+            {
+                if (reading) return;
+                reading = true;
+                system.SetEnabled(false); clipboard.SetEnabled(false);
+                tracking.PhonePermissions(null, (json, error) =>
+                {
+                    reading = false;
+                    permissionStatus.text = error ?? "";
+                    if (error != null) return;
+                    try
+                    {
+                        var settings = JObject.Parse(json);
+                        system.SetValueWithoutNotify(settings.Value<bool>("phone_system_access_enabled"));
+                        clipboard.SetValueWithoutNotify(settings.Value<bool>("phone_clipboard_enabled"));
+                        system.SetEnabled(true); clipboard.SetEnabled(true);
+                    }
+                    catch (Newtonsoft.Json.JsonException) { permissionStatus.text = "Could not read phone permissions."; }
+                });
+            }
+            void BindPermission(Toggle toggle, string key)
+            {
+                toggle.SetEnabled(false);
+                toggle.RegisterValueChangedCallback(evt =>
+                {
+                    toggle.SetEnabled(false);
+                    tracking.PhonePermissions(new JObject { [key] = evt.newValue }.ToString(), (_, error) =>
+                    {
+                        permissionStatus.text = error ?? "Permission saved.";
+                        if (error != null) toggle.SetValueWithoutNotify(evt.previousValue);
+                        toggle.SetEnabled(true);
+                    });
+                });
+            }
+            BindPermission(system, "phone_system_access_enabled");
+            BindPermission(clipboard, "phone_clipboard_enabled");
+            AddButton("Refresh permissions", LoadPermissions, permissions);
+            permissions.RegisterValueChangedCallback(evt => { if (evt.target == permissions && evt.newValue) LoadPermissions(); });
             Description("On Sakura Mobile, choose this PC from the list and enter the pairing code. Both devices must be on the same Wi-Fi. Compare the certificate fingerprint when pairing. When you tap Add model on the phone, Sakura opens this PC library so you can choose a PMX, VRM or Live2D model to send.", phone);
             var remembered = new VisualElement(); phone.Add(remembered);
             void Refresh()

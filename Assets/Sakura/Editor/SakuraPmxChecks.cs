@@ -106,7 +106,7 @@ namespace Sakura.Unity.Editor
             var studio = UnityEngine.Object.FindFirstObjectByType<SakuraStudio>(); studio.ShowPanel("Model Settings");
             var ui = studio.GetComponent<UIDocument>().rootVisualElement;
             var tabs = ui.Query<Button>(className: "model-tab").ToList();
-            if (!tabs.Select(button => button.text).SequenceEqual(new[] { "Texture remapping", "Texture coloring", "Expressions & hotkeys", "Bones", "Mouth" }))
+            if (!tabs.Select(button => button.text).SequenceEqual(new[] { "Texture remapping", "Texture coloring", "Expressions & hotkeys", "Bones", "Mouth", "Effects" }))
                 throw new Exception("PMX tabs differ from the reference app.");
             using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = tabs[1]; tabs[1].SendEvent(submit); }
             if (ui.Query<Slider>().ToList().Count(slider => new[] { "Brightness", "Ambient fill", "Authored material tint", "Toon shading", "Directional shading", "Sphere / shine maps", "Specular highlights", "Colour saturation" }.Contains(slider.label)) != 8)

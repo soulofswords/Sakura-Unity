@@ -16,6 +16,7 @@ namespace Sakura.Unity
         private readonly SakuraBackend backend;
         private readonly VisualElement owner, navigation, content, taskList;
         private readonly Label status;
+        private readonly VisualElement computerActivity;
         private readonly TextField goal, workspace;
         private readonly DropdownField provider, access;
         private readonly Toggle autoContinue;
@@ -28,6 +29,7 @@ namespace Sakura.Unity
         private readonly List<string> providerIds = new List<string> { "current" };
         private JObject state = new JObject(), selected;
         private string tab = "Tasks";
+        private string autoBrowserStep;
         private bool alive = true, busy, refreshing;
         private Texture2D preview;
         private readonly Image browserImage;
@@ -35,7 +37,7 @@ namespace Sakura.Unity
         private bool localBrowser;
         private Action<string> pendingReply;
         private int taskRevision, viewRevision;
-        private bool taskLoading;
+        private bool taskLoading, activityLoading;
         private bool policyBusy;
         private int policyRevision;
         private string approvalPolicy = "ask";
@@ -63,6 +65,12 @@ namespace Sakura.Unity
             var main = new VisualElement(); main.AddToClassList("agent-main"); owner.Add(main);
             var top = Row(main); top.AddToClassList("agent-header"); pageTitle = Text("Sakura Agent", top, "card-title"); Button("Companion mode", close, top);
             status = Text("Connecting to the existing Agent runtime…", main, "description"); status.name = "agent-status";
+            computerActivity = Row(main);
+            computerActivity.name = "agent-computer-activity";
+            computerActivity.AddToClassList("card");
+            computerActivity.style.display = DisplayStyle.None;
+            Text("Sakura is using your computer", computerActivity, "card-title");
+            Button("Stop task", StopComputerActivity, computerActivity);
             var work = Row(main); work.AddToClassList("agent-work-area");
             var scroll = new ScrollView { name = "agent-content-scroll" }; scroll.AddToClassList("agent-content-scroll"); work.Add(scroll);
             content = scroll.contentContainer;
@@ -96,7 +104,12 @@ namespace Sakura.Unity
                 owner.EnableInClassList("agent-tight", evt.newRect.width < 940);
                 UpdateInspectorVisibility();
             });
-            owner.schedule.Execute(() => { if (alive && !busy && !taskLoading && selected != null && !Archived && (tab == "Tasks" || tab == "Browser")) LoadTask((string)selected["id"], false); }).Every(2500);
+            owner.schedule.Execute(() =>
+            {
+                if (alive && !busy && !taskLoading && selected != null && !Archived && (tab == "Tasks" || tab == "Browser"))
+                    LoadTask((string)selected["id"], false);
+            }).Every(2500);
+            owner.schedule.Execute(PollComputerActivity).Every(500);
             Render();
             Refresh();
             ReadPolicy();
@@ -259,7 +272,28 @@ namespace Sakura.Unity
                 if ((string)selected?["id"] != id) ClearBrowser();
                 selected = (JObject)value;
                 if (view == viewRevision && pendingReply == null && (render || selected.ToString(Formatting.None) != previous)) Render();
+                MaybeShowBrowser();
             });
+        }
+        private void MaybeShowBrowser()
+        {
+            // A finished local_app.open/browser.open is the task's visible result; the original app
+            // shows that page immediately instead of leaving it behind a Tasks-tab button.
+            if (selected == null || Archived || tab != "Tasks" || !alive) return;
+            var steps = selected["steps"] as JArray; if (steps == null) return;
+            JObject opened = null;
+            foreach (var step in steps)
+            {
+                string tool = (string)step["tool"];
+                if ((string)step["status"] != "completed" || string.IsNullOrEmpty(tool)) continue;
+                if (tool == "local_app.open" || tool == "browser.open") opened = step as JObject;
+                else if (tool.EndsWith(".close", StringComparison.Ordinal)) opened = null;
+            }
+            if (opened == null) return;
+            string stepId = (string)opened["id"] ?? (string)selected["id"];
+            if (stepId == autoBrowserStep) return;
+            autoBrowserStep = stepId;
+            SelectTab("Browser");
         }
         private void Plan(string action, JObject body = null)
         {
@@ -269,8 +303,48 @@ namespace Sakura.Unity
             Request("/api/agent/tasks/" + id + "/" + action, body ?? new JObject(), value =>
             { busy = false; if (revision != taskRevision || (string)selected?["id"] != id) return; if((string)value["id"] == id) selected = (JObject)value; else LoadTask(id); status.text = "Ready"; Render(); if (action == "pin" || action == "rename") Refresh(); });
         }
+        private void PollComputerActivity()
+        {
+            if (!alive || !busy || activityLoading || Archived || !(selected?["id"] is JValue task)) return;
+            string id = (string)task;
+            if (!ValidId(id)) return;
+            activityLoading = true;
+            backend.AgentApi("/api/agent/tasks/" + id, null, (json, error) =>
+            {
+                activityLoading = false;
+                if (!alive || !busy || (string)selected?["id"] != id || error != null) return;
+                try { SetComputerActivity(JObject.Parse(json)); }
+                catch (JsonException) { computerActivity.style.display = DisplayStyle.None; }
+            });
+        }
+
+        private void SetComputerActivity(JObject run)
+        {
+            var step = (run?["steps"] as JArray)?.Last;
+            string state = (string)run?["status"];
+            bool active = !Archived && ((string)step?["tool"])?.StartsWith("computer.", StringComparison.Ordinal) == true &&
+                ((string)step["status"] == "running" ||
+                 busy && run.Value<bool>("auto_continue") && (string)step["status"] == "completed" &&
+                 (state == "planning" || state == "ready"));
+            computerActivity.style.display = active ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        private void StopComputerActivity()
+        {
+            string id = (string)selected?["id"];
+            if (!ValidId(id)) return;
+            backend.AgentApi("/api/agent/tasks/" + id + "/cancel", "{}", (_, error) =>
+            {
+                if (!alive || (string)selected?["id"] != id) return;
+                if (error != null) { status.text = error; return; }
+                computerActivity.style.display = DisplayStyle.None;
+                status.text = "Stopping the task…";
+            });
+        }
+
         private void Render()
         {
+            SetComputerActivity(selected);
             viewRevision++;
             content.Clear(); inspector.Clear();
             pageTitle.text = tab == "Tasks" ? "Sakura Agent" : tab;
@@ -448,6 +522,7 @@ namespace Sakura.Unity
             Button("Open page",()=>
             { localBrowser=Uri.TryCreate(url.value,UriKind.Absolute,out var target)&&target.IsLoopback; Propose(localBrowser?"local_app.open":"browser.open",new JObject {["url"]=url.value}); },buttons);
             Button("Read page",()=>Propose(localBrowser?"local_app.inspect":"browser.read",new JObject()),buttons);
+            Button("Copy link",()=>{ if (!string.IsNullOrEmpty(currentUrl)) { GUIUtility.systemCopyBuffer = currentUrl; status.text = "Link copied: " + currentUrl; } },buttons);
             Button("Refresh preview",ReadPreview,buttons);
             Button("Close page",()=>Propose(localBrowser?"local_app.close":"browser.close",new JObject()),buttons);
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN

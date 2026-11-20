@@ -12,7 +12,8 @@ namespace Sakura.Unity
 {
     [Serializable] public class CharacterEntry { public string name; public string path; public string format; }
     [Serializable] public class CharacterCatalog { public CharacterEntry[] items; public string error; }
-    [Serializable] internal class BridgeIdentity { public int port; public string token; }
+    [Serializable] internal class BridgeIdentity { public int port; public int pid; public string token; }
+    [Serializable] internal class BridgeFocus { public long handle; public long expires; }
     [Serializable] internal class ChatRequest { public string text; public bool defer_audio = true; public string surface; public string agent_task; }
     [Serializable] internal class ChatResponse { public string reply; public string speech_reply; public string error; }
     [Serializable] internal class ModelImportReply { public string[] models; public string error; public bool cancelled; }
@@ -224,6 +225,22 @@ namespace Sakura.Unity
                 server.OutputDataReceived += (_, args) =>
                 {
                     if (args.Data == null) return;
+                    if (args.Data.StartsWith("SAKURA_FOCUS ", StringComparison.Ordinal))
+                    {
+                        string focus = args.Data.Substring("SAKURA_FOCUS ".Length);
+                        pending.Enqueue(() =>
+                        {
+                            if (!Connected || Mode != "Agent") return;
+                            try
+                            {
+                                var request = JsonUtility.FromJson<BridgeFocus>(focus);
+                                if (request != null && request.handle > 0 && request.expires >= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+                                    GetComponent<SakuraWindow>()?.FocusAgentWindow(new IntPtr(request.handle));
+                            }
+                            catch (ArgumentException) { }
+                        });
+                        return;
+                    }
                     if (!args.Data.StartsWith("SAKURA_BRIDGE ", StringComparison.Ordinal))
                     {
                         try
@@ -355,12 +372,14 @@ namespace Sakura.Unity
 
         public void Api(string route, string body, Action<string, string> completed)
         {
+            if (!isActiveAndEnabled) { completed(null, "Sakura is closing or inactive."); return; }
             if (!route.StartsWith("/api/", StringComparison.Ordinal) || route.Contains("..") || route.Contains("\\"))
             { completed(null, "Invalid API route."); return; }
             StartCoroutine(CallApi(route, body, completed));
         }
         public void ApiDelete(string route, Action<string, string> completed)
         {
+            if (!isActiveAndEnabled) { completed(null, "Sakura is closing or inactive."); return; }
             if (!route.StartsWith("/api/", StringComparison.Ordinal) || route.Contains("..") || route.Contains("\\"))
             { completed(null, "Invalid API route."); return; }
             StartCoroutine(CallApi(route, "", completed, "DELETE"));
@@ -379,6 +398,7 @@ namespace Sakura.Unity
             {
                 if (route.EndsWith("/install", StringComparison.Ordinal)) request.timeout = 1800;
                 else if (route == "/api/unity/wake/check") request.timeout = 45;
+                else if (route == "/api/unity/camera-driver" && body != null) request.timeout = 45;
                 // The first reply can arrive while Kokoro is still loading its engine.
                 else if (route == "/api/tts/speak") request.timeout = 600;
                 if (method != null) request.method = method;

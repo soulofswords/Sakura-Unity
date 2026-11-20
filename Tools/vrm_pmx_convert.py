@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import struct
 import sys
 import threading
 import time
@@ -84,10 +85,14 @@ def converter_script(converter_root: Path, source_ext: str) -> Path:
         result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
                                 capture_output=True, text=True, timeout=10)
         commit = result.stdout.strip().lower()
+        changes = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "HEAD", "--", "convert", "formats"],
+                                 check=True, capture_output=True, text=True, timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError("Git is required to verify the optional converter's pinned revision.") from exc
     if commit != PINNED_COMMIT:
         raise ValueError(f"Unsupported converter revision. Sakura requires pinned commit {PINNED_COMMIT}.")
+    if changes:
+        raise ValueError("The converter's tracked convert/ or formats/ files are modified. Select a clean copy of the pinned revision.")
     return script
 
 
@@ -111,6 +116,27 @@ def mapping_report(source_name: str, output_name: str, source_ext: str, output_b
 
 def emit(progress: int, message: str) -> None:
     print("SAKURA_PROGRESS " + json.dumps({"progress": max(0, min(100, progress)), "message": message}, ensure_ascii=False), flush=True)
+
+
+def normalize_vrm(path: Path) -> bool:
+    """Omit the converter's absent thumbnail rather than writing an invalid null index."""
+    raw = Path(path).read_bytes()
+    if len(raw) < 20 or struct.unpack_from("<III", raw) != (0x46546C67, 2, len(raw)):
+        raise ValueError("Converter produced an invalid VRM/GLB header.")
+    length, kind = struct.unpack_from("<II", raw, 12)
+    if kind != 0x4E4F534A or length % 4 or length > len(raw) - 20:
+        raise ValueError("Converter produced an invalid VRM JSON chunk.")
+    document = json.loads(raw[20:20 + length])
+    meta = document.get("extensions", {}).get("VRMC_vrm", {}).get("meta", {})
+    if "thumbnailImage" not in meta or meta["thumbnailImage"] is not None:
+        return False
+    del meta["thumbnailImage"]
+    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded += b" " * (-len(encoded) % 4)
+    tail = raw[20 + length:]
+    Path(path).write_bytes(struct.pack("<III", 0x46546C67, 2, 20 + len(encoded) + len(tail))
+                          + struct.pack("<II", len(encoded), kind) + encoded + tail)
+    return True
 
 
 def parse_args(argv=None):
@@ -185,12 +211,14 @@ def run(args) -> int:
             raise RuntimeError(f"External converter exited with code {code}.")
         if not staged_model.is_file() or staged_model.stat().st_size <= 0:
             raise RuntimeError("Converter exited successfully but did not produce the requested model file.")
+        normalized_thumbnail = normalize_vrm(staged_model) if output_ext == ".vrm" else False
         files = [p for p in stage.rglob("*") if p.is_file()]
         total = sum(p.stat().st_size for p in files)
         if total > MAX_OUTPUT_BYTES:
             raise RuntimeError("Converted package exceeds Sakura's 4 GiB output limit.")
         report = mapping_report(source.name, staged_model.name, source.suffix, total)
         report["converter_log"] = converter_log
+        report["omitted_null_thumbnail"] = normalized_thumbnail
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         # Windows rename fails if a destination appeared while the tool ran. It never replaces.
         os.rename(stage, final)

@@ -1,6 +1,8 @@
 # Sakura Unity
 
-Unity 6 client for [Sakura](https://github.com/soulofswords/Sakura) — the local-first AI companion and VTuber studio. **Project site and downloads: [soulofswords.github.io/Sakura-website](https://soulofswords.github.io/Sakura-website/).** This repository is the native renderer and desktop shell: **Companion** and **VTuber** editions for Windows, plus an Android preview, all talking to the same Python service backend as the original web client.
+Sakura's Unity 6 app is available as separate **Companion** and **standalone VTuber** installers for Windows x64. **Sakura Mobile** is available as an Android ARM64 preview. Both Windows installers include the backend and its Python runtime.
+
+[Download from GitHub Releases](https://github.com/soulofswords/Sakura-Unity/releases) · [Project site](https://soulofswords.github.io/Sakura-website/)
 
 <p align="center">
   <img src="Docs/screenshots/companion-chat.png" alt="Sakura Companion on Unity: chat card and rendered VRM character" width="49%">
@@ -33,7 +35,9 @@ Unity -batchmode -quit -projectPath <this repo> \
   -logFile build.log
 ```
 
-`BuildCompanion` / `BuildWindows("vtuber")` build one edition; `BuildAndroid` produces the ARM64 IL2CPP APK. Output paths are defined at the top of `Assets/Sakura/Editor/SakuraBuild.cs` (this machine ships to `C:\AI\unity exe\`). Each Windows build carries its edition icon, the `Tools/` scripts and a `TEST-BUILD.txt` notice. The players expect the existing Sakura backend and model library from the [Python repo](https://github.com/soulofswords/Sakura) on the same machine.
+`BuildCompanion` builds Companion and `BuildAndroid` produces the ARM64 IL2CPP APK. Set `SAKURA_BUILD_OUTPUT` to direct the outputs to a separate build folder.
+
+Stage each clean Windows player with `Tools/package_windows.py --source <backend-checkout> --player <player-folder> --output <new-stage-folder> --edition <companion|vtuber>`. The backend checkout must have its release dependencies and runtime cache prepared. Compile `Tools/SakuraWindowsInstaller.iss` with Inno Setup 6, passing `/DEdition=Companion` or `/DEdition=VTuber`, `/DVersion=<version>`, and `/DPayload=<absolute-stage-folder>` to ISCC. The installers use separate per-user directories and keep each edition's existing settings on reinstall.
 
 ## Verification
 

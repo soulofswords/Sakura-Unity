@@ -88,6 +88,7 @@ namespace Sakura.Unity
         }
         void Remapping()
         {
+            SakuraTextureDiagnostics.BuildPanel(viewport, backend, body);
             Button("Import appearance package from legacy Sakura", ImportAppearance);
             bool live = viewport.LoadedFormat == "Live2D";
             var groups = live

@@ -9,6 +9,8 @@ namespace Sakura.Unity.Editor
 {
     public static class SakuraBuild
     {
+        private static string OutputRoot => Environment.GetEnvironmentVariable("SAKURA_BUILD_OUTPUT") ?? @"C:\AI\unity exe";
+
         public static void BuildBothWindows()
         {
             BuildWindows("companion");
@@ -23,7 +25,7 @@ namespace Sakura.Unity.Editor
         public static string BuildAndroid()
         {
             if (EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before building.");
-            const string output = @"C:\AI\unity exe\Sakura Mobile\Sakura-Mobile-Unity-preview.apk";
+            string output = Path.Combine(OutputRoot, "Sakura Mobile", "Sakura-Mobile-Unity-preview.apk");
             Directory.CreateDirectory(Path.GetDirectoryName(output));
             string previousName = PlayerSettings.productName;
             string previousId = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android);
@@ -65,7 +67,7 @@ namespace Sakura.Unity.Editor
         {
             if(edition != "companion" && edition != "vtuber") throw new ArgumentException("Unknown edition");
             if(EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before building.");
-            string destination = Path.Combine(@"C:\AI\unity exe", edition == "vtuber" ? "Sakura VTuber" : "Sakura Companion");
+            string destination = Path.Combine(OutputRoot, edition == "vtuber" ? "Sakura VTuber" : "Sakura Companion");
             Directory.CreateDirectory(destination);
             string editionFile = "Assets/Resources/Sakura/Edition.txt";
             byte[] previousEdition = File.Exists(editionFile) ? File.ReadAllBytes(editionFile) : null;
@@ -74,6 +76,8 @@ namespace Sakura.Unity.Editor
             bool previousDefaultApi = PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64);
             var previousApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.StandaloneWindows64);
             var previousFullscreen = PlayerSettings.fullScreenMode;
+            var standalone = UnityEditor.Build.NamedBuildTarget.Standalone;
+            var previousIcons = PlayerSettings.GetIcons(standalone, IconKind.Application);
             var pipeline = AssetDatabase.LoadAssetAtPath<UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset>("Assets/Settings/PC_RPAsset.asset");
             var pipelineState = pipeline == null ? null : new SerializedObject(pipeline);
             var alphaOutput = pipelineState?.FindProperty("m_AllowPostProcessAlphaOutput");
@@ -92,10 +96,9 @@ namespace Sakura.Unity.Editor
                 var icon = Resources.Load<Texture2D>(edition == "vtuber" ? "Sakura/VTuberLogo" : "Sakura/CompanionLogo");
                 if (icon == null) throw new FileNotFoundException("The Sakura edition icon is missing from Resources.");
                 // Unity expects one entry per icon slot; a one-element array is ignored on Windows.
-                var iconSlots = PlayerSettings.GetIcons(UnityEditor.Build.NamedBuildTarget.Standalone, IconKind.Application).Length;
-                var icons = new Texture2D[Math.Max(1, iconSlots)];
+                var icons = new Texture2D[Math.Max(1, previousIcons.Length)];
                 for (int slot = 0; slot < icons.Length; slot++) icons[slot] = icon;
-                PlayerSettings.SetIcons(UnityEditor.Build.NamedBuildTarget.Standalone, icons, IconKind.Application);
+                PlayerSettings.SetIcons(standalone, icons, IconKind.Application);
                 string executable = Path.Combine(destination, PlayerSettings.productName + ".exe");
                 var pmxPlugin = AssetImporter.GetAtPath("Packages/com.yohawing.mmd-loader/Runtime/Plugins/x86_64/mmd_runtime_ffi.dll") as PluginImporter;
                 if (pmxPlugin == null || !pmxPlugin.GetCompatibleWithPlatform(BuildTarget.StandaloneWindows64))
@@ -114,7 +117,7 @@ namespace Sakura.Unity.Editor
                 foreach(string filename in new[] { "backend_bridge.py", "unity_tracking_api.py", "unity_tracking_worker.py", "unity_wake.py", "vrm_pmx_convert.py", "migrate_library.py", "backup_model_library.py" })
                     File.Copy(Path.Combine("Tools", filename), Path.Combine(tools, filename), true);
                 File.WriteAllText(Path.Combine(destination,"TEST-BUILD.txt"),
-                    "Unity migration test build. Uses the existing backend and models at F:\\AI\\assistant\\Sakura on this PC.\nKeep the executable with its Data folder, UnityPlayer.dll and Tools folder.\nFull feature parity is still under verification.\n");
+                    "Unpackaged Sakura Unity player. Stage it with Tools/package_windows.py to bundle the backend and runtime.\n");
                 return executable;
             }
             finally
@@ -124,6 +127,7 @@ namespace Sakura.Unity.Editor
                 PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneWindows64, previousApis);
                 PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneWindows64, previousDefaultApi);
                 PlayerSettings.fullScreenMode = previousFullscreen;
+                PlayerSettings.SetIcons(standalone, previousIcons, IconKind.Application);
                 if (alphaOutput != null) { alphaOutput.boolValue = previousPipelineAlpha; pipelineState.ApplyModifiedPropertiesWithoutUndo(); AssetDatabase.SaveAssetIfDirty(pipeline); }
                 if(previousEdition == null) AssetDatabase.DeleteAsset(editionFile);
                 else {File.WriteAllBytes(editionFile,previousEdition);AssetDatabase.ImportAsset(editionFile);}

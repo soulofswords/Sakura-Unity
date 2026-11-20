@@ -28,6 +28,7 @@
 __pycache__/
 *.pyc
 *.vrm
+!/Packages/com.vrmc.vrm/
 *.pmx
 *.pmd
 *.moc3

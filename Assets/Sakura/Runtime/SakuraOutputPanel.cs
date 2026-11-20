@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -17,11 +18,14 @@ namespace Sakura.Unity
             rate.RegisterValueChangedCallback(_ => output.SetFrameRate(int.Parse(rate.value)));
             var name = new TextField("Sender name") { value = "Sakura" }; capture.Add(name);
             var states = new List<Label>(); var buttons = new List<Button>();
+            Action refreshCamera = null;
             foreach (var channel in output.Channels)
             {
                 var row = Card(channel.Id == "spout" ? "Spout 2" : channel.Id == "ndi" ? "NDI" : "Virtual camera", owner);
                 var state = new Label(); states.Add(state); row.Add(state);
                 var button = new Button(() => output.Configure(channel.Id, !channel.Enabled, name.value)); buttons.Add(button); row.Add(button);
+                if (channel.Id == "virtual-camera")
+                    refreshCamera = CameraDriver(output, channel, row, button);
             }
             var recording = Card("Screenshots & recording", owner);
             recording.Add(new Button(output.Screenshot) { text = "Save PNG screenshot" });
@@ -42,8 +46,62 @@ namespace Sakura.Unity
                 }
                 record.text = output.SavingRecording ? "Finishing…" : output.Recording ? "Stop recording" : "Record WebM"; record.SetEnabled(!output.SavingRecording);
                 status.text = output.Status;
+                refreshCamera?.Invoke();
             }
             output.Changed += Refresh; owner.RegisterCallback<DetachFromPanelEvent>(_ => { if (output != null) output.Changed -= Refresh; }); Refresh();
+        }
+
+        private static Action CameraDriver(SakuraOutput output, SakuraOutput.Channel channel, VisualElement row, Button start)
+        {
+            const string route = "/api/unity/camera-driver";
+            var status = new Label("Checking camera driver…"); status.AddToClassList("description"); row.Add(status);
+            bool installed = false, available = false, busy = false, removeArmed = false;
+            var install = new Button { text = "Install camera driver" };
+            var remove = new Button { text = "Remove camera driver" };
+            var check = new Button { text = "Check camera driver" };
+            row.Add(install); row.Add(remove); row.Add(check);
+            void Refresh()
+            {
+                var idle = !busy && !channel.Busy && !channel.Enabled;
+                install.SetEnabled(idle && available && !installed);
+                remove.SetEnabled(idle && installed);
+                check.SetEnabled(!busy);
+                start.SetEnabled(!busy && !channel.Busy && (channel.Enabled || installed));
+            }
+            void Request(string action)
+            {
+                if (busy || (action != null && (channel.Busy || channel.Enabled))) return;
+                removeArmed = false; remove.text = "Remove camera driver";
+                busy = true; status.text = action == null ? "Checking camera driver…" : "Waiting for Windows camera setup…"; Refresh();
+                output.Backend.Api(route, action == null ? null : new JObject { ["action"] = action }.ToString(), (json, error) =>
+                {
+                    busy = false;
+                    if (error != null) status.text = error;
+                    else
+                    {
+                        try
+                        {
+                            var state = JObject.Parse(json);
+                            installed = state.Value<bool>("installed");
+                            available = state.Value<bool?>("available") ?? available;
+                            status.text = installed ? "Sakura Virtual Camera is installed. Reopen your video app after installation." :
+                                available ? "Install the camera driver before starting output." : "This build does not include a Windows camera driver.";
+                        }
+                        catch (Newtonsoft.Json.JsonException) { status.text = "Could not read camera driver status."; }
+                    }
+                    Refresh();
+                });
+            }
+            install.clicked += () => Request("install");
+            remove.clicked += () =>
+            {
+                if (removeArmed) Request("remove");
+                else { removeArmed = true; remove.text = "Confirm driver removal"; }
+            };
+            check.clicked += () => Request(null);
+            row.schedule.Execute(() => Request(null));
+            Refresh();
+            return Refresh;
         }
 
         private static VisualElement Card(string title, VisualElement parent)

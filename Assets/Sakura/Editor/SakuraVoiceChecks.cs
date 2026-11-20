@@ -10,6 +10,17 @@ namespace Sakura.Unity.Editor
         [MenuItem("Sakura/Validation/Check voice encoding and gating")]
         public static void Run()
         {
+            var inactive = new GameObject("Inactive backend request check");
+            inactive.SetActive(false);
+            try
+            {
+                var service = inactive.AddComponent<SakuraBackend>();
+                int replies = 0;
+                service.Api("/api/identity", null, (json, error) => { Require(json == null && error == "Sakura is closing or inactive.", "inactive GET returns a failure callback"); replies++; });
+                service.ApiDelete("/api/personas/test", (json, error) => { Require(json == null && error == "Sakura is closing or inactive.", "inactive DELETE returns a failure callback"); replies++; });
+                Require(replies == 2, "inactive requests finish synchronously without starting a coroutine");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(inactive); }
             Require(SakuraBackend.ResponseError(null, "Timed out") == "Timed out", "empty timeout response");
             Require(SakuraBackend.ResponseError("", "Timed out") == "Timed out", "blank timeout response");
             Require(SakuraBackend.ResponseError("null", "Timed out") == "Timed out", "null JSON response");

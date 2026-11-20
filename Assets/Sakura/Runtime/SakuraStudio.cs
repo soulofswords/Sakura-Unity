@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UIElements;
 
 namespace Sakura.Unity
@@ -14,6 +15,7 @@ namespace Sakura.Unity
         public int CharacterCount => catalog.Length;
         public bool IsVtuberEdition => vtuberEdition;
         public bool ControlsHidden { get; private set; }
+        private bool characterOnly;
         public event Action PanelsHidden;
         private VisualElement root, panel, panelBody, dock;
         private Label badge, heading, status, stageMessage;
@@ -53,6 +55,7 @@ namespace Sakura.Unity
         private float chatExpandedHeight = 520;
         private int replyVisualRevision;
         private int panelAnimation, chromeAnimation;
+        private InputAction hideShortcut, transparencyShortcut;
         private readonly Dictionary<string, Button> navigation = new Dictionary<string, Button>();
         private readonly Dictionary<Button, Texture2D[]> pictureIconVariants = new Dictionary<Button, Texture2D[]>();
         private readonly Dictionary<string, Label> catalogSelectionLabels = new Dictionary<string, Label>();
@@ -69,6 +72,12 @@ namespace Sakura.Unity
             Application.targetFrameRate = 60;
             nativeWindow = GetComponent<SakuraWindow>() ?? gameObject.AddComponent<SakuraWindow>();
             nativeWindow.Changed += UpdateWindowTransparency;
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            nativeWindow.VisibilityShortcut += HandleVisibilityShortcut;
+#else
+            hideShortcut = VisibilityShortcut("h", ToggleChrome);
+            transparencyShortcut = VisibilityShortcut("t", () => HandleVisibilityShortcut(true));
+#endif
             Application.runInBackground = true;
             QualitySettings.vSyncCount = 0;
             var document = GetComponent<UIDocument>();
@@ -150,7 +159,16 @@ namespace Sakura.Unity
             badge = Label(CurrentMode.ToUpperInvariant(), "badge", header);
             var spacer = Element("spacer", header);
             var windows = Element("window-controls", header);
-            Button("—", nativeWindow.Minimize, windows);
+            Button("—", () =>
+            {
+                bool compact = CurrentMode == "Companion";
+                if (compact)
+                {
+                    ClosePanel();
+                    root.AddToClassList("compact-chat-collapsed");
+                }
+                nativeWindow.Minimize(compact);
+            }, windows).tooltip = "Minimize";
             Button("□", nativeWindow.Maximize, windows);
             Button("×", () => { if (Application.isEditor) SetStatus("Use Unity’s Play button to leave the preview."); else Application.Quit(); }, windows);
 
@@ -216,7 +234,10 @@ namespace Sakura.Unity
             ClosePanel();
             root.RegisterCallback<GeometryChangedEvent>(args =>
             {
-                root.EnableInClassList("compact", args.newRect.width < 760);
+                bool compact = args.newRect.width < 760;
+                if (compact != root.ClassListContains("compact"))
+                    root.EnableInClassList("compact-chat-collapsed", compact);
+                root.EnableInClassList("compact", compact);
                 root.EnableInClassList("short", args.newRect.height < 760);
                 float available = Math.Max(100, args.newRect.height - 145);
                 chatExpandedHeight = Math.Min(520, Math.Min(args.newRect.height * .5f, available));
@@ -393,24 +414,85 @@ namespace Sakura.Unity
         private void BuildQuickControls(VisualElement workspace)
         {
             var controls = Element("quick-controls", workspace);
-            transparencyButton = Button("◐", () => { nativeWindow.SetTransparent(!nativeWindow.TransparencyRequested); SetStatus(nativeWindow.Status); }, controls);
-            transparencyButton.name = "compact-transparency"; transparencyButton.tooltip = "Toggle transparent desktop stage";
+            var chat = Button("Chat", () => root.EnableInClassList("compact-chat-collapsed",
+                !root.ClassListContains("compact-chat-collapsed")), controls);
+            chat.name = "compact-chat"; chat.tooltip = "Show or hide chat";
+            transparencyButton = Button("◐", ToggleCharacterOnly, controls);
+            transparencyButton.name = "compact-transparency"; transparencyButton.tooltip = "Show only the character. Double-click the stage or press Ctrl+Shift+T to return.";
             compactMicrophone = Button("Mic", () => { if (voice.Listening) voice.StopListening(); else voice.StartListening(); }, controls);
             compactMicrophone.name = "compact-microphone";
             var settings = Button("", () => ShowPanel("Settings"), workspace); settings.name = "compact-settings"; settings.AddToClassList("quick-settings"); settings.tooltip = "Settings";
             var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/settings"), pickingMode = PickingMode.Ignore }; icon.style.width = icon.style.height = 20; settings.Add(icon);
             UpdateMicrophone(voice.Listening);
         }
+        private void ToggleTransparency()
+        {
+            nativeWindow.SetTransparent(!nativeWindow.TransparencyRequested);
+            SetStatus(nativeWindow.Status);
+        }
+
+        private void ToggleCharacterOnly()
+        {
+            if (characterOnly)
+            {
+                SetCharacterOnly(false);
+                nativeWindow.SetTransparent(false);
+            }
+            else
+            {
+                nativeWindow.SetTransparent(true);
+                if (nativeWindow.Transparent) SetCharacterOnly(true);
+            }
+            SetStatus(nativeWindow.Status);
+        }
+
+        private void SetCharacterOnly(bool value)
+        {
+            characterOnly = value;
+            root.EnableInClassList("character-only", value);
+            GetComponent<SakuraStage>()?.SetCharacterOnly(value);
+            GetComponent<SakuraStageItems>()?.SetCharacterOnly(value);
+            SetChromeHidden(value);
+        }
+
+        private void HandleVisibilityShortcut(bool transparency)
+        {
+            if (root == null || !Application.isFocused) return;
+            if (!transparency) { ToggleChrome(); return; }
+            if (CurrentMode == "Agent" || root.focusController?.focusedElement is VisualElement focused &&
+                (focused is TextField || focused.GetFirstAncestorOfType<TextField>() != null)) return;
+            if (CurrentMode == "Companion" && (characterOnly || root.ClassListContains("compact")))
+                ToggleCharacterOnly();
+            else ToggleTransparency();
+        }
+
+        private InputAction VisibilityShortcut(string key, Action toggle)
+        {
+            var action = new InputAction(type: InputActionType.Button);
+            action.AddCompositeBinding("ButtonWithTwoModifiers")
+                .With("Modifier1", "<Keyboard>/ctrl").With("Modifier2", "<Keyboard>/shift")
+                .With("Button", "<Keyboard>/" + key);
+            action.performed += _ =>
+            {
+                if (Application.isFocused && root != null && Keyboard.current?.altKey.isPressed != true) toggle();
+            };
+            action.Enable();
+            return action;
+        }
+
         private void UpdateWindowTransparency()
         {
             root?.EnableInClassList("window-transparent", nativeWindow.Transparent);
             transparencyButton?.EnableInClassList("mode-active", nativeWindow.Transparent);
+            if (characterOnly && !nativeWindow.Transparent) SetCharacterOnly(false);
         }
 
         public void SwitchMode(string mode)
         {
             if (mode != "Companion" && mode != "VTuber" && mode != "Agent") throw new ArgumentException("Unknown mode");
             if (vtuberEdition && mode != "VTuber") return;
+            string previousMode = CurrentMode;
+            if (characterOnly) ToggleCharacterOnly();
             nativeWindow?.SetAgentMode(mode == "Agent");
             replyVisualRevision++;
             viewport?.Expressions?.StopReplyMood();
@@ -427,7 +509,8 @@ namespace Sakura.Unity
             badge.text = mode.ToUpperInvariant();
             root.EnableInClassList("vtuber", mode == "VTuber");
             root.EnableInClassList("agent", mode == "Agent");
-            root.Q(className: "chat").style.display = mode == "Companion" ? DisplayStyle.Flex : DisplayStyle.None;
+            if (mode == "Companion") chatPanel.style.display = StyleKeyword.Null;
+            else chatPanel.style.display = DisplayStyle.None;
             panelEdition.text = mode == "VTuber" ? "SAKURA STUDIO" : "SAKURA COMPANION";
             appLogo.image = Resources.Load<Texture2D>(mode == "VTuber" ? "Sakura/VTuberLogo" : "Sakura/CompanionLogo");
             BuildDock();
@@ -438,6 +521,7 @@ namespace Sakura.Unity
                 CurrentPanel = "Agent workspace";
                 agentPanel = new SakuraAgentPanel(backend, root.Q(className: "workspace"), () => SwitchMode("Companion"));
             }
+            else if (previousMode == "Agent") ClosePanel();
             else ShowPanel("Character");
         }
 
@@ -458,7 +542,14 @@ namespace Sakura.Unity
         public void ToggleChrome()
         {
             if (CurrentMode == "Agent") return;
-            ControlsHidden = !ControlsHidden;
+            if (characterOnly) { ToggleCharacterOnly(); return; }
+            SetChromeHidden(!ControlsHidden);
+        }
+
+        private void SetChromeHidden(bool hidden)
+        {
+            if (ControlsHidden == hidden) return;
+            ControlsHidden = hidden;
             if (ControlsHidden) PanelsHidden?.Invoke();
             AnimateChrome();
             root.EnableInClassList("panel-open", !ControlsHidden && panel != null && !panel.ClassListContains("panel-closed"));
@@ -1259,6 +1350,9 @@ namespace Sakura.Unity
 
         private void OnDisable()
         {
+            hideShortcut?.Dispose();
+            transparencyShortcut?.Dispose();
+            if (nativeWindow != null) nativeWindow.VisibilityShortcut -= HandleVisibilityShortcut;
             splashAnimation?.Pause();
             voicePoll?.Pause();
             if (nativeWindow != null) nativeWindow.Changed -= UpdateWindowTransparency;

@@ -34,6 +34,8 @@ namespace Sakura.Unity
         private bool busy, closed, localReady;
         private bool? savedCloudKey;
         private string savedProvider = "gemini";
+        private string savedLocalModel = "";
+        private string localModel = "";
 
         public static void Attach(SakuraStudio studio, SakuraBackend backend, Action completed = null)
         {
@@ -49,23 +51,23 @@ namespace Sakura.Unity
             overlay = new VisualElement { name = "startup-chooser" };
             overlay.AddToClassList("startup-chooser");
             root.Add(overlay);
+            studio.GetComponent<SakuraWindow>()?.SetStartupChooser(true);
 
             var card = new VisualElement { name = "startup-card" };
             card.AddToClassList("startup-card");
             overlay.Add(card);
 
-            // The launcher dialog is a fixed 620 x 755 design. Keep the exact
-            // design surface and let it scroll only on very short windows.
+            // Keep the same layout and allow shorter displays to scroll to the footer.
             var scroll = new ScrollView(ScrollViewMode.Vertical);
             scroll.AddToClassList("startup-scroll");
             scroll.style.position = Position.Absolute;
             scroll.style.left = 0; scroll.style.top = 0; scroll.style.right = 0; scroll.style.bottom = 0;
-            scroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
+            scroll.verticalScrollerVisibility = ScrollerVisibility.Auto;
             scroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             card.Add(scroll);
             body = scroll.contentContainer;
             body.AddToClassList("startup-body");
-            body.style.width = 618; body.style.height = 752; body.style.flexShrink = 0;
+            body.style.width = Length.Percent(100); body.style.height = 692; body.style.flexShrink = 0;
 
             var logo = new Image { image = Resources.Load<Texture2D>("Sakura/CompanionLogo"), pickingMode = PickingMode.Ignore };
             logo.AddToClassList("startup-logo"); body.Add(logo); Place(logo, 32, 14, 22, 22);
@@ -108,10 +110,10 @@ namespace Sakura.Unity
             AddMode(body, 1, "Local LLM", "On-device AI companion · Run on this PC", "LOCAL", "startup-local", "#b499ff", () => Choose("local"));
             AddMode(body, 2, "VTuber", "Face + hand tracking · No AI models loaded", "TRACKING", "startup-vtuber", "#f590c4", () => Choose("vtuber"));
 
-            var footer = new Label("This app is currently under development.\nYour feedback is most important."); footer.AddToClassList("startup-footer"); body.Add(footer); Place(footer, 33, 625, 550, 44);
+            var footer = new Label("This app is currently under development.\nYour feedback is most important."); footer.AddToClassList("startup-footer"); body.Add(footer); Place(footer, 33, 552, 550, 44);
             var discord = new Button(() => Application.OpenURL("https://discord.gg/kgxeMRFWDw")) { text = "Join my Discord and DM me" };
-            discord.AddToClassList("startup-link"); body.Add(discord); Place(discord, 33, 675, 550, 24);
-            var note = new Label("You can change your AI provider later in Settings."); note.AddToClassList("startup-note"); body.Add(note); Place(note, 33, 714, 550, 22);
+            discord.AddToClassList("startup-link"); body.Add(discord); Place(discord, 33, 605, 550, 24);
+            var note = new Label("You can change your AI provider later in Settings."); note.AddToClassList("startup-note"); body.Add(note); Place(note, 33, 648, 550, 22);
 
             overlay.RegisterCallback<KeyDownEvent>(evt =>
             {
@@ -127,6 +129,7 @@ namespace Sakura.Unity
                     savedCloudKey = settings.Value<bool?>("gemini_key_set") == true || settings.Value<bool?>("cloud_key_set") == true;
                     string provider = settings.Value<string>("llm_provider") ?? "gemini";
                     savedProvider = provider == "ollama" ? settings.Value<string>("last_cloud_provider") ?? "gemini" : provider;
+                    savedLocalModel = settings.Value<string>("ollama_model") ?? "";
                     studio.ApplyTheme(settings.Value<string>("ui_theme") ?? "system");
                 }
                 catch (Newtonsoft.Json.JsonException) { }
@@ -144,6 +147,11 @@ namespace Sakura.Unity
             var iconWrap = new VisualElement(); iconWrap.AddToClassList("startup-mode-icon-wrap"); card.Add(iconWrap);
             var icon = new Image { image = Resources.Load<Texture2D>("Sakura/Icons/" + iconName), pickingMode = PickingMode.Ignore };
             icon.AddToClassList("startup-mode-icon");
+            // These assets have transparent padding above and to the left of the glyph.
+            const float atlasSize = 208;
+            icon.uv = index == 0 ? new Rect(108 / atlasSize, 0, 100 / atlasSize, 96 / atlasSize) :
+                      index == 1 ? new Rect(96 / atlasSize, 0, 112 / atlasSize, 108 / atlasSize) :
+                                   new Rect(112 / atlasSize, 0, 96 / atlasSize, 96 / atlasSize);
             icon.tintColor = ColorUtility.TryParseHtmlString(accent, out var parsed) ? parsed : Color.cyan;
             iconWrap.Add(icon);
 
@@ -158,8 +166,8 @@ namespace Sakura.Unity
         private static void Place(VisualElement element, float left, float top, float width, float height)
         {
             element.style.position = Position.Absolute;
-            element.style.left = left; element.style.top = top;
-            element.style.width = width; element.style.height = height;
+            element.style.left = Length.Percent(left / 618 * 100); element.style.top = top;
+            element.style.width = Length.Percent(width / 618 * 100); element.style.height = height;
             element.style.marginLeft = 0; element.style.marginRight = 0;
             element.style.marginTop = 0; element.style.marginBottom = 0;
         }
@@ -211,6 +219,7 @@ namespace Sakura.Unity
                 payload["llm_provider"] = "ollama";
                 payload["vtuber_tracking_only"] = false;
                 payload["gemini_fallback_enabled"] = false;
+                if (localModel.Length > 0) payload["ollama_model"] = localModel;
             }
             else
             {
@@ -245,8 +254,20 @@ namespace Sakura.Unity
                 {
                     try
                     {
-                        var rows = JObject.Parse(json)["models"] as JArray;
-                        if (rows != null && rows.Count > 0) { localReady = true; status.text = ""; StartMode("local"); return; }
+                        var response = JObject.Parse(json);
+                        var rows = response["models"] as JArray ?? new JArray();
+                        var native = response["native_models"] as JArray ?? new JArray();
+                        if (rows.Count > 0 || native.Count > 0)
+                        {
+                            localReady = true;
+                            localModel = savedLocalModel;
+                            if (localModel.Length == 0 || (!rows.Any(row => row.Value<string>("name") == localModel) &&
+                                !native.Any(row => row.Value<string>("name") == localModel)))
+                                localModel = rows.OfType<JObject>().Select(row => row.Value<string>("name"))
+                                    .Concat(native.OfType<JObject>().Select(row => row.Value<string>("name")))
+                                    .FirstOrDefault(name => !string.IsNullOrEmpty(name)) ?? "";
+                            status.text = ""; StartMode("local"); return;
+                        }
                     }
                     catch (Newtonsoft.Json.JsonException) { }
                 }
@@ -259,7 +280,7 @@ namespace Sakura.Unity
             status.text = "";
             if (localSetup != null) return;
             localSetup = new VisualElement(); localSetup.AddToClassList("startup-local-setup");
-            body.Add(localSetup); Place(localSetup, 18, 238, 582, 390);
+            body.Add(localSetup); Place(localSetup, 18, 174, 582, 370);
             var heading = new Label("Set up local AI"); heading.AddToClassList("startup-local-title"); localSetup.Add(heading);
             var copy = new Label("Local AI downloads an optional runtime and a vision model into your Sakura folder. Nothing is downloaded until you choose Download. Existing models and settings are kept."); copy.AddToClassList("startup-local-copy"); localSetup.Add(copy);
             localCatalog = new DropdownField(new List<string> { "Reading local model catalog…" }, 0); localSetup.Add(localCatalog);
@@ -369,6 +390,7 @@ namespace Sakura.Unity
             if (closed) return;
             closed = true; localPoll?.Pause();
             overlay.RemoveFromHierarchy();
+            studio.GetComponent<SakuraWindow>()?.SetStartupChooser(false);
         }
 
         private void Quit()

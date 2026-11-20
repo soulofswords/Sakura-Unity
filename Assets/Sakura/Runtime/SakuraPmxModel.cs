@@ -28,6 +28,14 @@ namespace Sakura.Unity
             public List<Part> parts = new List<Part>();
             public List<int> frozen = new List<int>();
             public float brightness = 1, ambient = 1, diffuse = 1, toon = 1, directional, sphere = 1, specular = 1, saturation = 1;
+            public float[] previousMatch;
+
+            public float[] Appearance() => new[] { brightness, ambient, diffuse, toon, directional, sphere, specular, saturation };
+            public void SetAppearance(float[] values)
+            {
+                brightness = values[0]; ambient = values[1]; diffuse = values[2]; toon = values[3];
+                directional = values[4]; sphere = values[5]; specular = values[6]; saturation = values[7];
+            }
         }
         public MmdUnityModelInstance Instance { get; private set; }
         public MmdModelDefinition Definition { get; private set; }
@@ -37,15 +45,18 @@ namespace Sakura.Unity
         private Material[] originals;
         private Texture2D[] replacements, painted;
         private Texture2D[] sphereReplacements, toonReplacements;
+        private readonly Dictionary<string, Texture2D> refreshedTextures = new Dictionary<string, Texture2D>();
         public string SourcePath { get; private set; }
         private Color[] paintColors;
         private float[] paintStrengths;
         private Texture2D[] paintSources;
         private Vector3[] restScale;
+        private string[][] authoredTextures;
 
-        public void Initialize(MmdUnityModelInstance instance, MmdModelDefinition definition, string path)
+        public void Initialize(MmdUnityModelInstance instance, MmdModelDefinition definition, string path, string[][] authoredTextures = null)
         {
             Instance = instance; Definition = definition;
+            this.authoredTextures = authoredTextures ?? definition.materials.Select(item => new[] { item.texture, item.sphereTexture, item.toonShared ? "Shared toon " + (item.sharedToonIndex + 1) : item.toonTexture }).ToArray();
             SourcePath = path;
             originals = instance.Materials.Select(material => new Material(material)).ToArray();
             replacements = new Texture2D[originals.Length]; painted = new Texture2D[originals.Length];
@@ -102,6 +113,27 @@ namespace Sakura.Unity
             string temporary = StorageFile + ".tmp";
             File.WriteAllText(temporary, JsonUtility.ToJson(Settings, true));
             if (File.Exists(StorageFile)) File.Replace(temporary, StorageFile, null); else File.Move(temporary, StorageFile);
+        }
+
+        public void UndoAppearanceMatch()
+        {
+            if (AppearanceMatching || Settings.previousMatch?.Length != 8) return;
+            var previous = Settings.previousMatch;
+            var current = Settings.Appearance();
+            try
+            {
+                Settings.SetAppearance(previous);
+                Settings.previousMatch = null;
+                Apply();
+                Save();
+            }
+            catch
+            {
+                Settings.SetAppearance(current);
+                Settings.previousMatch = previous;
+                Apply();
+                throw;
+            }
         }
 
         public int ImportAppearance(IReadOnlyList<SakuraModelTools.AppearanceChange> changes)
@@ -174,6 +206,42 @@ namespace Sakura.Unity
             GetPart(index).replacement = "";
             if (replacements[index] != null) Destroy(replacements[index]);
             replacements[index] = null; Apply(); Save();
+        }
+
+        public string OriginalTextureReference(int index, string slot)
+        {
+            int column = slot == "diffuse" ? 0 : slot == "sphere" ? 1 : slot == "toon" ? 2 : -1;
+            if (index < 0 || index >= authoredTextures.Length || column < 0) throw new ArgumentOutOfRangeException();
+            return authoredTextures[index][column];
+        }
+
+        public void RefreshTexture(int index, string slot, string relative)
+        {
+            if (index < 0 || index >= originals.Length) throw new ArgumentOutOfRangeException(nameof(index));
+            if (slot != "diffuse" && slot != "sphere" && slot != "toon") throw new ArgumentException("Invalid texture slot.");
+            string path = SakuraModelImport.ResolveFile(Path.GetDirectoryName(SourcePath), relative);
+            if (new FileInfo(path).Length > 64L * 1024 * 1024) throw new InvalidDataException("Texture exceeds 64 MB.");
+            var texture = MmdRuntimeTextureResolver.DecodeTextureBytes(File.ReadAllBytes(path), Path.GetExtension(path), Path.GetFileName(path));
+            if (texture == null) throw new InvalidDataException("Could not decode confirmed texture.");
+            string key = index + ":" + slot;
+            refreshedTextures.TryGetValue(key, out var previous);
+            var original = originals[index];
+            if (slot == "diffuse")
+            {
+                original.SetTexture("_BaseMap", texture); original.SetTexture("_MainTex", texture); original.SetFloat("_BaseMapBound", 1);
+                Definition.materials[index].texture = relative;
+            }
+            else if (slot == "sphere")
+            {
+                original.SetTexture("_SphereMap", texture);
+                string mode = Definition.materials[index].sphereTextureMode;
+                original.SetFloat("_SphereMode", mode == "multiply-sphere" ? 1 : mode == "additive-sphere" ? 2 : 0);
+                Definition.materials[index].sphereTexture = relative;
+            }
+            else { original.SetTexture("_ToonMap", texture); original.SetFloat("_ToonMapBound", 1); Definition.materials[index].toonTexture = relative; }
+            refreshedTextures[key] = texture;
+            Apply();
+            if (previous != null) Destroy(previous);
         }
 
         public void RepairTexture(int index, string slot, string relative)
@@ -275,6 +343,7 @@ namespace Sakura.Unity
             if (originals == null) return;
             foreach (var material in originals) if (material != null) Destroy(material);
             foreach (var texture in replacements.Concat(painted).Concat(sphereReplacements).Concat(toonReplacements)) if (texture != null) Destroy(texture);
+            foreach (var texture in refreshedTextures.Values) if (texture != null) Destroy(texture);
         }
     }
 }

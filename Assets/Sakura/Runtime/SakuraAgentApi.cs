@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Text;
 using System.Text.RegularExpressions;
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+using System.Runtime.InteropServices;
+#endif
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -10,6 +13,10 @@ namespace Sakura.Unity
     public sealed partial class SakuraBackend
     {
         private string agentToken;
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        [DllImport("user32.dll")]
+        private static extern bool AllowSetForegroundWindow(int processId);
+#endif
 
         public static bool ValidAgentRoute(string route) => route != null &&
             Regex.IsMatch(route, @"\A/api/agent/[A-Za-z0-9/_-]+(?:\?[A-Za-z0-9_%=&.+-]*)?\z") && !route.Contains("//");
@@ -25,7 +32,16 @@ namespace Sakura.Unity
         {
             if (!ValidAgentRoute(route) || (method != null && method != "GET" && method != "POST" && method != "PUT" && method != "DELETE"))
             { completed(null, "Invalid Agent request."); return; }
-            StartCoroutine(CallAgentApi(route, body, completed, method ?? (body == null ? "GET" : "POST")));
+            string verb = method ?? (body == null ? "GET" : "POST");
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            // Windows only accepts a foreground handoff from the active process.
+            // Delegate to our own backend when the user starts or approves a step.
+            if (verb == "POST" && Application.isFocused && identity?.pid > 0 &&
+                (route.EndsWith("/plan", StringComparison.Ordinal) || route.EndsWith("/resume", StringComparison.Ordinal) ||
+                 route.EndsWith("/decision", StringComparison.Ordinal)))
+                AllowSetForegroundWindow(identity.pid);
+#endif
+            StartCoroutine(CallAgentApi(route, body, completed, verb));
         }
 
         private IEnumerator AuthorizeAgent(Action<string> completed)
