@@ -11,7 +11,7 @@ namespace Sakura.Unity
 {
     /// <summary>Explicitly enabled native microphone capture. Recognition and language stay in the existing backend.</summary>
     [DisallowMultipleComponent]
-    public sealed class SakuraVoice : MonoBehaviour
+    public sealed partial class SakuraVoice : MonoBehaviour
     {
         public bool SpeechInputBusy => recognizing || enrolling;
         public bool SpokenInterruptionEnabled { get; set; }

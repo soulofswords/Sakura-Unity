@@ -31,6 +31,16 @@ namespace Sakura.Unity.Editor
             Require(!echo.Matches("explain how a different microphone works", 11), "different utterance retained");
             echo.Finish(12);
             Require(echo.Matches("explain how the microphone works", 13) && !echo.Matches("explain how the microphone works", 14), "finished playback echo grace bounded");
+            var detector = new SakuraVoice.BargeInDetector();
+            for (int i = 0; i < 4; i++) Require(detector.Push(.02f, 0f, .05f) == SakuraVoice.BargeInState.Idle, "speech below attack stays idle");
+            for (int i = 0; i < 4; i++) detector.Push(.02f, 0f, .05f);
+            Require(detector.State == SakuraVoice.BargeInState.Candidate, "near-end speech becomes candidate");
+            detector.Reset();
+            for (int i = 0; i < 12; i++) Require(detector.Push(.03f, .10f, .05f) == SakuraVoice.BargeInState.Idle, "playback echo stays idle");
+            for (int i = 0; i < 6; i++) detector.Push(.09f, .10f, .05f);
+            Require(detector.State == SakuraVoice.BargeInState.Candidate, "double talk over echo becomes candidate");
+            for (int i = 0; i < 6; i++) detector.Push(.01f, .10f, .05f);
+            Require(detector.State == SakuraVoice.BargeInState.Idle, "release returns to idle");
             Debug.Log("PASS: spoken stop/wait parsing, follow-ups, sleeping wake boundaries and timestamped playback echo suppression. No microphone, speaker or settings changed.");
         }
         private static void Require(bool condition, string message)
