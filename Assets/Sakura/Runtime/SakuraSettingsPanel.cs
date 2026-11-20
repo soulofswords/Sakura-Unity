@@ -325,9 +325,12 @@ namespace Sakura.Unity
                 AddButton("Stop speaking", () => backend.GetComponent<SakuraVoice>()?.StopSpeaking(), card);
                 if (backend.Mode == "Companion" && backend.GetComponent<SakuraVoice>() is SakuraVoice interruptVoice)
                 {
-                    var interruption = new Toggle("Spoken stop / wait during playback · use headphones") { value = interruptVoice.SpokenInterruptionEnabled }; card.Add(interruption);
-                    interruption.RegisterValueChangedCallback(evt => interruptVoice.SpokenInterruptionEnabled = evt.newValue);
-                    Text("Enable the microphone first. This session-only option listens for stop/wait commands during playback. Native microphone capture has no acoustic echo cancellation. Headphones keep Sakura’s voice out of the microphone.", "description", card);
+                    var output = new DropdownField("How you listen", new List<string> { "Speakers · echo-resistant barge-in", "Headphones · immediate barge-in" }, interruptVoice.Output == SakuraVoice.AudioOutput.Speakers ? 0 : 1);
+                    output.name = "audio-output"; card.Add(output);
+                    output.RegisterValueChangedCallback(evt => interruptVoice.Output = evt.newValue != null && evt.newValue.StartsWith("Speakers") ? SakuraVoice.AudioOutput.Speakers : SakuraVoice.AudioOutput.Headphones);
+                    var barge = new Toggle("Hands-free barge-in · talk over Sakura") { value = interruptVoice.BargeInEnabled }; barge.name = "hands-free-barge-in"; card.Add(barge);
+                    barge.RegisterValueChangedCallback(evt => interruptVoice.BargeInEnabled = evt.newValue);
+                    Text("Enable the microphone first. Speaker mode ducks Sakura’s voice, checks for your saved voice when one is enrolled, and ignores her own echo; it does not add native echo cancellation. Headphones are still the cleanest option. Turn barge-in off to pause the microphone during playback.", "description", card);
                 }
                 var advanced = new Foldout { text = "Voice adjustment", value = false }; card.Add(advanced);
                 Field(advanced, "Pitch", "tts_pitch"); Field(advanced, "Rate", "tts_rate");
@@ -767,7 +770,7 @@ namespace Sakura.Unity
         }
         private void Check(VisualElement card, string label, string key)
         {
-            var field = new Toggle { text = label, value = (bool?)Value(key) ?? false }; field.name = key; card.Add(field);
+            var field = new Toggle(label) { value = (bool?)Value(key) ?? false }; field.name = key; card.Add(field);
             field.RegisterValueChangedCallback(evt => changes[key] = evt.newValue);
         }
         private void Select(VisualElement card, string label, string key, string[] ids, string[] labels)
