@@ -14,7 +14,21 @@ namespace Sakura.Unity
     public sealed partial class SakuraVoice : MonoBehaviour
     {
         public bool SpeechInputBusy => recognizing || enrolling;
-        public bool SpokenInterruptionEnabled { get; set; }
+        public enum AudioOutput { Headphones, Speakers }
+        private const string OutputPreference = "sakura_audio_output", BargePreference = "sakura_barge_in";
+        private AudioOutput output = AudioOutput.Speakers;
+        private bool bargeInEnabled = true;
+        public AudioOutput Output
+        {
+            get => output;
+            set { if (output == value) return; output = value; PlayerPrefs.SetInt(OutputPreference, (int)value); PlayerPrefs.Save(); }
+        }
+        public bool BargeInEnabled
+        {
+            get => bargeInEnabled;
+            set { if (bargeInEnabled == value) return; bargeInEnabled = value; PlayerPrefs.SetInt(BargePreference, value ? 1 : 0); PlayerPrefs.Save(); }
+        }
+        public bool SpokenInterruptionEnabled { get => BargeInEnabled; set => BargeInEnabled = value; }
         [Serializable] private sealed class Settings { public bool wake_word_enabled; public string wake_word; }
         [Serializable] private sealed class Recognition { public string text; public string error; public bool speaker_rejected; public string speaker_message; }
 
@@ -45,6 +59,10 @@ namespace Sakura.Unity
         private SakuraAvatarActions sleepActions;
         private string pendingSpeechText;
         private readonly PlaybackEchoGuard echoGuard = new PlaybackEchoGuard();
+        private readonly BargeInDetector bargeIn = new BargeInDetector();
+        private bool bargeInTriggered, ducked;
+        private float savedVolume = 1f;
+        private volatile float outputRms;
         private string wakePhrase = "hey sakura";
         public string WakePhrase => wakePhrase;
         private string playbackMode;
@@ -55,6 +73,8 @@ namespace Sakura.Unity
         private void OnEnable()
         {
             if (Backend == null) Backend = GetComponent<SakuraBackend>();
+            output = PlayerPrefs.GetInt(OutputPreference, (int)AudioOutput.Speakers) == (int)AudioOutput.Headphones ? AudioOutput.Headphones : AudioOutput.Speakers;
+            bargeInEnabled = PlayerPrefs.GetInt(BargePreference, 1) != 0;
             boundBackend = Backend;
             if (boundBackend != null) { boundBackend.AudioReplyReceived += PlayReply; boundBackend.ReplyDataReceived += ReadSpeechText; }
             speaker = gameObject.AddComponent<AudioSource>();
@@ -140,8 +160,9 @@ namespace Sakura.Unity
                 catch (Exception error) { startError = error.Message; }
                 if (microphone == null) { FailInput("Microphone could not start. " + startError); yield break; }
                 microphoneStartedAt = Time.realtimeSinceStartup; readFrame = 0;
-                captureInterruptOnly = Speaking || Backend.Busy;
-                gate = captureInterruptOnly ? new SpeechGate(microphone.frequency, SpeechThreshold, .12f, .3f, 3f) : new SpeechGate(microphone.frequency, SpeechThreshold, .3f, .65f, 15f);
+                captureInterruptOnly = BargeInEnabled && (Speaking || Backend.Busy);
+                gate = new SpeechGate(microphone.frequency, SpeechThreshold, .3f, .65f, 15f);
+                bargeIn.Reset(); bargeInTriggered = false; Unduck();
                 heldSpeech.Clear();
                 SetStatus(pushToTalk ? "Microphone ON · speak, then release" : ListeningText());
             }
@@ -149,7 +170,14 @@ namespace Sakura.Unity
         }
 
         private bool CanCapture(int captureGeneration) => Listening && captureGeneration == generation && isActiveAndEnabled && Companion;
-        private string ListeningText() => Speaking ? "Microphone ON · listening for stop or wait" : Backend.Busy ? "Working · listening for stop or wait" : wakeEnabled ? "Microphone ON · say " + wakePhrase : "Microphone ON · listening";
+        private string ListeningText()
+        {
+            if (Speaking) return BargeInEnabled
+                ? (Output == AudioOutput.Speakers ? "Sakura speaking · say something to interrupt" : "Sakura speaking · talk to interrupt")
+                : "Sakura speaking · microphone paused to prevent echo";
+            if (Backend.Busy) return BargeInEnabled ? "Working · talk to interrupt" : "Working · listening for stop or wait";
+            return wakeEnabled ? "Microphone ON · say " + wakePhrase : "Microphone ON · listening";
+        }
 
         private void Update()
         {
@@ -168,7 +196,7 @@ namespace Sakura.Unity
                 return;
             }
             if (!Listening) return;
-            if (recognizing || (Speaking && !SpokenInterruptionEnabled) || Time.realtimeSinceStartup < resumeAt)
+            if (recognizing || ((Speaking || Backend.Busy) && !BargeInEnabled) || Time.realtimeSinceStartup < resumeAt)
             {
                 if (microphone != null) CloseMicrophone();
                 return;
@@ -178,7 +206,7 @@ namespace Sakura.Unity
                 if (!starting) StartCoroutine(OpenMicrophone(generation));
                 return;
             }
-            if (!pushToTalk && captureInterruptOnly != (Speaking || Backend.Busy)) { CloseMicrophone(); return; }
+            if (!pushToTalk && captureInterruptOnly != (BargeInEnabled && (Speaking || Backend.Busy || bargeInTriggered))) { CloseMicrophone(); return; }
             int position = Microphone.GetPosition(activeDevice);
             if (position < 0 || !Microphone.IsRecording(activeDevice)) { FailInput("Microphone disconnected or stopped. Check the selected device and retry."); return; }
             if (position == 0 && Time.realtimeSinceStartup - microphoneStartedAt > 3) { FailInput("Microphone produced no audio. Check Windows microphone access and the selected device."); return; }
@@ -193,12 +221,35 @@ namespace Sakura.Unity
                     for (int channel = 0; channel < microphone.channels; channel++) mono[frame] += interleaved[frame * microphone.channels + channel] / microphone.channels;
                 readFrame = (readFrame + block) % microphone.samples; available -= block;
                 InputLevel = Rms(mono);
+                if (BargeInEnabled && !pushToTalk && captureInterruptOnly)
+                {
+                    if (Output == AudioOutput.Headphones && Speaking && !bargeInTriggered && InputLevel >= SpeechThreshold)
+                    {
+                        StopPlayback(false, true); bargeInTriggered = true; SetStatus("Listening to you…");
+                    }
+                    else if (Output == AudioOutput.Speakers && Speaking)
+                    {
+                        var state = bargeIn.Push(InputLevel, PlaybackRms(), block / (float)microphone.frequency);
+                        if (state == BargeInState.Confirmed) { bargeInTriggered = true; Duck(); SetStatus("Listening to you…"); }
+                        else if (state == BargeInState.Candidate) { bargeInTriggered = true; Duck(); }
+                        else if (!bargeInTriggered) Unduck();
+                    }
+                }
                 if (pushToTalk)
                 {
                     heldSpeech.AddRange(mono);
                     if (heldSpeech.Count >= microphone.frequency * 45) { EndPushToTalk(); return; }
                 }
-                else if (gate.Push(mono)) { Submit(gate.Take(), microphone.frequency, captureInterruptOnly); return; }
+                else if (gate.Push(mono))
+                {
+                    var pcm = gate.Take();
+                    bool barge = captureInterruptOnly;
+                    if (barge && Output == AudioOutput.Speakers && !bargeInTriggered)
+                    { bargeIn.Reset(); Unduck(); bargeInTriggered = false; continue; }
+                    bargeInTriggered = false;
+                    Submit(pcm, microphone.frequency, barge);
+                    return;
+                }
             }
         }
 
@@ -212,48 +263,55 @@ namespace Sakura.Unity
             Submit(pcm, rate);
         }
 
-        private void Submit(float[] pcm, int sampleRate, bool interruptOnly = false)
+        private void Submit(float[] pcm, int sampleRate, bool barge = false)
         {
             int captureGeneration = generation;
-            int capturedPlayback = playbackGeneration;
             float capturedAt = Time.realtimeSinceStartup;
             bool wasHeld = pushToTalk;
             CloseMicrophone(); recognizing = true; SetStatus("Recognising speech…");
             byte[] wav = EncodeWav(pcm, sampleRate);
             bool offlineApproved = false;
+            void Reject(string message)
+            {
+                if (barge) { Unduck(); bargeIn.Reset(); bargeInTriggered = false; }
+                SetStatus(message);
+            }
             void Recognize() => Backend.UploadAudio(wav, (json, error) =>
             {
                 if (this == null || !isActiveAndEnabled || captureGeneration != generation || !Companion) return;
                 recognizing = false; resumeAt = Time.realtimeSinceStartup + .25f;
-                if (error != null) { SetStatus("Speech recognition failed: " + error + ". Check the microphone and retry."); return; }
+                if (error != null) { Reject("Speech recognition failed: " + error + ". Check the microphone and retry."); return; }
                 Recognition result;
                 try { result = JsonUtility.FromJson<Recognition>(json); }
-                catch (Exception) { SetStatus("Speech recognition returned an invalid response. Retry."); return; }
-                if (result == null) { SetStatus("Speech recognition returned no response. Retry."); return; }
-                if (result.speaker_rejected) { SetStatus(string.IsNullOrEmpty(result.speaker_message) ? "Voice profile did not match. Re-record your recognised voice in Voice & speech." : result.speaker_message); return; }
-                if (!string.IsNullOrEmpty(result.error)) { SetStatus(result.error); return; }
+                catch (Exception) { Reject("Speech recognition returned an invalid response. Retry."); return; }
+                if (result == null) { Reject("Speech recognition returned no response. Retry."); return; }
+                if (result.speaker_rejected) { Reject(string.IsNullOrEmpty(result.speaker_message) ? "Voice profile did not match. Re-record your recognised voice in Voice & speech." : result.speaker_message); return; }
+                if (!string.IsNullOrEmpty(result.error)) { Reject(result.error); return; }
                 string text = (result.text ?? "").Trim();
-                if (text.Length == 0) { SetStatus("No clear speech recognised. Check the selected microphone and try again."); return; }
-                if (!wasHeld && echoGuard.Matches(text, capturedAt) && (interruptOnly || ExtractWakeCommand(text, wakePhrase) == null))
-                { SetStatus("Speaker echo ignored · listening"); return; }
+                if (text.Length == 0) { Reject("No clear speech recognised. Check the selected microphone and try again."); return; }
+                if (!wasHeld && echoGuard.Matches(text, capturedAt) && (barge || ExtractWakeCommand(text, wakePhrase) == null))
+                { Reject(barge ? "Speaker echo ignored · continuing" : "Speaker echo ignored · listening"); return; }
                 bool woke = false;
                 if (sleepActions != null && sleepActions.Sleeping)
                 {
-                    if (!WakeFromSleep(text, wakePhrase, out string command)) { SetStatus("Sleeping · say wake up Sakura or your wake phrase"); return; }
+                    if (!WakeFromSleep(text, wakePhrase, out string command)) { Reject("Sleeping · say wake up Sakura or your wake phrase"); return; }
                     if (!sleepActions.Act("home")) sleepActions.Stop();
                     text = command; woke = true;
-                    if (text.Length == 0) { SetStatus("Awake · ready to listen"); return; }
+                    if (text.Length == 0) { Reject("Awake · ready to listen"); return; }
                 }
-                if (interruptOnly)
+                if (barge)
                 {
+                    if (Speaking) StopSpeaking();
+                    if (Backend.Busy) Backend.InterruptChat();
                     string followup = ParseSpeechInterrupt(text, wakePhrase);
-                    if (followup == null || (!Speaking && !Backend.Busy) || (Speaking && capturedPlayback != playbackGeneration)) return;
-                    Backend.InterruptChat(); StopSpeaking();
-                    SetStatus("Paused. Ask your next question.");
-                    if (followup.Length == 0) return;
-                    text = followup;
+                    if (followup != null)
+                    {
+                        SetStatus("Paused. Ask your next question.");
+                        if (followup.Length == 0) { bargeIn.Reset(); bargeInTriggered = false; Unduck(); return; }
+                        text = followup;
+                    }
                 }
-                if (wakeEnabled && !wasHeld && !woke && !interruptOnly)
+                if (wakeEnabled && !wasHeld && !woke && !barge)
                 {
                     string command = ExtractWakeCommand(text, wakePhrase);
                     if (command != null)
@@ -264,11 +322,12 @@ namespace Sakura.Unity
                     else if (!offlineApproved && Time.realtimeSinceStartup >= wakeDeadline) { SetStatus("Say " + wakePhrase + " first"); return; }
                     wakeDeadline = 0;
                 }
+                bargeIn.Reset(); bargeInTriggered = false; Unduck();
                 TranscriptReceived?.Invoke(text);
                 Backend.SendChat(text);
                 SetStatus("Speech sent · microphone paused during Sakura’s reply");
             });
-            if (wakeEnabled && !wasHeld && !interruptOnly && Time.realtimeSinceStartup >= wakeDeadline)
+            if (wakeEnabled && !wasHeld && !barge && Time.realtimeSinceStartup >= wakeDeadline)
             {
                 SetStatus("Checking wake phrase offline…");
                 var payload = new Newtonsoft.Json.Linq.JObject { ["audio"] = Convert.ToBase64String(EncodeWakeWav(pcm, sampleRate)) };
@@ -331,6 +390,7 @@ namespace Sakura.Unity
         private void PlayAudio(string relativeAudio, string text = null)
         {
             StopSpeaking(); CloseMicrophone();
+            if (BargeInEnabled && Companion) resumeAt = 0;
             int playback = playbackGeneration;
             string mode = Backend.Mode;
             playbackMode = mode;
@@ -347,22 +407,50 @@ namespace Sakura.Unity
                 if (speaker == null) { Debug.LogWarning("[Sakura] speech audio source is missing."); Destroy(clip); return; }
                 Debug.Log("[Sakura] speech playing " + clip.length.ToString("0.00") + "s " + clip.frequency + "Hz, listener volume " + AudioListener.volume + " mute " + AudioListener.pause);
                 speaker.clip = clip; Backend?.ReleasePendingReply(); speaker.Play(); echoGuard.Remember(text, Time.realtimeSinceStartup);
+                bargeIn.Reset(); bargeInTriggered = false; outputRms = 0;
                 StartCoroutine(CompletePlayback(playback));
             });
         }
 
         private IEnumerator CompletePlayback(int playback)
         {
-            SetStatus(Listening && SpokenInterruptionEnabled ? "Sakura speaking · listening for stop or wait" : Listening ? "Sakura speaking · microphone paused to prevent echo" : "Sakura speaking · microphone OFF");
+            SetStatus(Listening ? ListeningText() : "Sakura speaking · microphone OFF");
             while (speaker != null && speaker.isPlaying && playback == playbackGeneration) yield return null;
             if (playback != playbackGeneration) yield break;
-            echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); resumeAt = Time.realtimeSinceStartup + .65f;
+            echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); Unduck();
+            if (!bargeInTriggered) resumeAt = Time.realtimeSinceStartup + .65f;
             SetStatus(Listening ? ListeningText() : "Microphone OFF");
         }
 
-        public void StopSpeaking()
+        public void StopSpeaking() => StopPlayback(true, false);
+
+        private void StopPlayback(bool resume, bool keepBargeIn)
         {
-            playbackGeneration++; echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); resumeAt = Time.realtimeSinceStartup + .65f;
+            playbackGeneration++; echoGuard.Finish(Time.realtimeSinceStartup); ReleasePlayback(); Unduck();
+            if (!keepBargeIn) { bargeIn.Reset(); bargeInTriggered = false; }
+            if (resume) resumeAt = Time.realtimeSinceStartup + .65f;
+        }
+
+        private void Duck()
+        {
+            if (speaker == null || ducked) return;
+            savedVolume = speaker.volume; speaker.volume = Mathf.Min(speaker.volume, .1f); ducked = true;
+        }
+
+        private void Unduck()
+        {
+            if (speaker == null || !ducked) return;
+            speaker.volume = savedVolume; ducked = false;
+        }
+
+        private float PlaybackRms() => speaker != null && speaker.isPlaying ? outputRms : 0f;
+
+        private void OnAudioFilterRead(float[] data, int channels)
+        {
+            if (data == null || data.Length == 0) { outputRms = 0; return; }
+            double sum = 0;
+            foreach (float sample in data) sum += sample * sample;
+            outputRms = (float)Math.Sqrt(sum / data.Length);
         }
 
         private void ReleasePlayback()
