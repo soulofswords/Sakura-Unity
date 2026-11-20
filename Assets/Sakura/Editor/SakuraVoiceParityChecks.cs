@@ -31,6 +31,12 @@ namespace Sakura.Unity.Editor
             Require(!echo.Matches("explain how a different microphone works", 11), "different utterance retained");
             echo.Finish(12);
             Require(echo.Matches("explain how the microphone works", 13) && !echo.Matches("explain how the microphone works", 14), "finished playback echo grace bounded");
+            var shortEcho = new SakuraVoice.PlaybackEchoGuard();
+            shortEcho.Remember("Okay.", 20);
+            Require(shortEcho.Matches("okay", 21), "one-word reply echo recognized");
+            Require(!shortEcho.Matches("okay", 19), "one-word echo respects its window");
+            shortEcho.Remember("Sure, done now.", 22);
+            Require(shortEcho.Matches("sure done", 23), "short phrase echo recognized");
             var detector = new SakuraVoice.BargeInDetector();
             for (int i = 0; i < 4; i++) Require(detector.Push(.02f, 0f, .05f) == SakuraVoice.BargeInState.Idle, "speech below attack stays idle");
             for (int i = 0; i < 4; i++) detector.Push(.02f, 0f, .05f);

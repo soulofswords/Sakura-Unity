@@ -482,7 +482,7 @@ namespace Sakura.Unity
             public void Remember(string text, float now)
             {
                 string[] words = Words(text);
-                if (words.Length < 4) return;
+                if (words.Length < 1) return;
                 phrases.Add(new Phrase { Text = string.Join(" ", words), Started = now, Until = now + 60 });
                 if (phrases.Count > 8) phrases.RemoveAt(0);
             }
@@ -491,9 +491,10 @@ namespace Sakura.Unity
             public bool Matches(string text, float capturedAt)
             {
                 string[] words = Words(text);
-                if (words.Length < 4) return false;
+                if (words.Length < 1) return false;
                 string candidate = " " + string.Join(" ", words) + " ";
-                return phrases.Any(phrase => capturedAt >= phrase.Started && capturedAt <= phrase.Until && (" " + phrase.Text + " ").Contains(candidate));
+                return phrases.Any(phrase => capturedAt >= phrase.Started && capturedAt <= phrase.Until
+                    && (words.Length == 1 ? candidate.Trim() == phrase.Text : (" " + phrase.Text + " ").Contains(candidate)));
             }
         }
 
