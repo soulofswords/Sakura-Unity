@@ -62,7 +62,7 @@ namespace Sakura.Unity
         private readonly BargeInDetector bargeIn = new BargeInDetector();
         private bool bargeInTriggered, ducked;
         private float savedVolume = 1f;
-        private volatile float outputRms;
+        private float[] playbackSamples;
         private string wakePhrase = "hey sakura";
         public string WakePhrase => wakePhrase;
         private string playbackMode;
@@ -407,7 +407,7 @@ namespace Sakura.Unity
                 if (speaker == null) { Debug.LogWarning("[Sakura] speech audio source is missing."); Destroy(clip); return; }
                 Debug.Log("[Sakura] speech playing " + clip.length.ToString("0.00") + "s " + clip.frequency + "Hz, listener volume " + AudioListener.volume + " mute " + AudioListener.pause);
                 speaker.clip = clip; Backend?.ReleasePendingReply(); speaker.Play(); echoGuard.Remember(text, Time.realtimeSinceStartup);
-                bargeIn.Reset(); bargeInTriggered = false; outputRms = 0;
+                bargeIn.Reset(); bargeInTriggered = false;
                 StartCoroutine(CompletePlayback(playback));
             });
         }
@@ -443,14 +443,19 @@ namespace Sakura.Unity
             speaker.volume = savedVolume; ducked = false;
         }
 
-        private float PlaybackRms() => speaker != null && speaker.isPlaying ? outputRms : 0f;
-
-        private void OnAudioFilterRead(float[] data, int channels)
+        private float PlaybackRms()
         {
-            if (data == null || data.Length == 0) { outputRms = 0; return; }
+            var clip = speaker == null ? null : speaker.clip;
+            if (clip == null || !speaker.isPlaying) return 0f;
+            int channels = Mathf.Max(1, clip.channels);
+            int window = Mathf.Min(clip.samples, Mathf.Max(256, clip.frequency / 20));
+            int start = Mathf.Clamp(speaker.timeSamples, 0, Mathf.Max(0, clip.samples - window));
+            int length = window * channels;
+            if (playbackSamples == null || playbackSamples.Length != length) playbackSamples = new float[length];
+            if (!clip.GetData(playbackSamples, start)) return 0f;
             double sum = 0;
-            foreach (float sample in data) sum += sample * sample;
-            outputRms = (float)Math.Sqrt(sum / data.Length);
+            foreach (float sample in playbackSamples) sum += sample * sample;
+            return (float)Math.Sqrt(sum / length) * speaker.volume;
         }
 
         private void ReleasePlayback()
